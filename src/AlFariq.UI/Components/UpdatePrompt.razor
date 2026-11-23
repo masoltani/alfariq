@@ -1,0 +1,22 @@
+@implements IDisposable
+@inject UpdateService Update
+@inject IStringLocalizer<Strings> L
+
+@if (Update.IsUpdateAvailable)
+{
+    <div class="banner banner--update" role="status">
+        <span>@L["Update_Message"]</span>
+        <span class="banner__actions">
+            <button type="button" class="button button--small" @onclick="Update.ApplyAsync">@L["Update_Reload"]</button>
+            <button type="button" class="button button--small button--ghost" @onclick="Update.Dismiss">@L["Update_Later"]</button>
+        </span>
+    </div>
+}
+
+@code {
+    protected override void OnInitialized() => Update.Changed += OnChanged;
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Update.Changed -= OnChanged;
+}

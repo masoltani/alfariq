@@ -1,0 +1,29 @@
+@implements IDisposable
+@inject ThemeService Theme
+@inject IStringLocalizer<Strings> L
+
+<fieldset class="segmented">
+    <legend>@L["Theme_Label"]</legend>
+    @foreach (var (value, labelKey) in Options)
+    {
+        <label class="segmented__option">
+            <input type="radio" name="theme" checked="@(Theme.Current == value)" @onchange="() => Theme.SetAsync(value)" />
+            <span>@L[labelKey]</span>
+        </label>
+    }
+</fieldset>
+
+@code {
+    private static readonly (ThemePreference Value, string LabelKey)[] Options =
+    [
+        (ThemePreference.Auto, "Theme_Auto"),
+        (ThemePreference.Light, "Theme_Light"),
+        (ThemePreference.Dark, "Theme_Dark"),
+    ];
+
+    protected override void OnInitialized() => Theme.Changed += OnChanged;
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Theme.Changed -= OnChanged;
+}

@@ -1,0 +1,17 @@
+## .NET
+bin/
+obj/
+artifacts/
+*.user
+*.suo
+.vs/
+.idea/
+*.log
+TestResults/
+
+## Node (outils éventuels)
+node_modules/
+
+## Système
+.DS_Store
+Thumbs.db

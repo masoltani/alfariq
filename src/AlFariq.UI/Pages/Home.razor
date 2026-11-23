@@ -1,0 +1,13 @@
+@page "/"
+@inject IStringLocalizer<Strings> L
+
+<PageTitle>@L["App_Name"]</PageTitle>
+
+<section class="page">
+    <h1>@L["Home_Welcome"]</h1>
+    <p class="lead">@L["Home_Intro"]</p>
+
+    <div class="card card--empty">
+        <p>@L["Home_EmptyState"]</p>
+    </div>
+</section>

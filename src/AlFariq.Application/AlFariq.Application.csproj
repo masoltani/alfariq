@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Cas d'usage et interfaces de dépôt. Dépend uniquement du domaine. -->
+
+  <ItemGroup>
+    <ProjectReference Include="..\AlFariq.Domain\AlFariq.Domain.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+  </ItemGroup>
+
+</Project>

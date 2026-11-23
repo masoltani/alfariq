@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly">
+
+  <!-- Hôte de la PWA : composition des services, manifeste, icônes et service worker. Pas d'interface ici. -->
+
+  <PropertyGroup>
+    <RootNamespace>AlFariq.Web</RootNamespace>
+    <ServiceWorkerAssetsManifest>service-worker-assets.js</ServiceWorkerAssetsManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AlFariq.UI\AlFariq.UI.csproj" />
+    <ProjectReference Include="..\AlFariq.Client.Core\AlFariq.Client.Core.csproj" />
+    <ProjectReference Include="..\AlFariq.Application\AlFariq.Application.csproj" />
+    <ProjectReference Include="..\AlFariq.Domain\AlFariq.Domain.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- En développement : service worker vide. À la publication : version avec cache hors ligne. -->
+    <ServiceWorker Include="wwwroot\service-worker.js" PublishedContent="wwwroot\service-worker.published.js" />
+  </ItemGroup>
+
+</Project>

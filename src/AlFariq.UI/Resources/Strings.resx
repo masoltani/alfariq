@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+
+  <data name="App_Name" xml:space="preserve"><value>AlFariq</value></data>
+  <data name="App_Tagline" xml:space="preserve"><value>Organise tes matchs entre amis</value></data>
+
+  <data name="Nav_Home" xml:space="preserve"><value>Accueil</value></data>
+  <data name="Nav_Matches" xml:space="preserve"><value>Matchs</value></data>
+  <data name="Nav_Players" xml:space="preserve"><value>Joueurs</value></data>
+  <data name="Nav_More" xml:space="preserve"><value>Plus</value></data>
+  <data name="Nav_Label" xml:space="preserve"><value>Navigation principale</value></data>
+
+  <data name="Status_Offline" xml:space="preserve"><value>Mode hors ligne : tes données restent sur cet appareil.</value></data>
+
+  <data name="Update_Message" xml:space="preserve"><value>Une nouvelle version est disponible.</value></data>
+  <data name="Update_Reload" xml:space="preserve"><value>Recharger</value></data>
+  <data name="Update_Later" xml:space="preserve"><value>Plus tard</value></data>
+
+  <data name="Home_Title" xml:space="preserve"><value>Accueil</value></data>
+  <data name="Home_Welcome" xml:space="preserve"><value>Bienvenue sur AlFariq</value></data>
+  <data name="Home_Intro" xml:space="preserve"><value>Prépare un match, compose les équipes et partage la composition avec tes amis. Tout fonctionne sans connexion.</value></data>
+  <data name="Home_EmptyState" xml:space="preserve"><value>Aucun match prévu pour l'instant. Les premières fonctionnalités arrivent bientôt.</value></data>
+
+  <data name="Matches_Title" xml:space="preserve"><value>Matchs</value></data>
+  <data name="Players_Title" xml:space="preserve"><value>Joueurs</value></data>
+  <data name="More_Title" xml:space="preserve"><value>Plus</value></data>
+  <data name="Section_ComingSoon" xml:space="preserve"><value>Cette section arrive bientôt.</value></data>
+
+  <data name="Theme_Label" xml:space="preserve"><value>Thème</value></data>
+  <data name="Theme_Auto" xml:space="preserve"><value>Automatique</value></data>
+  <data name="Theme_Light" xml:space="preserve"><value>Clair</value></data>
+  <data name="Theme_Dark" xml:space="preserve"><value>Sombre</value></data>
+
+  <data name="About_Title" xml:space="preserve"><value>À propos</value></data>
+  <data name="About_Version" xml:space="preserve"><value>Version</value></data>
+  <data name="About_Storage" xml:space="preserve"><value>Tes données sont enregistrées sur cet appareil.</value></data>
+
+  <data name="NotFound_Title" xml:space="preserve"><value>Page introuvable</value></data>
+  <data name="NotFound_Message" xml:space="preserve"><value>Cette page n'existe pas.</value></data>
+  <data name="NotFound_Back" xml:space="preserve"><value>Retour à l'accueil</value></data>
+
+  <data name="Loading_Message" xml:space="preserve"><value>Chargement...</value></data>
+</root>

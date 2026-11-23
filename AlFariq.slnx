@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AlFariq.Domain/AlFariq.Domain.csproj" />
+    <Project Path="src/AlFariq.Application/AlFariq.Application.csproj" />
+    <Project Path="src/AlFariq.Client.Core/AlFariq.Client.Core.csproj" />
+    <Project Path="src/AlFariq.UI/AlFariq.UI.csproj" />
+    <Project Path="src/AlFariq.Web/AlFariq.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AlFariq.Domain.Tests/AlFariq.Domain.Tests.csproj" />
+    <Project Path="tests/AlFariq.Web.Tests/AlFariq.Web.Tests.csproj" />
+  </Folder>
+</Solution>

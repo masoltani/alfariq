@@ -1,0 +1,30 @@
+@inherits LayoutComponentBase
+@inject ConnectivityService Connectivity
+@inject ThemeService Theme
+@inject UpdateService Update
+
+<div class="app-shell">
+    <OfflineBanner />
+    <UpdatePrompt />
+
+    <main class="app-main" id="main">
+        @Body
+    </main>
+
+    <BottomNav />
+</div>
+
+@code {
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        // L'interopérabilité JavaScript n'est disponible qu'après le premier rendu.
+        await Theme.InitializeAsync();
+        await Connectivity.InitializeAsync();
+        await Update.InitializeAsync();
+    }
+}

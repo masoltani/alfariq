@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore -c Release
+
+      - name: Test
+        run: dotnet test --no-build -c Release
+
+      - name: Publish the PWA
+        run: dotnet publish src/AlFariq.Web/AlFariq.Web.csproj -c Release -o artifacts/web
+
+      - name: Check the published PWA files
+        run: |
+          set -e
+          cd artifacts/web/wwwroot
+          test -f index.html
+          test -f manifest.webmanifest
+          test -f service-worker.js
+          test -f service-worker-assets.js
+          grep -q "assetsManifest" service-worker.js
+          grep -q "SKIP_WAITING" service-worker.js
+
+      - name: Upload the PWA
+        uses: actions/upload-artifact@v4
+        with:
+          name: alfariq-web
+          path: artifacts/web/wwwroot
+          retention-days: 7

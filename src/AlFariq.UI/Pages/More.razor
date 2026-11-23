@@ -1,0 +1,21 @@
+@page "/plus"
+@inject IStringLocalizer<Strings> L
+
+<PageTitle>@L["More_Title"] · @L["App_Name"]</PageTitle>
+
+<section class="page">
+    <h1>@L["More_Title"]</h1>
+
+    <div class="card">
+        <ThemeSelector />
+    </div>
+
+    <div class="card">
+        <h2>@L["About_Title"]</h2>
+        <dl class="facts">
+            <dt>@L["App_Name"]</dt>
+            <dd>@L["About_Version"] @AppInfo.Version</dd>
+        </dl>
+        <p>@L["About_Storage"]</p>
+    </div>
+</section>

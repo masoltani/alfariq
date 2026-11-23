@@ -1,0 +1,20 @@
+<Router AppAssembly="@typeof(App).Assembly">
+    <Found Context="routeData">
+        <RouteView RouteData="@routeData" DefaultLayout="@typeof(MainLayout)" />
+        <FocusOnNavigate RouteData="@routeData" Selector="h1" />
+    </Found>
+    <NotFound>
+        <LayoutView Layout="@typeof(MainLayout)">
+            <PageTitle>@L["NotFound_Title"] · @L["App_Name"]</PageTitle>
+            <section class="page">
+                <h1>@L["NotFound_Title"]</h1>
+                <p>@L["NotFound_Message"]</p>
+                <a class="button" href="">@L["NotFound_Back"]</a>
+            </section>
+        </LayoutView>
+    </NotFound>
+</Router>
+
+@code {
+    [Inject] private IStringLocalizer<Strings> L { get; set; } = default!;
+}

@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>AlFariq</title>
+  <!-- Hébergement dans un sous-dossier : adapter cette base ET la constante « base » de service-worker.published.js. -->
+  <base href="/" />
+  <meta name="description" content="Organise tes matchs de sport entre amis : joueurs, équipes, composition, résultats." />
+  <meta name="theme-color" content="#0b6e4f" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="AlFariq" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" type="image/png" href="icons/favicon.png" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <link rel="stylesheet" href="_content/AlFariq.UI/css/app.css" />
+  <script>
+    // Applique le thème choisi avant le premier affichage, pour éviter un flash de la mauvaise couleur.
+    try {
+      var t = localStorage.getItem("alfariq.theme");
+      if (t === "light" || t === "dark") { document.documentElement.setAttribute("data-theme", t); }
+    } catch (e) { /* stockage indisponible : thème de l'appareil */ }
+  </script>
+</head>
+
+<body>
+  <div id="app">
+    <div class="splash" role="status" aria-live="polite">
+      <div class="splash__mark" aria-hidden="true"></div>
+      <span class="sr-only">Chargement...</span>
+    </div>
+  </div>
+
+  <div id="blazor-error-ui">
+    Une erreur est survenue.
+    <a href="." class="reload">Recharger</a>
+    <span class="dismiss" role="button" aria-label="Fermer">&#x2715;</span>
+  </div>
+
+  <script src="_framework/blazor.webassembly.js"></script>
+  <script>
+    // Enregistrement du service worker : la promesse est partagée avec l'interface pour détecter les mises à jour.
+    if ("serviceWorker" in navigator) {
+      window.alfariqSwReady = navigator.serviceWorker.register("service-worker.js", { updateViaCache: "none" });
+    }
+  </script>
+</body>
+
+</html>
