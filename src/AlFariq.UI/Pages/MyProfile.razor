@@ -1,0 +1,175 @@
+@page "/profil"
+@using AlFariq.Application
+@inject IStringLocalizer<Strings> L
+@inject ProfileService Profiles
+@inject IStoragePersistence StoragePersistence
+
+<PageTitle>@L["Profile_Title"] · @L["App_Name"]</PageTitle>
+
+<section class="page">
+    <h1>@L["Profile_Title"]</h1>
+
+    @if (_loadFailed)
+    {
+        <div class="card" role="alert">
+            <p>@L["Storage_Unavailable"]</p>
+        </div>
+    }
+    else if (_loaded)
+    {
+        <form class="card" @onsubmit="SaveAsync" @onsubmit:preventDefault @oninput="HideSavedMessage">
+            @if (!_exists)
+            {
+                <p>@L["Profile_Intro"]</p>
+            }
+
+            <div class="field">
+                <label for="nickname">@L["Profile_Nickname"]</label>
+                <input id="nickname" type="text" dir="auto" autocomplete="nickname" enterkeyhint="done"
+                       maxlength="@Profile.MaxNicknameLength"
+                       aria-required="true"
+                       aria-invalid="@(_nicknameMissing ? "true" : "false")"
+                       aria-describedby="@(_nicknameMissing ? "nickname-error" : null)"
+                       @bind="_nickname" @bind:event="oninput" />
+                @if (_nicknameMissing)
+                {
+                    <p id="nickname-error" class="field__error" role="alert">@L["Profile_NicknameRequired"]</p>
+                }
+            </div>
+
+            <div class="field">
+                <label for="sport">@L["Profile_Sport"]</label>
+                <select id="sport" @bind="_sportCode" @bind:after="ClearForeignPosition">
+                    @foreach (var sport in SportCatalog.All)
+                    {
+                        <option @key="sport.Code" value="@sport.Code">@L[SportLabels.SportKey(sport.Code)]</option>
+                    }
+                </select>
+            </div>
+
+            <div class="field">
+                <label for="position">@L["Profile_Position"]</label>
+                <select id="position" @bind="_positionCode">
+                    <option value="">@L["Profile_NoPosition"]</option>
+                    @foreach (var positionCode in CurrentSport.PositionCodes)
+                    {
+                        <option @key="positionCode" value="@positionCode">@L[SportLabels.PositionKey(positionCode)]</option>
+                    }
+                </select>
+            </div>
+
+            <div class="actions">
+                <button type="submit" class="button" disabled="@_saving">
+                    @(_exists ? L["Profile_Save"] : L["Profile_Create"])
+                </button>
+            </div>
+
+            @if (_saveFailed)
+            {
+                <p class="field__error" role="alert">@L["Profile_SaveFailed"]</p>
+            }
+        </form>
+
+        <div role="status">
+            @if (_saved)
+            {
+                <p class="form-success">@L["Profile_Saved"]</p>
+            }
+        </div>
+
+        if (_saved)
+        {
+            <div class="actions">
+                <a class="button button--ghost" href="">@L["NotFound_Back"]</a>
+            </div>
+        }
+    }
+</section>
+
+@code {
+    private string _nickname = "";
+    private string _sportCode = SportCatalog.FootballCode;
+    private string _positionCode = "";
+    private bool _loaded;
+    private bool _loadFailed;
+    private bool _exists;
+    private bool _saving;
+    private bool _saved;
+    private bool _saveFailed;
+    private bool _nicknameMissing;
+
+    private Sport CurrentSport => SportCatalog.Find(_sportCode) ?? SportCatalog.Default;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var profile = await Profiles.GetAsync();
+            if (profile is not null)
+            {
+                _exists = true;
+                _nickname = profile.Nickname;
+                _sportCode = SportCatalog.Find(profile.SportCode)?.Code ?? SportCatalog.Default.Code;
+                _positionCode = profile.PreferredPositionCode ?? "";
+                ClearForeignPosition();
+            }
+
+            _loaded = true;
+        }
+        catch (Exception exception)
+        {
+            // Pas de formulaire si le profil n'a pas pu être lu : on risquerait de l'écraser.
+            Console.Error.WriteLine(exception);
+            _loadFailed = true;
+        }
+    }
+
+    /// <summary>Un poste appartient à un sport : il est effacé quand le sport change.</summary>
+    private void ClearForeignPosition()
+    {
+        if (!CurrentSport.HasPosition(_positionCode))
+        {
+            _positionCode = "";
+        }
+    }
+
+    private void HideSavedMessage() => _saved = false;
+
+    private async Task SaveAsync()
+    {
+        if (_saving)
+        {
+            return;
+        }
+
+        _saved = false;
+        _saveFailed = false;
+        _nicknameMissing = string.IsNullOrWhiteSpace(_nickname);
+        if (_nicknameMissing)
+        {
+            return;
+        }
+
+        _saving = true;
+        try
+        {
+            var position = _positionCode.Length == 0 ? null : _positionCode;
+            var profile = await Profiles.SaveAsync(new ProfileInput(_nickname, _sportCode, position));
+            _nickname = profile.Nickname;
+            _exists = true;
+            _saved = true;
+
+            // US-002 : des données viennent d'être saisies, on redemande au navigateur de les conserver.
+            await StoragePersistence.RequestAsync();
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _saveFailed = true;
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}

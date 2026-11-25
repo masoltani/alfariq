@@ -28,9 +28,16 @@ public static class LocalSchema
     /// <summary>Magasin technique (identifiant d'appareil, réglages internes).</summary>
     public const string MetaStore = "meta";
 
+    /// <summary>Profil local (US-004).</summary>
+    public const string ProfilesStore = "profiles";
+
+    /// <summary>Répertoire de joueurs (US-004, complété par US-005).</summary>
+    public const string PlayersStore = "players";
+
     public static IReadOnlyList<SchemaMigration> Migrations { get; } =
     [
         new SchemaMigration(1, [new StoreDefinition(MetaStore)]),
+        new SchemaMigration(2, [new StoreDefinition(ProfilesStore), new StoreDefinition(PlayersStore)]),
     ];
 
     public static int CurrentVersion => Migrations[Migrations.Count - 1].Version;

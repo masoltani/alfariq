@@ -1,0 +1,1072 @@
+diff --git a/Directory.Build.props b/Directory.Build.props
+index 44b6407..cb7f6cf 100644
+--- a/Directory.Build.props
++++ b/Directory.Build.props
+@@ -6,7 +6,7 @@
+     <Nullable>enable</Nullable>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <AnalysisLevel>latest</AnalysisLevel>
+-    <Version>0.4.0</Version>
++    <Version>0.5.0</Version>
+     <Deterministic>true</Deterministic>
+   </PropertyGroup>
+ 
+diff --git a/docs/user-stories.md b/docs/user-stories.md
+index 31e6859..b288c8d 100644
+--- a/docs/user-stories.md
++++ b/docs/user-stories.md
+@@ -107,6 +107,8 @@ Critères d'acceptation :
+ - Le profil local est modifiable et persiste après fermeture de l'appli.
+ - Je suis ajouté automatiquement à mon répertoire de joueurs.
+ 
++**Note (US-004)** : le catalogue des sports et des postes est dans `SportCatalog` (domaine). Le joueur « moi » est lié au profil par `Player.ProfileId` ; son nom et son poste sont réécrits à chaque enregistrement du profil. US-005 décidera s'il peut être modifié, archivé ou supprimé depuis le répertoire.
++
+ ### US-005 — Gérer mon répertoire de joueurs
+ En tant qu'organisateur, je veux ajouter, modifier, archiver et retrouver des joueurs (nom, poste préféré, niveau perçu optionnel) afin de composer rapidement mes matchs.
+ Priorité : M — Taille : M — Dépend de : US-002
+diff --git a/src/AlFariq.Application/DependencyInjection.cs b/src/AlFariq.Application/DependencyInjection.cs
+index 3d062bb..4b5b286 100644
+--- a/src/AlFariq.Application/DependencyInjection.cs
++++ b/src/AlFariq.Application/DependencyInjection.cs
+@@ -5,11 +5,13 @@ namespace AlFariq.Application;
+ 
+ public static class DependencyInjection
+ {
+-    /// <summary>Enregistre les cas d'usage de l'application (les premiers arrivent avec US-004).</summary>
++    /// <summary>Enregistre les cas d'usage de l'application.</summary>
++    /// <remarks>Les dépôts qu'ils utilisent sont enregistrés par l'hôte.</remarks>
+     public static IServiceCollection AddAlFariqApplication(this IServiceCollection services)
+     {
+         // US-003 : sans matchs pour l'instant. Un enregistrement ultérieur (US-006) prend le dessus.
+         services.TryAddSingleton<IUpcomingMatchQuery, NoUpcomingMatchQuery>();
++        services.TryAddSingleton<ProfileService>();
+         return services;
+     }
+ }
+diff --git a/src/AlFariq.Application/ProfileService.cs b/src/AlFariq.Application/ProfileService.cs
+new file mode 100644
+index 0000000..7edd113
+--- /dev/null
++++ b/src/AlFariq.Application/ProfileService.cs
+@@ -0,0 +1,98 @@
++using AlFariq.Domain;
++
++namespace AlFariq.Application;
++
++/// <summary>Saisie du profil. Seul le pseudo est obligatoire.</summary>
++public sealed record ProfileInput(
++    string Nickname,
++    string SportCode = SportCatalog.FootballCode,
++    string? PreferredPositionCode = null);
++
++/// <summary>
++/// Création et modification du profil local (US-004). La personne du profil figure aussi dans le répertoire
++/// de joueurs : le joueur correspondant est créé puis tenu à jour à chaque enregistrement.
++/// </summary>
++public sealed class ProfileService
++{
++    private readonly IRepository<Profile> _profiles;
++    private readonly IRepository<Player> _players;
++
++    // Un enregistrement à la fois : deux envois rapprochés ne doivent pas créer deux profils.
++    private readonly SemaphoreSlim _saveGate = new(1, 1);
++
++    public ProfileService(IRepository<Profile> profiles, IRepository<Player> players)
++    {
++        _profiles = profiles;
++        _players = players;
++    }
++
++    /// <summary>Le profil local, ou null s'il n'a pas encore été créé.</summary>
++    public async Task<Profile?> GetAsync(CancellationToken cancellationToken = default)
++    {
++        var profiles = await _profiles.ListAsync(cancellationToken: cancellationToken);
++        return profiles.Count > 0 ? profiles[0] : null;
++    }
++
++    /// <summary>Crée le profil ou le modifie. Peut être relancé sans créer de doublon.</summary>
++    /// <exception cref="ArgumentException">Pseudo vide ou trop long, sport inconnu, poste d'un autre sport.</exception>
++    public async Task<Profile> SaveAsync(ProfileInput input, CancellationToken cancellationToken = default)
++    {
++        ArgumentNullException.ThrowIfNull(input);
++
++        var nickname = (input.Nickname ?? "").Trim();
++        if (nickname.Length == 0 || nickname.Length > Profile.MaxNicknameLength)
++        {
++            throw new ArgumentException(
++                $"Le pseudo doit contenir de 1 à {Profile.MaxNicknameLength} caractères.", nameof(input));
++        }
++
++        var sport = SportCatalog.Find(input.SportCode)
++            ?? throw new ArgumentException($"Sport inconnu : « {input.SportCode} ».", nameof(input));
++
++        if (input.PreferredPositionCode is not null && !sport.HasPosition(input.PreferredPositionCode))
++        {
++            throw new ArgumentException(
++                $"Le poste « {input.PreferredPositionCode} » n'existe pas dans ce sport.", nameof(input));
++        }
++
++        await _saveGate.WaitAsync(cancellationToken);
++        try
++        {
++            var existing = await GetAsync(cancellationToken);
++            var profile = existing ?? new Profile();
++            profile.Nickname = nickname;
++            profile.SportCode = sport.Code;
++            profile.PreferredPositionCode = input.PreferredPositionCode;
++
++            profile = existing is null
++                ? await _profiles.AddAsync(profile, cancellationToken)
++                : await _profiles.UpdateAsync(profile, cancellationToken);
++
++            await SaveOwnPlayerAsync(profile, cancellationToken);
++            return profile;
++        }
++        finally
++        {
++            _saveGate.Release();
++        }
++    }
++
++    // Les deux écritures ne sont pas atomiques : si celle-ci échoue, l'enregistrement suivant la rattrape.
++    private async Task SaveOwnPlayerAsync(Profile profile, CancellationToken cancellationToken)
++    {
++        var players = await _players.ListAsync(cancellationToken: cancellationToken);
++        var existing = players.FirstOrDefault(player => player.ProfileId == profile.Id);
++        var own = existing ?? new Player { ProfileId = profile.Id };
++        own.Name = profile.Nickname;
++        own.PreferredPositionCode = profile.PreferredPositionCode;
++
++        if (existing is null)
++        {
++            await _players.AddAsync(own, cancellationToken);
++        }
++        else
++        {
++            await _players.UpdateAsync(own, cancellationToken);
++        }
++    }
++}
+diff --git a/src/AlFariq.Client.Core/Storage/LocalSchema.cs b/src/AlFariq.Client.Core/Storage/LocalSchema.cs
+index 0812a8b..2211489 100644
+--- a/src/AlFariq.Client.Core/Storage/LocalSchema.cs
++++ b/src/AlFariq.Client.Core/Storage/LocalSchema.cs
+@@ -28,9 +28,16 @@ public static class LocalSchema
+     /// <summary>Magasin technique (identifiant d'appareil, réglages internes).</summary>
+     public const string MetaStore = "meta";
+ 
++    /// <summary>Profil local (US-004).</summary>
++    public const string ProfilesStore = "profiles";
++
++    /// <summary>Répertoire de joueurs (US-004, complété par US-005).</summary>
++    public const string PlayersStore = "players";
++
+     public static IReadOnlyList<SchemaMigration> Migrations { get; } =
+     [
+         new SchemaMigration(1, [new StoreDefinition(MetaStore)]),
++        new SchemaMigration(2, [new StoreDefinition(ProfilesStore), new StoreDefinition(PlayersStore)]),
+     ];
+ 
+     public static int CurrentVersion => Migrations[Migrations.Count - 1].Version;
+diff --git a/src/AlFariq.Domain/Players/Player.cs b/src/AlFariq.Domain/Players/Player.cs
+new file mode 100644
+index 0000000..ee572e1
+--- /dev/null
++++ b/src/AlFariq.Domain/Players/Player.cs
+@@ -0,0 +1,12 @@
++namespace AlFariq.Domain;
++
++/// <summary>Joueur du répertoire. US-005 le complétera (niveau perçu, archivage).</summary>
++public sealed class Player : Entity
++{
++    public string Name { get; set; } = "";
++
++    public string? PreferredPositionCode { get; set; }
++
++    /// <summary>Renseigné quand ce joueur est la personne du profil ; null pour les autres.</summary>
++    public Guid? ProfileId { get; set; }
++}
+diff --git a/src/AlFariq.Domain/Profiles/Profile.cs b/src/AlFariq.Domain/Profiles/Profile.cs
+new file mode 100644
+index 0000000..505ff96
+--- /dev/null
++++ b/src/AlFariq.Domain/Profiles/Profile.cs
+@@ -0,0 +1,16 @@
++namespace AlFariq.Domain;
++
++/// <summary>Profil local de la personne qui utilise l'appareil (US-004). Il n'y en a qu'un.</summary>
++public sealed class Profile : Entity
++{
++    public const int MaxNicknameLength = 40;
++
++    /// <summary>Nom ou pseudo (obligatoire, pas forcément unique).</summary>
++    public string Nickname { get; set; } = "";
++
++    /// <summary>Sport par défaut (code de <see cref="SportCatalog"/>).</summary>
++    public string SportCode { get; set; } = SportCatalog.FootballCode;
++
++    /// <summary>Poste préféré dans ce sport ; null si aucune préférence.</summary>
++    public string? PreferredPositionCode { get; set; }
++}
+diff --git a/src/AlFariq.Domain/Releases/changelog.json b/src/AlFariq.Domain/Releases/changelog.json
+index dc36b68..24d3fc3 100644
+--- a/src/AlFariq.Domain/Releases/changelog.json
++++ b/src/AlFariq.Domain/Releases/changelog.json
+@@ -1,5 +1,27 @@
+ {
+   "entries": [
++    {
++      "version": "0.5.0",
++      "date": "2026-11-25",
++      "changes": [
++        {
++          "type": "added",
++          "text": {
++            "fr": "Crée ton profil sans compte : pseudo, sport par défaut et poste préféré.",
++            "en": "Create your profile without an account: nickname, default sport and preferred position.",
++            "ar": "أنشئ ملفك الشخصي دون حساب: الاسم المستعار والرياضة الافتراضية والمركز المفضل."
++          }
++        },
++        {
++          "type": "added",
++          "text": {
++            "fr": "Tu figures automatiquement dans ton répertoire de joueurs.",
++            "en": "You are automatically added to your player list.",
++            "ar": "تتم إضافتك تلقائيًا إلى قائمة لاعبيك."
++          }
++        }
++      ]
++    },
+     {
+       "version": "0.4.0",
+       "date": "2026-11-25",
+diff --git a/src/AlFariq.Domain/Sports/Sport.cs b/src/AlFariq.Domain/Sports/Sport.cs
+new file mode 100644
+index 0000000..d9675c9
+--- /dev/null
++++ b/src/AlFariq.Domain/Sports/Sport.cs
+@@ -0,0 +1,9 @@
++namespace AlFariq.Domain;
++
++/// <summary>Un sport du catalogue : son code et les postes qu'on peut y préférer.</summary>
++/// <param name="Code">Identifiant stable, enregistré avec les données (ne jamais le renommer).</param>
++/// <param name="PositionCodes">Codes de postes, préfixés par le sport (« football.goalkeeper »).</param>
++public sealed record Sport(string Code, IReadOnlyList<string> PositionCodes)
++{
++    public bool HasPosition(string? positionCode) => positionCode is not null && PositionCodes.Contains(positionCode);
++}
+diff --git a/src/AlFariq.Domain/Sports/SportCatalog.cs b/src/AlFariq.Domain/Sports/SportCatalog.cs
+new file mode 100644
+index 0000000..e5321c6
+--- /dev/null
++++ b/src/AlFariq.Domain/Sports/SportCatalog.cs
+@@ -0,0 +1,28 @@
++namespace AlFariq.Domain;
++
++/// <summary>
++/// Catalogue des sports livré avec l'application. Pour ajouter un sport ou un poste : l'ajouter ici,
++/// puis ajouter son libellé dans les traductions (un test signale tout libellé manquant).
++/// </summary>
++public static class SportCatalog
++{
++    public const string FootballCode = "football";
++
++    /// <summary>Les sports proposés ; le premier est le sport par défaut.</summary>
++    public static IReadOnlyList<Sport> All { get; } =
++    [
++        Create(FootballCode, "goalkeeper", "defender", "midfielder", "forward"),
++        Create("futsal", "goalkeeper", "defender", "winger", "pivot"),
++        Create("basketball", "guard", "forward", "center"),
++        Create("handball", "goalkeeper", "winger", "back", "pivot"),
++        Create("volleyball", "setter", "outside", "opposite", "middle", "libero"),
++    ];
++
++    public static Sport Default => All[0];
++
++    /// <summary>Le sport portant ce code, ou null s'il est inconnu.</summary>
++    public static Sport? Find(string? code) => All.FirstOrDefault(sport => sport.Code == code);
++
++    private static Sport Create(string code, params string[] positions) =>
++        new(code, positions.Select(position => $"{code}.{position}").ToArray());
++}
+diff --git a/src/AlFariq.UI/Pages/Home.razor b/src/AlFariq.UI/Pages/Home.razor
+index 14f8eac..c11576b 100644
+--- a/src/AlFariq.UI/Pages/Home.razor
++++ b/src/AlFariq.UI/Pages/Home.razor
+@@ -2,15 +2,25 @@
+ @using AlFariq.Application
+ @inject IStringLocalizer<Strings> L
+ @inject IUpcomingMatchQuery UpcomingMatches
++@inject ProfileService Profiles
+ 
+ <PageTitle>@L["App_Name"]</PageTitle>
+ 
+ <section class="page">
+-    <h1>@L["Home_Welcome"]</h1>
++    <h1>@(_profile is null ? L["Home_Welcome"] : L["Home_Greeting", _profile.Nickname])</h1>
+ 
+     @* Rien tant que la lecture n'est pas finie : l'état vide ne doit pas apparaître puis disparaître. *@
+     @if (_loaded)
+     {
++        if (_profileMissing)
++        {
++            <div class="card">
++                <h2>@L["Home_ProfileTitle"]</h2>
++                <p>@L["Home_ProfileHint"]</p>
++                <a class="button button--small button--ghost" href="profil">@L["Profile_Create"]</a>
++            </div>
++        }
++
+         if (_nextMatch is not null)
+         {
+             <NextMatchCard Match="_nextMatch" />
+@@ -38,11 +48,28 @@
+ 
+ @code {
+     private UpcomingMatch? _nextMatch;
++    private Profile? _profile;
++    private bool _profileMissing;
+     private bool _loaded;
+ 
+     protected override async Task OnInitializedAsync()
+     {
++        await LoadProfileAsync();
+         _nextMatch = await UpcomingMatches.GetNextAsync();
+         _loaded = true;
+     }
++
++    private async Task LoadProfileAsync()
++    {
++        try
++        {
++            _profile = await Profiles.GetAsync();
++            _profileMissing = _profile is null;
++        }
++        catch (Exception exception)
++        {
++            // L'accueil reste utilisable ; l'écran du profil explique le problème.
++            Console.Error.WriteLine(exception);
++        }
++    }
+ }
+diff --git a/src/AlFariq.UI/Pages/More.razor b/src/AlFariq.UI/Pages/More.razor
+index d60b6e3..7af4b60 100644
+--- a/src/AlFariq.UI/Pages/More.razor
++++ b/src/AlFariq.UI/Pages/More.razor
+@@ -6,6 +6,12 @@
+ <section class="page">
+     <h1>@L["More_Title"]</h1>
+ 
++    <div class="card">
++        <h2>@L["Profile_Title"]</h2>
++        <p>@L["Profile_MoreHint"]</p>
++        <a class="button button--small button--ghost" href="profil">@L["Profile_Open"]</a>
++    </div>
++
+     <div class="card">
+         <ThemeSelector />
+     </div>
+diff --git a/src/AlFariq.UI/Pages/MyProfile.razor b/src/AlFariq.UI/Pages/MyProfile.razor
+new file mode 100644
+index 0000000..c8f3580
+--- /dev/null
++++ b/src/AlFariq.UI/Pages/MyProfile.razor
+@@ -0,0 +1,175 @@
++@page "/profil"
++@using AlFariq.Application
++@inject IStringLocalizer<Strings> L
++@inject ProfileService Profiles
++@inject IStoragePersistence StoragePersistence
++
++<PageTitle>@L["Profile_Title"] · @L["App_Name"]</PageTitle>
++
++<section class="page">
++    <h1>@L["Profile_Title"]</h1>
++
++    @if (_loadFailed)
++    {
++        <div class="card" role="alert">
++            <p>@L["Storage_Unavailable"]</p>
++        </div>
++    }
++    else if (_loaded)
++    {
++        <form class="card" @onsubmit="SaveAsync" @onsubmit:preventDefault @oninput="HideSavedMessage">
++            @if (!_exists)
++            {
++                <p>@L["Profile_Intro"]</p>
++            }
++
++            <div class="field">
++                <label for="nickname">@L["Profile_Nickname"]</label>
++                <input id="nickname" type="text" dir="auto" autocomplete="nickname" enterkeyhint="done"
++                       maxlength="@Profile.MaxNicknameLength"
++                       aria-required="true"
++                       aria-invalid="@(_nicknameMissing ? "true" : "false")"
++                       aria-describedby="@(_nicknameMissing ? "nickname-error" : null)"
++                       @bind="_nickname" @bind:event="oninput" />
++                @if (_nicknameMissing)
++                {
++                    <p id="nickname-error" class="field__error" role="alert">@L["Profile_NicknameRequired"]</p>
++                }
++            </div>
++
++            <div class="field">
++                <label for="sport">@L["Profile_Sport"]</label>
++                <select id="sport" @bind="_sportCode" @bind:after="ClearForeignPosition">
++                    @foreach (var sport in SportCatalog.All)
++                    {
++                        <option @key="sport.Code" value="@sport.Code">@L[SportLabels.SportKey(sport.Code)]</option>
++                    }
++                </select>
++            </div>
++
++            <div class="field">
++                <label for="position">@L["Profile_Position"]</label>
++                <select id="position" @bind="_positionCode">
++                    <option value="">@L["Profile_NoPosition"]</option>
++                    @foreach (var positionCode in CurrentSport.PositionCodes)
++                    {
++                        <option @key="positionCode" value="@positionCode">@L[SportLabels.PositionKey(positionCode)]</option>
++                    }
++                </select>
++            </div>
++
++            <div class="actions">
++                <button type="submit" class="button" disabled="@_saving">
++                    @(_exists ? L["Profile_Save"] : L["Profile_Create"])
++                </button>
++            </div>
++
++            @if (_saveFailed)
++            {
++                <p class="field__error" role="alert">@L["Profile_SaveFailed"]</p>
++            }
++        </form>
++
++        <div role="status">
++            @if (_saved)
++            {
++                <p class="form-success">@L["Profile_Saved"]</p>
++            }
++        </div>
++
++        if (_saved)
++        {
++            <div class="actions">
++                <a class="button button--ghost" href="">@L["NotFound_Back"]</a>
++            </div>
++        }
++    }
++</section>
++
++@code {
++    private string _nickname = "";
++    private string _sportCode = SportCatalog.FootballCode;
++    private string _positionCode = "";
++    private bool _loaded;
++    private bool _loadFailed;
++    private bool _exists;
++    private bool _saving;
++    private bool _saved;
++    private bool _saveFailed;
++    private bool _nicknameMissing;
++
++    private Sport CurrentSport => SportCatalog.Find(_sportCode) ?? SportCatalog.Default;
++
++    protected override async Task OnInitializedAsync()
++    {
++        try
++        {
++            var profile = await Profiles.GetAsync();
++            if (profile is not null)
++            {
++                _exists = true;
++                _nickname = profile.Nickname;
++                _sportCode = SportCatalog.Find(profile.SportCode)?.Code ?? SportCatalog.Default.Code;
++                _positionCode = profile.PreferredPositionCode ?? "";
++                ClearForeignPosition();
++            }
++
++            _loaded = true;
++        }
++        catch (Exception exception)
++        {
++            // Pas de formulaire si le profil n'a pas pu être lu : on risquerait de l'écraser.
++            Console.Error.WriteLine(exception);
++            _loadFailed = true;
++        }
++    }
++
++    /// <summary>Un poste appartient à un sport : il est effacé quand le sport change.</summary>
++    private void ClearForeignPosition()
++    {
++        if (!CurrentSport.HasPosition(_positionCode))
++        {
++            _positionCode = "";
++        }
++    }
++
++    private void HideSavedMessage() => _saved = false;
++
++    private async Task SaveAsync()
++    {
++        if (_saving)
++        {
++            return;
++        }
++
++        _saved = false;
++        _saveFailed = false;
++        _nicknameMissing = string.IsNullOrWhiteSpace(_nickname);
++        if (_nicknameMissing)
++        {
++            return;
++        }
++
++        _saving = true;
++        try
++        {
++            var position = _positionCode.Length == 0 ? null : _positionCode;
++            var profile = await Profiles.SaveAsync(new ProfileInput(_nickname, _sportCode, position));
++            _nickname = profile.Nickname;
++            _exists = true;
++            _saved = true;
++
++            // US-002 : des données viennent d'être saisies, on redemande au navigateur de les conserver.
++            await StoragePersistence.RequestAsync();
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _saveFailed = true;
++        }
++        finally
++        {
++            _saving = false;
++        }
++    }
++}
+diff --git a/src/AlFariq.UI/Pages/Players.razor b/src/AlFariq.UI/Pages/Players.razor
+index 8e66929..3bb4cf2 100644
+--- a/src/AlFariq.UI/Pages/Players.razor
++++ b/src/AlFariq.UI/Pages/Players.razor
+@@ -1,11 +1,67 @@
+ @page "/joueurs"
++@using AlFariq.Application
+ @inject IStringLocalizer<Strings> L
++@inject IRepository<Player> PlayerRepository
+ 
+ <PageTitle>@L["Players_Title"] · @L["App_Name"]</PageTitle>
+ 
++@* Liste en lecture seule ; l'ajout, la recherche et l'archivage arrivent avec US-005. *@
+ <section class="page">
+     <h1>@L["Players_Title"]</h1>
+-    <div class="card card--empty">
+-        <p>@L["Section_ComingSoon"]</p>
+-    </div>
++
++    @if (_loadFailed)
++    {
++        <div class="card" role="alert">
++            <p>@L["Storage_Unavailable"]</p>
++        </div>
++    }
++    else if (_players is not null)
++    {
++        if (_players.Count == 0)
++        {
++            <div class="card">
++                <p>@L["Players_Empty"]</p>
++                <a class="button button--small button--ghost" href="profil">@L["Profile_Create"]</a>
++            </div>
++        }
++        else
++        {
++            <ul class="card player-list">
++                @foreach (var player in _players)
++                {
++                    <li @key="player.Id">
++                        <span class="player-list__name" dir="auto">@player.Name</span>
++                        @if (player.ProfileId is not null)
++                        {
++                            <span class="badge">@L["Players_Me"]</span>
++                        }
++                        @if (player.PreferredPositionCode is { } position)
++                        {
++                            <span class="player-list__position">@L[SportLabels.PositionKey(position)]</span>
++                        }
++                    </li>
++                }
++            </ul>
++        }
++
++        <p class="hint">@L["Players_ComingSoon"]</p>
++    }
+ </section>
++
++@code {
++    private IReadOnlyList<Player>? _players;
++    private bool _loadFailed;
++
++    protected override async Task OnInitializedAsync()
++    {
++        try
++        {
++            _players = await PlayerRepository.ListAsync();
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _loadFailed = true;
++        }
++    }
++}
+diff --git a/src/AlFariq.UI/Resources/SportLabels.cs b/src/AlFariq.UI/Resources/SportLabels.cs
+new file mode 100644
+index 0000000..61f5dab
+--- /dev/null
++++ b/src/AlFariq.UI/Resources/SportLabels.cs
+@@ -0,0 +1,9 @@
++namespace AlFariq.UI.Resources;
++
++/// <summary>Clés de traduction des sports et des postes du catalogue.</summary>
++public static class SportLabels
++{
++    public static string SportKey(string sportCode) => $"Sport_{sportCode}";
++
++    public static string PositionKey(string positionCode) => $"Position_{positionCode.Replace('.', '_')}";
++}
+diff --git a/src/AlFariq.UI/Resources/Strings.resx b/src/AlFariq.UI/Resources/Strings.resx
+index 1689ab0..642ef47 100644
+--- a/src/AlFariq.UI/Resources/Strings.resx
++++ b/src/AlFariq.UI/Resources/Strings.resx
+@@ -34,11 +34,58 @@
+   <data name="Home_MatchDate" xml:space="preserve"><value>{0} à {1}</value></data>
+   <data name="Home_MatchFormat" xml:space="preserve"><value>{0} contre {0}</value></data>
+   <data name="Home_SeeMatches" xml:space="preserve"><value>Voir les matchs</value></data>
++  <data name="Home_Greeting" xml:space="preserve"><value>Bonjour {0}</value></data>
++  <data name="Home_ProfileTitle" xml:space="preserve"><value>Crée ton profil</value></data>
++  <data name="Home_ProfileHint" xml:space="preserve"><value>Un pseudo suffit, sans compte.</value></data>
++
++  <data name="Profile_Title" xml:space="preserve"><value>Mon profil</value></data>
++  <data name="Profile_Intro" xml:space="preserve"><value>Seul le pseudo est obligatoire. Ton profil reste sur cet appareil.</value></data>
++  <data name="Profile_Nickname" xml:space="preserve"><value>Nom ou pseudo</value></data>
++  <data name="Profile_NicknameRequired" xml:space="preserve"><value>Indique ton nom ou un pseudo.</value></data>
++  <data name="Profile_Sport" xml:space="preserve"><value>Sport par défaut</value></data>
++  <data name="Profile_Position" xml:space="preserve"><value>Poste préféré (facultatif)</value></data>
++  <data name="Profile_NoPosition" xml:space="preserve"><value>Pas de préférence</value></data>
++  <data name="Profile_Create" xml:space="preserve"><value>Créer mon profil</value></data>
++  <data name="Profile_Save" xml:space="preserve"><value>Enregistrer</value></data>
++  <data name="Profile_Saved" xml:space="preserve"><value>Profil enregistré.</value></data>
++  <data name="Profile_SaveFailed" xml:space="preserve"><value>Ton profil n'a pas pu être enregistré. Réessaie.</value></data>
++  <data name="Profile_MoreHint" xml:space="preserve"><value>Ton pseudo, ton sport et ton poste préféré.</value></data>
++  <data name="Profile_Open" xml:space="preserve"><value>Ouvrir mon profil</value></data>
++  <data name="Storage_Unavailable" xml:space="preserve"><value>Impossible d'accéder aux données de cet appareil. Vérifie que le navigateur autorise le stockage, puis recharge l'appli.</value></data>
++
++  <data name="Sport_football" xml:space="preserve"><value>Football</value></data>
++  <data name="Sport_futsal" xml:space="preserve"><value>Futsal</value></data>
++  <data name="Sport_basketball" xml:space="preserve"><value>Basketball</value></data>
++  <data name="Sport_handball" xml:space="preserve"><value>Handball</value></data>
++  <data name="Sport_volleyball" xml:space="preserve"><value>Volleyball</value></data>
++  <data name="Position_football_goalkeeper" xml:space="preserve"><value>Gardien</value></data>
++  <data name="Position_football_defender" xml:space="preserve"><value>Défenseur</value></data>
++  <data name="Position_football_midfielder" xml:space="preserve"><value>Milieu</value></data>
++  <data name="Position_football_forward" xml:space="preserve"><value>Attaquant</value></data>
++  <data name="Position_futsal_goalkeeper" xml:space="preserve"><value>Gardien</value></data>
++  <data name="Position_futsal_defender" xml:space="preserve"><value>Fixe</value></data>
++  <data name="Position_futsal_winger" xml:space="preserve"><value>Ailier</value></data>
++  <data name="Position_futsal_pivot" xml:space="preserve"><value>Pivot</value></data>
++  <data name="Position_basketball_guard" xml:space="preserve"><value>Arrière</value></data>
++  <data name="Position_basketball_forward" xml:space="preserve"><value>Ailier</value></data>
++  <data name="Position_basketball_center" xml:space="preserve"><value>Pivot</value></data>
++  <data name="Position_handball_goalkeeper" xml:space="preserve"><value>Gardien</value></data>
++  <data name="Position_handball_winger" xml:space="preserve"><value>Ailier</value></data>
++  <data name="Position_handball_back" xml:space="preserve"><value>Arrière</value></data>
++  <data name="Position_handball_pivot" xml:space="preserve"><value>Pivot</value></data>
++  <data name="Position_volleyball_setter" xml:space="preserve"><value>Passeur</value></data>
++  <data name="Position_volleyball_outside" xml:space="preserve"><value>Réceptionneur-attaquant</value></data>
++  <data name="Position_volleyball_opposite" xml:space="preserve"><value>Pointu</value></data>
++  <data name="Position_volleyball_middle" xml:space="preserve"><value>Central</value></data>
++  <data name="Position_volleyball_libero" xml:space="preserve"><value>Libéro</value></data>
+ 
+   <data name="NewMatch_Title" xml:space="preserve"><value>Nouveau match</value></data>
+ 
+   <data name="Matches_Title" xml:space="preserve"><value>Matchs</value></data>
+   <data name="Players_Title" xml:space="preserve"><value>Joueurs</value></data>
++  <data name="Players_Empty" xml:space="preserve"><value>Ton répertoire est vide. Crée ton profil pour y figurer.</value></data>
++  <data name="Players_Me" xml:space="preserve"><value>Moi</value></data>
++  <data name="Players_ComingSoon" xml:space="preserve"><value>L'ajout d'autres joueurs arrive bientôt.</value></data>
+   <data name="More_Title" xml:space="preserve"><value>Plus</value></data>
+   <data name="Section_ComingSoon" xml:space="preserve"><value>Cette section arrive bientôt.</value></data>
+ 
+diff --git a/src/AlFariq.UI/wwwroot/css/app.css b/src/AlFariq.UI/wwwroot/css/app.css
+index ba71286..55cc21b 100644
+--- a/src/AlFariq.UI/wwwroot/css/app.css
++++ b/src/AlFariq.UI/wwwroot/css/app.css
+@@ -13,6 +13,7 @@
+   --color-banner-update-bg: #dff3ea;
+   --color-banner-update-text: #0a4a35;
+   --color-focus: #1a5fd0;
++  --color-error: #a11a1a;
+   --radius: 14px;
+   --nav-height: 64px;
+   --gutter: 16px;
+@@ -33,6 +34,7 @@
+     --color-banner-update-bg: #123a2c;
+     --color-banner-update-text: #c9f2e0;
+     --color-focus: #7db1ff;
++    --color-error: #ff9d9d;
+     color-scheme: dark;
+   }
+ }
+@@ -50,6 +52,7 @@
+   --color-banner-update-bg: #123a2c;
+   --color-banner-update-text: #c9f2e0;
+   --color-focus: #7db1ff;
++  --color-error: #ff9d9d;
+   color-scheme: dark;
+ }
+ 
+@@ -221,6 +224,93 @@ h1:focus {
+   overflow-wrap: anywhere;
+ }
+ 
++/* ---------- Formulaires ---------- */
++
++.field {
++  display: flex;
++  flex-direction: column;
++  gap: 0.25rem;
++  margin-top: var(--gutter);
++}
++
++.field:first-child {
++  margin-top: 0;
++}
++
++.field label {
++  font-weight: 600;
++}
++
++.field input,
++.field select {
++  width: 100%;
++  min-height: 44px;
++  padding: 0 0.75rem;
++  border: 1px solid var(--color-muted);
++  border-radius: 10px;
++  background: var(--color-surface);
++  color: var(--color-text);
++  font: inherit; /* 1rem au moins : évite le zoom automatique d'iOS à la saisie */
++}
++
++.field input[aria-invalid="true"] {
++  border-color: var(--color-error);
++}
++
++.field__error {
++  margin: 0.5rem 0 0;
++  color: var(--color-error);
++}
++
++.button:disabled {
++  opacity: 0.6;
++  cursor: progress;
++}
++
++.form-success {
++  margin: var(--gutter) 0 0;
++  font-weight: 600;
++  text-align: center;
++}
++
++/* ---------- Répertoire de joueurs ---------- */
++
++.player-list {
++  padding-block: 0;
++  list-style: none;
++}
++
++.player-list li {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  gap: 0.25rem 0.5rem;
++  padding: 0.75rem 0;
++}
++
++.player-list li + li {
++  border-top: 1px solid var(--color-border);
++}
++
++.player-list__name {
++  font-weight: 600;
++  overflow-wrap: anywhere;
++}
++
++.player-list__position {
++  margin-inline-start: auto;
++  color: var(--color-muted);
++}
++
++.badge {
++  padding: 0.125rem 0.625rem;
++  border-radius: 999px;
++  background: var(--color-banner-update-bg);
++  color: var(--color-banner-update-text);
++  font-size: 0.8125rem;
++  font-weight: 600;
++}
++
+ /* ---------- Bandeaux ---------- */
+ 
+ .banner {
+diff --git a/src/AlFariq.Web/Program.cs b/src/AlFariq.Web/Program.cs
+index 5345a38..ee767bc 100644
+--- a/src/AlFariq.Web/Program.cs
++++ b/src/AlFariq.Web/Program.cs
+@@ -1,6 +1,8 @@
+ using System.Globalization;
+ using AlFariq.Application;
+ using AlFariq.Client.Core;
++using AlFariq.Client.Core.Storage;
++using AlFariq.Domain;
+ using AlFariq.UI;
+ using Microsoft.AspNetCore.Components.Web;
+ using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
+@@ -18,6 +20,8 @@ builder.RootComponents.Add<HeadOutlet>("head::after");
+ builder.Services
+     .AddAlFariqApplication()
+     .AddAlFariqClientCore()
++    .AddLocalRepository<Profile>(LocalSchema.ProfilesStore)
++    .AddLocalRepository<Player>(LocalSchema.PlayersStore)
+     .AddAlFariqUi();
+ 
+ await builder.Build().RunAsync();
+diff --git a/tests/AlFariq.Client.Core.Tests/ProfileServiceTests.cs b/tests/AlFariq.Client.Core.Tests/ProfileServiceTests.cs
+new file mode 100644
+index 0000000..7fac4ee
+--- /dev/null
++++ b/tests/AlFariq.Client.Core.Tests/ProfileServiceTests.cs
+@@ -0,0 +1,125 @@
++using AlFariq.Application;
++using AlFariq.Client.Core.Storage;
++using AlFariq.Domain;
++using Microsoft.Extensions.DependencyInjection;
++
++namespace AlFariq.Client.Core.Tests;
++
++public class ProfileServiceTests
++{
++    private readonly InMemoryDocumentStore _store = new();
++
++    /// <summary>Une application « neuve » sur le même stockage, comme après fermeture et réouverture.</summary>
++    private ServiceProvider StartApp()
++    {
++        var services = new ServiceCollection();
++        services.AddSingleton<IDocumentStore>(_store);
++        services.AddSingleton<TimeProvider>(new FakeClock());
++        services.AddAlFariqApplication();
++        services.AddLocalRepository<Profile>(LocalSchema.ProfilesStore);
++        services.AddLocalRepository<Player>(LocalSchema.PlayersStore);
++        return services.BuildServiceProvider();
++    }
++
++    private static ProfileService ProfilesOf(ServiceProvider app) => app.GetRequiredService<ProfileService>();
++
++    private static Task<IReadOnlyList<Player>> PlayersOf(ServiceProvider app) =>
++        app.GetRequiredService<IRepository<Player>>().ListAsync();
++
++    [Fact]
++    public async Task There_is_no_profile_at_first_launch()
++    {
++        using var app = StartApp();
++
++        Assert.Null(await ProfilesOf(app).GetAsync());
++    }
++
++    [Fact]
++    public async Task A_nickname_is_enough_and_football_is_the_default_sport()
++    {
++        using var app = StartApp();
++
++        var profile = await ProfilesOf(app).SaveAsync(new ProfileInput("  Sami  "));
++
++        Assert.Equal("Sami", profile.Nickname);
++        Assert.Equal(SportCatalog.FootballCode, profile.SportCode);
++        Assert.Null(profile.PreferredPositionCode);
++    }
++
++    [Fact]
++    public async Task Creating_the_profile_adds_me_to_the_players()
++    {
++        using var app = StartApp();
++
++        var profile = await ProfilesOf(app).SaveAsync(
++            new ProfileInput("Sami", PreferredPositionCode: "football.forward"));
++
++        var me = Assert.Single(await PlayersOf(app));
++        Assert.Equal(profile.Id, me.ProfileId);
++        Assert.Equal("Sami", me.Name);
++        Assert.Equal("football.forward", me.PreferredPositionCode);
++    }
++
++    [Fact]
++    public async Task Saving_again_updates_the_same_profile_and_player()
++    {
++        using var app = StartApp();
++        var first = await ProfilesOf(app).SaveAsync(new ProfileInput("Sami"));
++        var playerId = Assert.Single(await PlayersOf(app)).Id;
++
++        var second = await ProfilesOf(app).SaveAsync(new ProfileInput("Samir", "futsal", "futsal.pivot"));
++
++        Assert.Equal(first.Id, second.Id);
++        var me = Assert.Single(await PlayersOf(app));
++        Assert.Equal(playerId, me.Id);
++        Assert.Equal("Samir", me.Name);
++        Assert.Equal("futsal.pivot", me.PreferredPositionCode);
++    }
++
++    [Fact]
++    public async Task The_profile_survives_closing_the_app()
++    {
++        using (var app = StartApp())
++        {
++            await ProfilesOf(app).SaveAsync(new ProfileInput("Sami", "handball", "handball.back"));
++        }
++
++        using var reopened = StartApp();
++        var profile = await ProfilesOf(reopened).GetAsync();
++
++        Assert.NotNull(profile);
++        Assert.Equal("Sami", profile.Nickname);
++        Assert.Equal("handball", profile.SportCode);
++        Assert.Equal("handball.back", profile.PreferredPositionCode);
++    }
++
++    [Fact]
++    public async Task A_missing_own_player_is_restored_by_the_next_save()
++    {
++        using var app = StartApp();
++        await ProfilesOf(app).SaveAsync(new ProfileInput("Sami"));
++        var players = app.GetRequiredService<IRepository<Player>>();
++        await players.DeleteAsync(Assert.Single(await players.ListAsync()).Id);
++
++        await ProfilesOf(app).SaveAsync(new ProfileInput("Sami"));
++
++        Assert.Single(await PlayersOf(app));
++    }
++
++    [Theory]
++    [InlineData("", "football", null)]
++    [InlineData("   ", "football", null)]
++    [InlineData("12345678901234567890123456789012345678901", "football", null)]
++    [InlineData("Sami", "inconnu", null)]
++    [InlineData("Sami", "football", "futsal.pivot")]
++    public async Task Invalid_input_is_rejected_and_nothing_is_written(string nickname, string sport, string? position)
++    {
++        using var app = StartApp();
++
++        await Assert.ThrowsAsync<ArgumentException>(
++            () => ProfilesOf(app).SaveAsync(new ProfileInput(nickname, sport, position)));
++
++        Assert.Null(await ProfilesOf(app).GetAsync());
++        Assert.Empty(await PlayersOf(app));
++    }
++}
+diff --git a/tests/AlFariq.Domain.Tests/SportCatalogTests.cs b/tests/AlFariq.Domain.Tests/SportCatalogTests.cs
+new file mode 100644
+index 0000000..81315e6
+--- /dev/null
++++ b/tests/AlFariq.Domain.Tests/SportCatalogTests.cs
+@@ -0,0 +1,32 @@
++using AlFariq.Domain;
++
++namespace AlFariq.Domain.Tests;
++
++public class SportCatalogTests
++{
++    [Fact]
++    public void Football_is_the_default_sport()
++    {
++        Assert.Equal("football", SportCatalog.Default.Code);
++    }
++
++    [Fact]
++    public void Sport_and_position_codes_are_unique_and_positions_are_prefixed_by_their_sport()
++    {
++        var sports = SportCatalog.All;
++        var positions = sports.SelectMany(s => s.PositionCodes).ToList();
++
++        Assert.Equal(sports.Count, sports.Select(s => s.Code).Distinct().Count());
++        Assert.Equal(positions.Count, positions.Distinct().Count());
++        Assert.All(sports, sport => Assert.All(
++            sport.PositionCodes,
++            position => Assert.StartsWith(sport.Code + ".", position)));
++    }
++
++    [Fact]
++    public void Find_returns_null_for_an_unknown_code()
++    {
++        Assert.Null(SportCatalog.Find("inconnu"));
++        Assert.Null(SportCatalog.Find(null));
++    }
++}
+diff --git a/tests/AlFariq.Web.Tests/AlFariq.Web.Tests.csproj b/tests/AlFariq.Web.Tests/AlFariq.Web.Tests.csproj
+index 07b9c44..438655a 100644
+--- a/tests/AlFariq.Web.Tests/AlFariq.Web.Tests.csproj
++++ b/tests/AlFariq.Web.Tests/AlFariq.Web.Tests.csproj
+@@ -21,4 +21,8 @@
+     <Using Include="Xunit" />
+   </ItemGroup>
+ 
++  <ItemGroup>
++    <ProjectReference Include="..\..\src\AlFariq.Domain\AlFariq.Domain.csproj" />
++  </ItemGroup>
++
+ </Project>
+diff --git a/tests/AlFariq.Web.Tests/HomePageTests.cs b/tests/AlFariq.Web.Tests/HomePageTests.cs
+index 6479b5e..cc49496 100644
+--- a/tests/AlFariq.Web.Tests/HomePageTests.cs
++++ b/tests/AlFariq.Web.Tests/HomePageTests.cs
+@@ -8,6 +8,7 @@ public class HomePageTests
+     [Theory]
+     [InlineData("matchs/nouveau", "NewMatch.razor")]
+     [InlineData("joueurs", "Players.razor")]
++    [InlineData("profil", "MyProfile.razor")]
+     public void Home_links_to_a_page_that_exists(string link, string pageFile)
+     {
+         Assert.Contains($"href=\"{link}\"", Page("Home.razor"));
+diff --git a/tests/AlFariq.Web.Tests/SportTranslationTests.cs b/tests/AlFariq.Web.Tests/SportTranslationTests.cs
+new file mode 100644
+index 0000000..be4a148
+--- /dev/null
++++ b/tests/AlFariq.Web.Tests/SportTranslationTests.cs
+@@ -0,0 +1,26 @@
++using System.Xml.Linq;
++using AlFariq.Domain;
++
++namespace AlFariq.Web.Tests;
++
++public class SportTranslationTests
++{
++    [Fact]
++    public void Every_sport_and_position_of_the_catalog_has_a_label()
++    {
++        var defined = XDocument
++            .Load(Path.Combine(RepoPaths.UiRoot, "Resources", "Strings.resx"))
++            .Root!
++            .Elements("data")
++            .Select(e => (string)e.Attribute("name")!)
++            .ToHashSet();
++
++        // Même convention que SportLabels (AlFariq.UI).
++        var expected = SportCatalog.All
++            .SelectMany(sport => sport.PositionCodes
++                .Select(position => "Position_" + position.Replace('.', '_'))
++                .Prepend("Sport_" + sport.Code));
++
++        Assert.Empty(expected.Except(defined));
++    }
++}

@@ -107,6 +107,8 @@ Critères d'acceptation :
 - Le profil local est modifiable et persiste après fermeture de l'appli.
 - Je suis ajouté automatiquement à mon répertoire de joueurs.
 
+**Note (US-004)** : le catalogue des sports et des postes est dans `SportCatalog` (domaine). Le joueur « moi » est lié au profil par `Player.ProfileId` ; son nom et son poste sont réécrits à chaque enregistrement du profil. US-005 décidera s'il peut être modifié, archivé ou supprimé depuis le répertoire.
+
 ### US-005 — Gérer mon répertoire de joueurs
 En tant qu'organisateur, je veux ajouter, modifier, archiver et retrouver des joueurs (nom, poste préféré, niveau perçu optionnel) afin de composer rapidement mes matchs.
 Priorité : M — Taille : M — Dépend de : US-002

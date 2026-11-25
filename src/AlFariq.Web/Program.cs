@@ -1,6 +1,8 @@
 using System.Globalization;
 using AlFariq.Application;
 using AlFariq.Client.Core;
+using AlFariq.Client.Core.Storage;
+using AlFariq.Domain;
 using AlFariq.UI;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
@@ -18,6 +20,8 @@ builder.RootComponents.Add<HeadOutlet>("head::after");
 builder.Services
     .AddAlFariqApplication()
     .AddAlFariqClientCore()
+    .AddLocalRepository<Profile>(LocalSchema.ProfilesStore)
+    .AddLocalRepository<Player>(LocalSchema.PlayersStore)
     .AddAlFariqUi();
 
 await builder.Build().RunAsync();

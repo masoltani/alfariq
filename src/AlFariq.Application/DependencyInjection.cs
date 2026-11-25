@@ -5,11 +5,13 @@ namespace AlFariq.Application;
 
 public static class DependencyInjection
 {
-    /// <summary>Enregistre les cas d'usage de l'application (les premiers arrivent avec US-004).</summary>
+    /// <summary>Enregistre les cas d'usage de l'application.</summary>
+    /// <remarks>Les dépôts qu'ils utilisent sont enregistrés par l'hôte.</remarks>
     public static IServiceCollection AddAlFariqApplication(this IServiceCollection services)
     {
         // US-003 : sans matchs pour l'instant. Un enregistrement ultérieur (US-006) prend le dessus.
         services.TryAddSingleton<IUpcomingMatchQuery, NoUpcomingMatchQuery>();
+        services.TryAddSingleton<ProfileService>();
         return services;
     }
 }

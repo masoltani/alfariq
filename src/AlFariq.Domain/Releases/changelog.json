@@ -1,6 +1,28 @@
 {
   "entries": [
     {
+      "version": "0.5.0",
+      "date": "2026-11-25",
+      "changes": [
+        {
+          "type": "added",
+          "text": {
+            "fr": "Crée ton profil sans compte : pseudo, sport par défaut et poste préféré.",
+            "en": "Create your profile without an account: nickname, default sport and preferred position.",
+            "ar": "أنشئ ملفك الشخصي دون حساب: الاسم المستعار والرياضة الافتراضية والمركز المفضل."
+          }
+        },
+        {
+          "type": "added",
+          "text": {
+            "fr": "Tu figures automatiquement dans ton répertoire de joueurs.",
+            "en": "You are automatically added to your player list.",
+            "ar": "تتم إضافتك تلقائيًا إلى قائمة لاعبيك."
+          }
+        }
+      ]
+    },
+    {
       "version": "0.4.0",
       "date": "2026-11-25",
       "changes": [

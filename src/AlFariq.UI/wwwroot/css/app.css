@@ -13,6 +13,7 @@
   --color-banner-update-bg: #dff3ea;
   --color-banner-update-text: #0a4a35;
   --color-focus: #1a5fd0;
+  --color-error: #a11a1a;
   --radius: 14px;
   --nav-height: 64px;
   --gutter: 16px;
@@ -33,6 +34,7 @@
     --color-banner-update-bg: #123a2c;
     --color-banner-update-text: #c9f2e0;
     --color-focus: #7db1ff;
+    --color-error: #ff9d9d;
     color-scheme: dark;
   }
 }
@@ -50,6 +52,7 @@
   --color-banner-update-bg: #123a2c;
   --color-banner-update-text: #c9f2e0;
   --color-focus: #7db1ff;
+  --color-error: #ff9d9d;
   color-scheme: dark;
 }
 
@@ -219,6 +222,93 @@ h1:focus {
 .next-match__location {
   color: var(--color-muted);
   overflow-wrap: anywhere;
+}
+
+/* ---------- Formulaires ---------- */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: var(--gutter);
+}
+
+.field:first-child {
+  margin-top: 0;
+}
+
+.field label {
+  font-weight: 600;
+}
+
+.field input,
+.field select {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 0.75rem;
+  border: 1px solid var(--color-muted);
+  border-radius: 10px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit; /* 1rem au moins : évite le zoom automatique d'iOS à la saisie */
+}
+
+.field input[aria-invalid="true"] {
+  border-color: var(--color-error);
+}
+
+.field__error {
+  margin: 0.5rem 0 0;
+  color: var(--color-error);
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.form-success {
+  margin: var(--gutter) 0 0;
+  font-weight: 600;
+  text-align: center;
+}
+
+/* ---------- Répertoire de joueurs ---------- */
+
+.player-list {
+  padding-block: 0;
+  list-style: none;
+}
+
+.player-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+  padding: 0.75rem 0;
+}
+
+.player-list li + li {
+  border-top: 1px solid var(--color-border);
+}
+
+.player-list__name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.player-list__position {
+  margin-inline-start: auto;
+  color: var(--color-muted);
+}
+
+.badge {
+  padding: 0.125rem 0.625rem;
+  border-radius: 999px;
+  background: var(--color-banner-update-bg);
+  color: var(--color-banner-update-text);
+  font-size: 0.8125rem;
+  font-weight: 600;
 }
 
 /* ---------- Bandeaux ---------- */

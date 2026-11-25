@@ -2,15 +2,25 @@
 @using AlFariq.Application
 @inject IStringLocalizer<Strings> L
 @inject IUpcomingMatchQuery UpcomingMatches
+@inject ProfileService Profiles
 
 <PageTitle>@L["App_Name"]</PageTitle>
 
 <section class="page">
-    <h1>@L["Home_Welcome"]</h1>
+    <h1>@(_profile is null ? L["Home_Welcome"] : L["Home_Greeting", _profile.Nickname])</h1>
 
     @* Rien tant que la lecture n'est pas finie : l'état vide ne doit pas apparaître puis disparaître. *@
     @if (_loaded)
     {
+        if (_profileMissing)
+        {
+            <div class="card">
+                <h2>@L["Home_ProfileTitle"]</h2>
+                <p>@L["Home_ProfileHint"]</p>
+                <a class="button button--small button--ghost" href="profil">@L["Profile_Create"]</a>
+            </div>
+        }
+
         if (_nextMatch is not null)
         {
             <NextMatchCard Match="_nextMatch" />
@@ -38,11 +48,28 @@
 
 @code {
     private UpcomingMatch? _nextMatch;
+    private Profile? _profile;
+    private bool _profileMissing;
     private bool _loaded;
 
     protected override async Task OnInitializedAsync()
     {
+        await LoadProfileAsync();
         _nextMatch = await UpcomingMatches.GetNextAsync();
         _loaded = true;
+    }
+
+    private async Task LoadProfileAsync()
+    {
+        try
+        {
+            _profile = await Profiles.GetAsync();
+            _profileMissing = _profile is null;
+        }
+        catch (Exception exception)
+        {
+            // L'accueil reste utilisable ; l'écran du profil explique le problème.
+            Console.Error.WriteLine(exception);
+        }
     }
 }
