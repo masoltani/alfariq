@@ -1,11 +1,10 @@
 @page "/joueurs"
 @using AlFariq.Application
 @inject IStringLocalizer<Strings> L
-@inject IRepository<Player> PlayerRepository
+@inject PlayerService Service
 
 <PageTitle>@L["Players_Title"] · @L["App_Name"]</PageTitle>
 
-@* Liste en lecture seule ; l'ajout, la recherche et l'archivage arrivent avec US-005. *@
 <section class="page">
     <h1>@L["Players_Title"]</h1>
 
@@ -17,46 +16,93 @@
     }
     else if (_players is not null)
     {
+        <div class="actions">
+            <a class="button" href="joueurs/nouveau">@L["Players_Add"]</a>
+        </div>
+
         if (_players.Count == 0)
         {
-            <div class="card">
+            <div class="card card--empty">
                 <p>@L["Players_Empty"]</p>
-                <a class="button button--small button--ghost" href="profil">@L["Profile_Create"]</a>
             </div>
         }
         else
         {
-            <ul class="card player-list">
-                @foreach (var player in _players)
-                {
-                    <li @key="player.Id">
-                        <span class="player-list__name" dir="auto">@player.Name</span>
-                        @if (player.ProfileId is not null)
-                        {
-                            <span class="badge">@L["Players_Me"]</span>
-                        }
-                        @if (player.PreferredPositionCode is { } position)
-                        {
-                            <span class="player-list__position">@L[SportLabels.PositionKey(position)]</span>
-                        }
-                    </li>
-                }
-            </ul>
-        }
+            var archivedCount = _players.Count(player => player.IsArchived);
+            var visible = PlayerDirectory.Search(_players.Where(player => player.IsArchived == _showArchived), _query);
 
-        <p class="hint">@L["Players_ComingSoon"]</p>
+            <div class="field">
+                <label for="player-search">@L["Players_Search"]</label>
+                <input id="player-search" type="search" dir="auto" autocomplete="off" enterkeyhint="search"
+                       @bind="_query" @bind:event="oninput" />
+            </div>
+
+            <fieldset class="segmented players-filter">
+                <legend class="sr-only">@L["Players_Filter"]</legend>
+                <label class="segmented__option">
+                    <input type="radio" name="players-status" checked="@(!_showArchived)" @onchange="() => _showArchived = false" />
+                    <span>@L["Players_Active", _players.Count - archivedCount]</span>
+                </label>
+                <label class="segmented__option">
+                    <input type="radio" name="players-status" checked="@_showArchived" @onchange="() => _showArchived = true" />
+                    <span>@L["Players_Archived", archivedCount]</span>
+                </label>
+            </fieldset>
+
+            <div role="status">
+                @if (visible.Count == 0)
+                {
+                    <p class="hint players-none">@(string.IsNullOrWhiteSpace(_query) ? L["Players_NoneInList"] : L["Players_NoMatch"])</p>
+                }
+                else
+                {
+                    <p class="sr-only">@L["Players_Count", visible.Count]</p>
+                }
+            </div>
+
+            if (visible.Count > 0)
+            {
+                <ul class="card player-list">
+                    @foreach (var player in visible)
+                    {
+                        <li @key="player.Id">
+                            <a class="player-list__link" href="joueurs/@player.Id">
+                                <span class="player-list__name" dir="auto">@player.Name</span>
+                                @if (player.ProfileId is not null)
+                                {
+                                    <span class="badge">@L["Players_Me"]</span>
+                                }
+                                <span class="player-list__details">
+                                    @if (player.PreferredPositionCode is { } position)
+                                    {
+                                        <span>@L[SportLabels.PositionKey(position)]</span>
+                                    }
+                                    @if (player.Level is { } level)
+                                    {
+                                        <span>@L["Players_LevelShort", level]</span>
+                                    }
+                                </span>
+                            </a>
+                        </li>
+                    }
+                </ul>
+            }
+        }
     }
 </section>
 
 @code {
     private IReadOnlyList<Player>? _players;
+    private string _query = "";
+    private bool _showArchived;
     private bool _loadFailed;
 
     protected override async Task OnInitializedAsync()
     {
         try
         {
-            _players = await PlayerRepository.ListAsync();
+            // Lu une seule fois : la recherche et le tri se font ensuite en mémoire.
+            _players = await Service.ListAsync();
         }
         catch (Exception exception)
         {

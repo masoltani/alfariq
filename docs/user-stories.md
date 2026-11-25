@@ -119,6 +119,8 @@ Critères d'acceptation :
 - La recherche et le tri par nom fonctionnent sur au moins 200 joueurs sans ralentissement visible.
 - Les doublons de nom déclenchent un avertissement, pas un blocage.
 
+**Note (US-005)** : le joueur « moi » tient son nom et son poste du profil ; seul son niveau se modifie dans le répertoire, et il ne s'archive pas. Les futures sélections (US-007) utilisent `PlayerService.ListSelectableAsync` ; l'historique retrouve un joueur avec `FindAsync`, même archivé. La suppression d'un joueur (RG-JOU-04) et les notes privées (RG-JOU-01) ne sont pas dans cette US.
+
 ### US-006 — Créer un match
 En tant qu'organisateur, je veux créer un match avec date, heure, lieu (texte libre), sport, format (par exemple 5 contre 5, 7 contre 7, 11 contre 11) et durée afin de préparer la rencontre.
 Priorité : M — Taille : M — Dépend de : US-005

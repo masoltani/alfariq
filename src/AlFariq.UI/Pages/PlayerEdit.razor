@@ -1,0 +1,247 @@
+@page "/joueurs/nouveau"
+@page "/joueurs/{Id:guid}"
+@using AlFariq.Application
+@inject IStringLocalizer<Strings> L
+@inject PlayerService Service
+@inject ProfileService Profiles
+@inject IStoragePersistence StoragePersistence
+@inject NavigationManager Navigation
+
+<PageTitle>@Title · @L["App_Name"]</PageTitle>
+
+<section class="page">
+    <h1>@Title</h1>
+
+    @if (_loadFailed)
+    {
+        <div class="card" role="alert">
+            <p>@L["Storage_Unavailable"]</p>
+        </div>
+    }
+    else if (_notFound)
+    {
+        <div class="card card--empty">
+            <p>@L["Player_NotFound"]</p>
+        </div>
+    }
+    else if (_loaded)
+    {
+        <form class="card" @onsubmit="SaveAsync" @onsubmit:preventDefault>
+            @if (IsMe)
+            {
+                <p>@L["Player_MeHint"]</p>
+                <a class="button button--small button--ghost" href="profil">@L["Profile_Open"]</a>
+            }
+
+            <div class="field">
+                <label for="player-name">@L["Player_Name"]</label>
+                <input id="player-name" type="text" dir="auto" autocomplete="off" autocapitalize="words" enterkeyhint="done"
+                       maxlength="@Player.MaxNameLength"
+                       disabled="@IsMe"
+                       aria-required="true"
+                       aria-invalid="@(_nameMissing ? "true" : "false")"
+                       aria-describedby="@(_nameMissing ? "player-name-error" : null)"
+                       @bind="_name" @bind:event="oninput" />
+                @if (_nameMissing)
+                {
+                    <p id="player-name-error" class="field__error" role="alert">@L["Player_NameRequired"]</p>
+                }
+                <div role="status">
+                    @if (!IsMe && PlayerDirectory.HasSameName(_players, _name, Id))
+                    {
+                        <p class="field__warning">@L["Player_Duplicate"]</p>
+                    }
+                </div>
+            </div>
+
+            <div class="field">
+                <label for="player-position">@L["Player_Position", L[SportLabels.SportKey(_sport.Code)].Value]</label>
+                <select id="player-position" disabled="@IsMe" @bind="_positionCode">
+                    <option value="">@L["Profile_NoPosition"]</option>
+                    @foreach (var positionCode in PositionChoices)
+                    {
+                        <option @key="positionCode" value="@positionCode">@L[SportLabels.PositionKey(positionCode)]</option>
+                    }
+                </select>
+            </div>
+
+            <div class="field">
+                <label for="player-level">@L["Player_Level", Player.MinLevel, Player.MaxLevel]</label>
+                <select id="player-level" @bind="_level">
+                    <option value="">@L["Player_NoLevel"]</option>
+                    @for (var level = Player.MinLevel; level <= Player.MaxLevel; level++)
+                    {
+                        <option @key="level" value="@level">@level</option>
+                    }
+                </select>
+                <span class="hint">@L["Player_LevelHint"]</span>
+            </div>
+
+            <div class="actions">
+                <button type="submit" class="button" disabled="@_saving">
+                    @(Id is null ? L["Player_Add"] : L["Profile_Save"])
+                </button>
+            </div>
+
+            @if (_saveFailed)
+            {
+                <p class="field__error" role="alert">@L["Player_SaveFailed"]</p>
+            }
+        </form>
+
+        if (Id is not null && !IsMe)
+        {
+            <div class="card">
+                <p>@(_isArchived ? L["Player_RestoreHint"] : L["Player_ArchiveHint"])</p>
+                <button type="button" class="button button--small button--ghost" disabled="@_saving" @onclick="ToggleArchivedAsync">
+                    @(_isArchived ? L["Player_Restore"] : L["Player_Archive"])
+                </button>
+            </div>
+        }
+    }
+
+    <div class="actions">
+        <a class="button button--ghost" href="joueurs">@L["Player_Back"]</a>
+    </div>
+</section>
+
+@code {
+    private IReadOnlyList<Player> _players = [];
+    private Sport _sport = SportCatalog.Default;
+    private Guid? _loadedId;
+    private string _name = "";
+    private string _positionCode = "";
+    private string _originalPositionCode = "";
+    private string _level = "";
+    private bool _initialized;
+    private bool _loaded;
+    private bool _loadFailed;
+    private bool _notFound;
+    private bool _isArchived;
+    private bool _saving;
+    private bool _saveFailed;
+    private bool _nameMissing;
+
+    /// <summary>Identifiant du joueur à modifier ; null pour un nouveau joueur.</summary>
+    [Parameter] public Guid? Id { get; set; }
+
+    private bool IsMe { get; set; }
+
+    private string Title => Id is null ? L["Player_NewTitle"] : L["Player_EditTitle"];
+
+    /// <summary>Les postes du sport par défaut, plus celui du joueur s'il vient d'un autre sport.</summary>
+    private IEnumerable<string> PositionChoices =>
+        _originalPositionCode.Length == 0 || _sport.HasPosition(_originalPositionCode)
+            ? _sport.PositionCodes
+            : _sport.PositionCodes.Append(_originalPositionCode);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Ne pas recharger (et écraser la saisie) si le joueur affiché n'a pas changé.
+        if (_initialized && _loadedId == Id)
+        {
+            return;
+        }
+
+        _initialized = true;
+        _loadedId = Id;
+        _loaded = _loadFailed = _notFound = _isArchived = _saveFailed = _nameMissing = false;
+        _name = _positionCode = _originalPositionCode = _level = "";
+        IsMe = false;
+
+        try
+        {
+            _players = await Service.ListAsync();
+            var profile = await Profiles.GetAsync();
+            _sport = SportCatalog.Find(profile?.SportCode) ?? SportCatalog.Default;
+
+            if (Id is { } id)
+            {
+                var player = _players.FirstOrDefault(candidate => candidate.Id == id);
+                if (player is null)
+                {
+                    _notFound = true;
+                    return;
+                }
+
+                IsMe = player.ProfileId is not null;
+                _isArchived = player.IsArchived;
+                _name = player.Name;
+                _positionCode = _originalPositionCode = player.PreferredPositionCode ?? "";
+                _level = player.Level?.ToString() ?? "";
+            }
+
+            _loaded = true;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _loadFailed = true;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_saving)
+        {
+            return;
+        }
+
+        _saveFailed = false;
+        _nameMissing = !IsMe && PlayerDirectory.CleanName(_name).Length == 0;
+        if (_nameMissing)
+        {
+            return;
+        }
+
+        var position = _positionCode.Length == 0 ? null : _positionCode;
+        int? level = int.TryParse(_level, out var parsed) ? parsed : null;
+        var input = new PlayerInput(_name, position, level);
+
+        await WriteThenReturnAsync(async () =>
+        {
+            if (Id is { } id)
+            {
+                await Service.UpdateAsync(id, input);
+            }
+            else
+            {
+                await Service.AddAsync(input);
+            }
+        });
+    }
+
+    private async Task ToggleArchivedAsync()
+    {
+        if (_saving || Id is not { } id)
+        {
+            return;
+        }
+
+        _saveFailed = false;
+        await WriteThenReturnAsync(() => Service.SetArchivedAsync(id, !_isArchived));
+    }
+
+    /// <summary>Enregistre puis revient à la liste ; en cas d'échec, reste sur la fiche avec un message.</summary>
+    private async Task WriteThenReturnAsync(Func<Task> write)
+    {
+        _saving = true;
+        try
+        {
+            await write();
+
+            // US-002 : des données viennent d'être saisies, on redemande au navigateur de les conserver.
+            await StoragePersistence.RequestAsync();
+            Navigation.NavigateTo("joueurs");
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _saveFailed = true;
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}

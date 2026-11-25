@@ -54,6 +54,10 @@ dotnet publish src/AlFariq.Web -c Release -o artifacts/web
 - Pour ajouter une entité : l'ajouter dans une **nouvelle migration** de `LocalSchema` (ne jamais modifier une migration déjà livrée), puis `services.AddLocalRepository<MonEntite>("nom-du-magasin")` dans `Program.cs`.
 - Détails : `docs/adr/0002-stockage-local-indexeddb.md`.
 
+## Essayer avec beaucoup de joueurs
+
+Pour vérifier la fluidité du répertoire, lancer l'appli, ouvrir l'écran **Joueurs** une fois, puis coller le contenu de `tools/seed-players.js` dans la console du navigateur et recharger la page. À faire sur un poste de développement : le script ajoute 250 joueurs fictifs à la base locale.
+
 ## Publier une version
 
 La version suit le versionnement sémantique (avant 1.0 : le numéro mineur monte à chaque lot de fonctionnalités, le dernier chiffre pour les correctifs).

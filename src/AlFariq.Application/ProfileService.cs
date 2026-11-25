@@ -39,7 +39,7 @@ public sealed class ProfileService
     {
         ArgumentNullException.ThrowIfNull(input);
 
-        var nickname = (input.Nickname ?? "").Trim();
+        var nickname = PlayerDirectory.CleanName(input.Nickname);
         if (nickname.Length == 0 || nickname.Length > Profile.MaxNicknameLength)
         {
             throw new ArgumentException(

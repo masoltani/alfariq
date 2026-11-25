@@ -23,6 +23,9 @@ public static class SportCatalog
     /// <summary>Le sport portant ce code, ou null s'il est inconnu.</summary>
     public static Sport? Find(string? code) => All.FirstOrDefault(sport => sport.Code == code);
 
+    /// <summary>Vrai si ce poste existe dans l'un des sports du catalogue.</summary>
+    public static bool IsKnownPosition(string? positionCode) => All.Any(sport => sport.HasPosition(positionCode));
+
     private static Sport Create(string code, params string[] positions) =>
         new(code, positions.Select(position => $"{code}.{position}").ToArray());
 }

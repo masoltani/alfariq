@@ -1,6 +1,28 @@
 {
   "entries": [
     {
+      "version": "0.6.0",
+      "date": "2026-11-25",
+      "changes": [
+        {
+          "type": "added",
+          "text": {
+            "fr": "Ajoute et modifie tes joueurs, avec un poste préféré et un niveau facultatifs.",
+            "en": "Add and edit your players, with an optional preferred position and level.",
+            "ar": "أضف لاعبيك وعدّلهم، مع مركز مفضل ومستوى اختياريين."
+          }
+        },
+        {
+          "type": "added",
+          "text": {
+            "fr": "Recherche un joueur par son nom, et archive ceux qui ne jouent plus.",
+            "en": "Search players by name, and archive those who no longer play.",
+            "ar": "ابحث عن لاعب باسمه، وأرشِف من لم يعودوا يلعبون."
+          }
+        }
+      ]
+    },
+    {
       "version": "0.5.0",
       "date": "2026-11-25",
       "changes": [

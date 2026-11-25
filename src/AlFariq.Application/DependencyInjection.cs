@@ -12,6 +12,7 @@ public static class DependencyInjection
         // US-003 : sans matchs pour l'instant. Un enregistrement ultérieur (US-006) prend le dessus.
         services.TryAddSingleton<IUpcomingMatchQuery, NoUpcomingMatchQuery>();
         services.TryAddSingleton<ProfileService>();
+        services.TryAddSingleton<PlayerService>();
         return services;
     }
 }

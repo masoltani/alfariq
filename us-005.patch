@@ -1,0 +1,1078 @@
+diff --git a/Directory.Build.props b/Directory.Build.props
+index cb7f6cf..99c9d95 100644
+--- a/Directory.Build.props
++++ b/Directory.Build.props
+@@ -6,7 +6,7 @@
+     <Nullable>enable</Nullable>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <AnalysisLevel>latest</AnalysisLevel>
+-    <Version>0.5.0</Version>
++    <Version>0.6.0</Version>
+     <Deterministic>true</Deterministic>
+   </PropertyGroup>
+ 
+diff --git a/README.md b/README.md
+index 2539b6f..0a97072 100644
+--- a/README.md
++++ b/README.md
+@@ -54,6 +54,10 @@ dotnet publish src/AlFariq.Web -c Release -o artifacts/web
+ - Pour ajouter une entité : l'ajouter dans une **nouvelle migration** de `LocalSchema` (ne jamais modifier une migration déjà livrée), puis `services.AddLocalRepository<MonEntite>("nom-du-magasin")` dans `Program.cs`.
+ - Détails : `docs/adr/0002-stockage-local-indexeddb.md`.
+ 
++## Essayer avec beaucoup de joueurs
++
++Pour vérifier la fluidité du répertoire, lancer l'appli, ouvrir l'écran **Joueurs** une fois, puis coller le contenu de `tools/seed-players.js` dans la console du navigateur et recharger la page. À faire sur un poste de développement : le script ajoute 250 joueurs fictifs à la base locale.
++
+ ## Publier une version
+ 
+ La version suit le versionnement sémantique (avant 1.0 : le numéro mineur monte à chaque lot de fonctionnalités, le dernier chiffre pour les correctifs).
+diff --git a/docs/user-stories.md b/docs/user-stories.md
+index b288c8d..48fbc01 100644
+--- a/docs/user-stories.md
++++ b/docs/user-stories.md
+@@ -119,6 +119,8 @@ Critères d'acceptation :
+ - La recherche et le tri par nom fonctionnent sur au moins 200 joueurs sans ralentissement visible.
+ - Les doublons de nom déclenchent un avertissement, pas un blocage.
+ 
++**Note (US-005)** : le joueur « moi » tient son nom et son poste du profil ; seul son niveau se modifie dans le répertoire, et il ne s'archive pas. Les futures sélections (US-007) utilisent `PlayerService.ListSelectableAsync` ; l'historique retrouve un joueur avec `FindAsync`, même archivé. La suppression d'un joueur (RG-JOU-04) et les notes privées (RG-JOU-01) ne sont pas dans cette US.
++
+ ### US-006 — Créer un match
+ En tant qu'organisateur, je veux créer un match avec date, heure, lieu (texte libre), sport, format (par exemple 5 contre 5, 7 contre 7, 11 contre 11) et durée afin de préparer la rencontre.
+ Priorité : M — Taille : M — Dépend de : US-005
+diff --git a/src/AlFariq.Application/DependencyInjection.cs b/src/AlFariq.Application/DependencyInjection.cs
+index 4b5b286..d8a01ae 100644
+--- a/src/AlFariq.Application/DependencyInjection.cs
++++ b/src/AlFariq.Application/DependencyInjection.cs
+@@ -12,6 +12,7 @@ public static class DependencyInjection
+         // US-003 : sans matchs pour l'instant. Un enregistrement ultérieur (US-006) prend le dessus.
+         services.TryAddSingleton<IUpcomingMatchQuery, NoUpcomingMatchQuery>();
+         services.TryAddSingleton<ProfileService>();
++        services.TryAddSingleton<PlayerService>();
+         return services;
+     }
+ }
+diff --git a/src/AlFariq.Application/PlayerService.cs b/src/AlFariq.Application/PlayerService.cs
+new file mode 100644
+index 0000000..71636cc
+--- /dev/null
++++ b/src/AlFariq.Application/PlayerService.cs
+@@ -0,0 +1,114 @@
++using AlFariq.Domain;
++
++namespace AlFariq.Application;
++
++/// <summary>Saisie d'un joueur. Seul le nom est obligatoire.</summary>
++public sealed record PlayerInput(string Name, string? PreferredPositionCode = null, int? Level = null);
++
++/// <summary>
++/// Répertoire de joueurs (US-005). Les doublons de nom sont permis : l'interface se contente d'avertir
++/// (<see cref="PlayerDirectory.HasSameName"/>).
++/// </summary>
++/// <remarks>
++/// Le joueur lié au profil (« moi ») tient son nom et son poste du profil : seul son niveau se modifie ici,
++/// et il ne s'archive pas.
++/// </remarks>
++public sealed class PlayerService
++{
++    private readonly IRepository<Player> _players;
++
++    public PlayerService(IRepository<Player> players) => _players = players;
++
++    /// <summary>Tous les joueurs du répertoire, archivés compris.</summary>
++    public Task<IReadOnlyList<Player>> ListAsync(CancellationToken cancellationToken = default) =>
++        _players.ListAsync(cancellationToken: cancellationToken);
++
++    /// <summary>Les joueurs à proposer dans une sélection : non archivés, triés par nom.</summary>
++    public async Task<IReadOnlyList<Player>> ListSelectableAsync(CancellationToken cancellationToken = default)
++    {
++        var players = await ListAsync(cancellationToken);
++        return PlayerDirectory.Search(players.Where(player => !player.IsArchived), query: null);
++    }
++
++    /// <summary>
++    /// Un joueur par son identifiant, même archivé. Pour l'historique d'un match, <paramref name="includeDeleted"/>
++    /// retrouve aussi un joueur supprimé.
++    /// </summary>
++    public Task<Player?> FindAsync(Guid id, bool includeDeleted = false, CancellationToken cancellationToken = default) =>
++        _players.GetAsync(id, includeDeleted, cancellationToken);
++
++    /// <exception cref="ArgumentException">Nom vide ou trop long, poste inconnu, niveau hors de 1 à 5.</exception>
++    public async Task<Player> AddAsync(PlayerInput input, CancellationToken cancellationToken = default)
++    {
++        ArgumentNullException.ThrowIfNull(input);
++
++        var player = new Player();
++        ApplyIdentity(player, input);
++        ApplyLevel(player, input.Level);
++        return await _players.AddAsync(player, cancellationToken);
++    }
++
++    /// <exception cref="ArgumentException">Nom vide ou trop long, poste inconnu, niveau hors de 1 à 5.</exception>
++    /// <exception cref="KeyNotFoundException">Le joueur n'existe pas ou est supprimé.</exception>
++    public async Task<Player> UpdateAsync(Guid id, PlayerInput input, CancellationToken cancellationToken = default)
++    {
++        ArgumentNullException.ThrowIfNull(input);
++
++        var player = await RequireAsync(id, cancellationToken);
++        if (player.ProfileId is null)
++        {
++            ApplyIdentity(player, input);
++        }
++
++        ApplyLevel(player, input.Level);
++        return await _players.UpdateAsync(player, cancellationToken);
++    }
++
++    /// <summary>Archive un joueur ou le réactive.</summary>
++    /// <exception cref="InvalidOperationException">On tente d'archiver le joueur lié au profil.</exception>
++    /// <exception cref="KeyNotFoundException">Le joueur n'existe pas ou est supprimé.</exception>
++    public async Task<Player> SetArchivedAsync(Guid id, bool archived, CancellationToken cancellationToken = default)
++    {
++        var player = await RequireAsync(id, cancellationToken);
++        if (archived && player.ProfileId is not null)
++        {
++            throw new InvalidOperationException("Le joueur lié au profil ne peut pas être archivé.");
++        }
++
++        player.IsArchived = archived;
++        return await _players.UpdateAsync(player, cancellationToken);
++    }
++
++    private async Task<Player> RequireAsync(Guid id, CancellationToken cancellationToken) =>
++        await _players.GetAsync(id, cancellationToken: cancellationToken)
++        ?? throw new KeyNotFoundException($"Aucun joueur actif avec l'identifiant {id}.");
++
++    private static void ApplyIdentity(Player player, PlayerInput input)
++    {
++        var name = PlayerDirectory.CleanName(input.Name);
++        if (name.Length == 0 || name.Length > Player.MaxNameLength)
++        {
++            throw new ArgumentException(
++                $"Le nom doit contenir de 1 à {Player.MaxNameLength} caractères.", nameof(input));
++        }
++
++        if (input.PreferredPositionCode is not null && !SportCatalog.IsKnownPosition(input.PreferredPositionCode))
++        {
++            throw new ArgumentException($"Poste inconnu : « {input.PreferredPositionCode} ».", nameof(input));
++        }
++
++        player.Name = name;
++        player.PreferredPositionCode = input.PreferredPositionCode;
++    }
++
++    private static void ApplyLevel(Player player, int? level)
++    {
++        if (level is < Player.MinLevel or > Player.MaxLevel)
++        {
++            throw new ArgumentException(
++                $"Le niveau doit être compris entre {Player.MinLevel} et {Player.MaxLevel}.", nameof(level));
++        }
++
++        player.Level = level;
++    }
++}
+diff --git a/src/AlFariq.Application/ProfileService.cs b/src/AlFariq.Application/ProfileService.cs
+index 7edd113..e6e7872 100644
+--- a/src/AlFariq.Application/ProfileService.cs
++++ b/src/AlFariq.Application/ProfileService.cs
+@@ -39,7 +39,7 @@ public sealed class ProfileService
+     {
+         ArgumentNullException.ThrowIfNull(input);
+ 
+-        var nickname = (input.Nickname ?? "").Trim();
++        var nickname = PlayerDirectory.CleanName(input.Nickname);
+         if (nickname.Length == 0 || nickname.Length > Profile.MaxNicknameLength)
+         {
+             throw new ArgumentException(
+diff --git a/src/AlFariq.Domain/Players/Player.cs b/src/AlFariq.Domain/Players/Player.cs
+index ee572e1..dc4872a 100644
+--- a/src/AlFariq.Domain/Players/Player.cs
++++ b/src/AlFariq.Domain/Players/Player.cs
+@@ -1,12 +1,25 @@
+ namespace AlFariq.Domain;
+ 
+-/// <summary>Joueur du répertoire. US-005 le complétera (niveau perçu, archivage).</summary>
++/// <summary>Joueur du répertoire (US-005).</summary>
+ public sealed class Player : Entity
+ {
++    public const int MaxNameLength = Profile.MaxNicknameLength;
++
++    public const int MinLevel = 1;
++
++    public const int MaxLevel = 5;
++
++    /// <summary>Prénom, nom ou pseudo (obligatoire, pas forcément unique).</summary>
+     public string Name { get; set; } = "";
+ 
+     public string? PreferredPositionCode { get; set; }
+ 
++    /// <summary>Niveau perçu par l'organisateur, de <see cref="MinLevel"/> à <see cref="MaxLevel"/> ; null s'il n'est pas renseigné.</summary>
++    public int? Level { get; set; }
++
++    /// <summary>Un joueur archivé n'est plus proposé dans les sélections mais reste dans l'historique.</summary>
++    public bool IsArchived { get; set; }
++
+     /// <summary>Renseigné quand ce joueur est la personne du profil ; null pour les autres.</summary>
+     public Guid? ProfileId { get; set; }
+ }
+diff --git a/src/AlFariq.Domain/Players/PlayerDirectory.cs b/src/AlFariq.Domain/Players/PlayerDirectory.cs
+new file mode 100644
+index 0000000..46419a2
+--- /dev/null
++++ b/src/AlFariq.Domain/Players/PlayerDirectory.cs
+@@ -0,0 +1,40 @@
++using System.Globalization;
++
++namespace AlFariq.Domain;
++
++/// <summary>
++/// Règles du répertoire sur les noms : recherche, tri et repérage des doublons.
++/// La casse et les accents sont ignorés : « elodie » trouve « Élodie ».
++/// </summary>
++public static class PlayerDirectory
++{
++    private const CompareOptions Loose = CompareOptions.IgnoreCase | CompareOptions.IgnoreNonSpace;
++
++    private static readonly CompareInfo Names = CultureInfo.InvariantCulture.CompareInfo;
++
++    private static readonly Comparer<string> NameOrder =
++        Comparer<string>.Create((left, right) => Names.Compare(left, right, Loose));
++
++    /// <summary>Retire les espaces au début et à la fin, et réduit les suites d'espaces à un seul.</summary>
++    public static string CleanName(string? name) =>
++        string.Join(' ', (name ?? "").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
++
++    /// <summary>Les joueurs dont le nom contient le texte cherché (tous si le texte est vide), triés par nom.</summary>
++    public static IReadOnlyList<Player> Search(IEnumerable<Player> players, string? query)
++    {
++        var text = CleanName(query);
++        return players
++            .Where(player => text.Length == 0 || Names.IndexOf(player.Name, text, Loose) >= 0)
++            .OrderBy(player => player.Name, NameOrder)
++            .ThenBy(player => player.CreatedAt)
++            .ToList();
++    }
++
++    /// <summary>Vrai si un autre joueur (archivé ou non) porte déjà ce nom.</summary>
++    public static bool HasSameName(IEnumerable<Player> players, string? name, Guid? exceptId = null)
++    {
++        var wanted = CleanName(name);
++        return wanted.Length > 0 && players.Any(player =>
++            player.Id != exceptId && Names.Compare(CleanName(player.Name), wanted, Loose) == 0);
++    }
++}
+diff --git a/src/AlFariq.Domain/Releases/changelog.json b/src/AlFariq.Domain/Releases/changelog.json
+index 24d3fc3..2319a7f 100644
+--- a/src/AlFariq.Domain/Releases/changelog.json
++++ b/src/AlFariq.Domain/Releases/changelog.json
+@@ -1,5 +1,27 @@
+ {
+   "entries": [
++    {
++      "version": "0.6.0",
++      "date": "2026-11-25",
++      "changes": [
++        {
++          "type": "added",
++          "text": {
++            "fr": "Ajoute et modifie tes joueurs, avec un poste préféré et un niveau facultatifs.",
++            "en": "Add and edit your players, with an optional preferred position and level.",
++            "ar": "أضف لاعبيك وعدّلهم، مع مركز مفضل ومستوى اختياريين."
++          }
++        },
++        {
++          "type": "added",
++          "text": {
++            "fr": "Recherche un joueur par son nom, et archive ceux qui ne jouent plus.",
++            "en": "Search players by name, and archive those who no longer play.",
++            "ar": "ابحث عن لاعب باسمه، وأرشِف من لم يعودوا يلعبون."
++          }
++        }
++      ]
++    },
+     {
+       "version": "0.5.0",
+       "date": "2026-11-25",
+diff --git a/src/AlFariq.Domain/Sports/SportCatalog.cs b/src/AlFariq.Domain/Sports/SportCatalog.cs
+index e5321c6..8b7fa6f 100644
+--- a/src/AlFariq.Domain/Sports/SportCatalog.cs
++++ b/src/AlFariq.Domain/Sports/SportCatalog.cs
+@@ -23,6 +23,9 @@ public static class SportCatalog
+     /// <summary>Le sport portant ce code, ou null s'il est inconnu.</summary>
+     public static Sport? Find(string? code) => All.FirstOrDefault(sport => sport.Code == code);
+ 
++    /// <summary>Vrai si ce poste existe dans l'un des sports du catalogue.</summary>
++    public static bool IsKnownPosition(string? positionCode) => All.Any(sport => sport.HasPosition(positionCode));
++
+     private static Sport Create(string code, params string[] positions) =>
+         new(code, positions.Select(position => $"{code}.{position}").ToArray());
+ }
+diff --git a/src/AlFariq.UI/Pages/PlayerEdit.razor b/src/AlFariq.UI/Pages/PlayerEdit.razor
+new file mode 100644
+index 0000000..17c954e
+--- /dev/null
++++ b/src/AlFariq.UI/Pages/PlayerEdit.razor
+@@ -0,0 +1,247 @@
++@page "/joueurs/nouveau"
++@page "/joueurs/{Id:guid}"
++@using AlFariq.Application
++@inject IStringLocalizer<Strings> L
++@inject PlayerService Service
++@inject ProfileService Profiles
++@inject IStoragePersistence StoragePersistence
++@inject NavigationManager Navigation
++
++<PageTitle>@Title · @L["App_Name"]</PageTitle>
++
++<section class="page">
++    <h1>@Title</h1>
++
++    @if (_loadFailed)
++    {
++        <div class="card" role="alert">
++            <p>@L["Storage_Unavailable"]</p>
++        </div>
++    }
++    else if (_notFound)
++    {
++        <div class="card card--empty">
++            <p>@L["Player_NotFound"]</p>
++        </div>
++    }
++    else if (_loaded)
++    {
++        <form class="card" @onsubmit="SaveAsync" @onsubmit:preventDefault>
++            @if (IsMe)
++            {
++                <p>@L["Player_MeHint"]</p>
++                <a class="button button--small button--ghost" href="profil">@L["Profile_Open"]</a>
++            }
++
++            <div class="field">
++                <label for="player-name">@L["Player_Name"]</label>
++                <input id="player-name" type="text" dir="auto" autocomplete="off" autocapitalize="words" enterkeyhint="done"
++                       maxlength="@Player.MaxNameLength"
++                       disabled="@IsMe"
++                       aria-required="true"
++                       aria-invalid="@(_nameMissing ? "true" : "false")"
++                       aria-describedby="@(_nameMissing ? "player-name-error" : null)"
++                       @bind="_name" @bind:event="oninput" />
++                @if (_nameMissing)
++                {
++                    <p id="player-name-error" class="field__error" role="alert">@L["Player_NameRequired"]</p>
++                }
++                <div role="status">
++                    @if (!IsMe && PlayerDirectory.HasSameName(_players, _name, Id))
++                    {
++                        <p class="field__warning">@L["Player_Duplicate"]</p>
++                    }
++                </div>
++            </div>
++
++            <div class="field">
++                <label for="player-position">@L["Player_Position", L[SportLabels.SportKey(_sport.Code)].Value]</label>
++                <select id="player-position" disabled="@IsMe" @bind="_positionCode">
++                    <option value="">@L["Profile_NoPosition"]</option>
++                    @foreach (var positionCode in PositionChoices)
++                    {
++                        <option @key="positionCode" value="@positionCode">@L[SportLabels.PositionKey(positionCode)]</option>
++                    }
++                </select>
++            </div>
++
++            <div class="field">
++                <label for="player-level">@L["Player_Level", Player.MinLevel, Player.MaxLevel]</label>
++                <select id="player-level" @bind="_level">
++                    <option value="">@L["Player_NoLevel"]</option>
++                    @for (var level = Player.MinLevel; level <= Player.MaxLevel; level++)
++                    {
++                        <option @key="level" value="@level">@level</option>
++                    }
++                </select>
++                <span class="hint">@L["Player_LevelHint"]</span>
++            </div>
++
++            <div class="actions">
++                <button type="submit" class="button" disabled="@_saving">
++                    @(Id is null ? L["Player_Add"] : L["Profile_Save"])
++                </button>
++            </div>
++
++            @if (_saveFailed)
++            {
++                <p class="field__error" role="alert">@L["Player_SaveFailed"]</p>
++            }
++        </form>
++
++        if (Id is not null && !IsMe)
++        {
++            <div class="card">
++                <p>@(_isArchived ? L["Player_RestoreHint"] : L["Player_ArchiveHint"])</p>
++                <button type="button" class="button button--small button--ghost" disabled="@_saving" @onclick="ToggleArchivedAsync">
++                    @(_isArchived ? L["Player_Restore"] : L["Player_Archive"])
++                </button>
++            </div>
++        }
++    }
++
++    <div class="actions">
++        <a class="button button--ghost" href="joueurs">@L["Player_Back"]</a>
++    </div>
++</section>
++
++@code {
++    private IReadOnlyList<Player> _players = [];
++    private Sport _sport = SportCatalog.Default;
++    private Guid? _loadedId;
++    private string _name = "";
++    private string _positionCode = "";
++    private string _originalPositionCode = "";
++    private string _level = "";
++    private bool _initialized;
++    private bool _loaded;
++    private bool _loadFailed;
++    private bool _notFound;
++    private bool _isArchived;
++    private bool _saving;
++    private bool _saveFailed;
++    private bool _nameMissing;
++
++    /// <summary>Identifiant du joueur à modifier ; null pour un nouveau joueur.</summary>
++    [Parameter] public Guid? Id { get; set; }
++
++    private bool IsMe { get; set; }
++
++    private string Title => Id is null ? L["Player_NewTitle"] : L["Player_EditTitle"];
++
++    /// <summary>Les postes du sport par défaut, plus celui du joueur s'il vient d'un autre sport.</summary>
++    private IEnumerable<string> PositionChoices =>
++        _originalPositionCode.Length == 0 || _sport.HasPosition(_originalPositionCode)
++            ? _sport.PositionCodes
++            : _sport.PositionCodes.Append(_originalPositionCode);
++
++    protected override async Task OnParametersSetAsync()
++    {
++        // Ne pas recharger (et écraser la saisie) si le joueur affiché n'a pas changé.
++        if (_initialized && _loadedId == Id)
++        {
++            return;
++        }
++
++        _initialized = true;
++        _loadedId = Id;
++        _loaded = _loadFailed = _notFound = _isArchived = _saveFailed = _nameMissing = false;
++        _name = _positionCode = _originalPositionCode = _level = "";
++        IsMe = false;
++
++        try
++        {
++            _players = await Service.ListAsync();
++            var profile = await Profiles.GetAsync();
++            _sport = SportCatalog.Find(profile?.SportCode) ?? SportCatalog.Default;
++
++            if (Id is { } id)
++            {
++                var player = _players.FirstOrDefault(candidate => candidate.Id == id);
++                if (player is null)
++                {
++                    _notFound = true;
++                    return;
++                }
++
++                IsMe = player.ProfileId is not null;
++                _isArchived = player.IsArchived;
++                _name = player.Name;
++                _positionCode = _originalPositionCode = player.PreferredPositionCode ?? "";
++                _level = player.Level?.ToString() ?? "";
++            }
++
++            _loaded = true;
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _loadFailed = true;
++        }
++    }
++
++    private async Task SaveAsync()
++    {
++        if (_saving)
++        {
++            return;
++        }
++
++        _saveFailed = false;
++        _nameMissing = !IsMe && PlayerDirectory.CleanName(_name).Length == 0;
++        if (_nameMissing)
++        {
++            return;
++        }
++
++        var position = _positionCode.Length == 0 ? null : _positionCode;
++        int? level = int.TryParse(_level, out var parsed) ? parsed : null;
++        var input = new PlayerInput(_name, position, level);
++
++        await WriteThenReturnAsync(async () =>
++        {
++            if (Id is { } id)
++            {
++                await Service.UpdateAsync(id, input);
++            }
++            else
++            {
++                await Service.AddAsync(input);
++            }
++        });
++    }
++
++    private async Task ToggleArchivedAsync()
++    {
++        if (_saving || Id is not { } id)
++        {
++            return;
++        }
++
++        _saveFailed = false;
++        await WriteThenReturnAsync(() => Service.SetArchivedAsync(id, !_isArchived));
++    }
++
++    /// <summary>Enregistre puis revient à la liste ; en cas d'échec, reste sur la fiche avec un message.</summary>
++    private async Task WriteThenReturnAsync(Func<Task> write)
++    {
++        _saving = true;
++        try
++        {
++            await write();
++
++            // US-002 : des données viennent d'être saisies, on redemande au navigateur de les conserver.
++            await StoragePersistence.RequestAsync();
++            Navigation.NavigateTo("joueurs");
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _saveFailed = true;
++        }
++        finally
++        {
++            _saving = false;
++        }
++    }
++}
+diff --git a/src/AlFariq.UI/Pages/Players.razor b/src/AlFariq.UI/Pages/Players.razor
+index 3bb4cf2..7c3ff86 100644
+--- a/src/AlFariq.UI/Pages/Players.razor
++++ b/src/AlFariq.UI/Pages/Players.razor
+@@ -1,11 +1,10 @@
+ @page "/joueurs"
+ @using AlFariq.Application
+ @inject IStringLocalizer<Strings> L
+-@inject IRepository<Player> PlayerRepository
++@inject PlayerService Service
+ 
+ <PageTitle>@L["Players_Title"] · @L["App_Name"]</PageTitle>
+ 
+-@* Liste en lecture seule ; l'ajout, la recherche et l'archivage arrivent avec US-005. *@
+ <section class="page">
+     <h1>@L["Players_Title"]</h1>
+ 
+@@ -17,46 +16,93 @@
+     }
+     else if (_players is not null)
+     {
++        <div class="actions">
++            <a class="button" href="joueurs/nouveau">@L["Players_Add"]</a>
++        </div>
++
+         if (_players.Count == 0)
+         {
+-            <div class="card">
++            <div class="card card--empty">
+                 <p>@L["Players_Empty"]</p>
+-                <a class="button button--small button--ghost" href="profil">@L["Profile_Create"]</a>
+             </div>
+         }
+         else
+         {
+-            <ul class="card player-list">
+-                @foreach (var player in _players)
++            var archivedCount = _players.Count(player => player.IsArchived);
++            var visible = PlayerDirectory.Search(_players.Where(player => player.IsArchived == _showArchived), _query);
++
++            <div class="field">
++                <label for="player-search">@L["Players_Search"]</label>
++                <input id="player-search" type="search" dir="auto" autocomplete="off" enterkeyhint="search"
++                       @bind="_query" @bind:event="oninput" />
++            </div>
++
++            <fieldset class="segmented players-filter">
++                <legend class="sr-only">@L["Players_Filter"]</legend>
++                <label class="segmented__option">
++                    <input type="radio" name="players-status" checked="@(!_showArchived)" @onchange="() => _showArchived = false" />
++                    <span>@L["Players_Active", _players.Count - archivedCount]</span>
++                </label>
++                <label class="segmented__option">
++                    <input type="radio" name="players-status" checked="@_showArchived" @onchange="() => _showArchived = true" />
++                    <span>@L["Players_Archived", archivedCount]</span>
++                </label>
++            </fieldset>
++
++            <div role="status">
++                @if (visible.Count == 0)
+                 {
+-                    <li @key="player.Id">
+-                        <span class="player-list__name" dir="auto">@player.Name</span>
+-                        @if (player.ProfileId is not null)
+-                        {
+-                            <span class="badge">@L["Players_Me"]</span>
+-                        }
+-                        @if (player.PreferredPositionCode is { } position)
+-                        {
+-                            <span class="player-list__position">@L[SportLabels.PositionKey(position)]</span>
+-                        }
+-                    </li>
++                    <p class="hint players-none">@(string.IsNullOrWhiteSpace(_query) ? L["Players_NoneInList"] : L["Players_NoMatch"])</p>
+                 }
+-            </ul>
+-        }
++                else
++                {
++                    <p class="sr-only">@L["Players_Count", visible.Count]</p>
++                }
++            </div>
+ 
+-        <p class="hint">@L["Players_ComingSoon"]</p>
++            if (visible.Count > 0)
++            {
++                <ul class="card player-list">
++                    @foreach (var player in visible)
++                    {
++                        <li @key="player.Id">
++                            <a class="player-list__link" href="joueurs/@player.Id">
++                                <span class="player-list__name" dir="auto">@player.Name</span>
++                                @if (player.ProfileId is not null)
++                                {
++                                    <span class="badge">@L["Players_Me"]</span>
++                                }
++                                <span class="player-list__details">
++                                    @if (player.PreferredPositionCode is { } position)
++                                    {
++                                        <span>@L[SportLabels.PositionKey(position)]</span>
++                                    }
++                                    @if (player.Level is { } level)
++                                    {
++                                        <span>@L["Players_LevelShort", level]</span>
++                                    }
++                                </span>
++                            </a>
++                        </li>
++                    }
++                </ul>
++            }
++        }
+     }
+ </section>
+ 
+ @code {
+     private IReadOnlyList<Player>? _players;
++    private string _query = "";
++    private bool _showArchived;
+     private bool _loadFailed;
+ 
+     protected override async Task OnInitializedAsync()
+     {
+         try
+         {
+-            _players = await PlayerRepository.ListAsync();
++            // Lu une seule fois : la recherche et le tri se font ensuite en mémoire.
++            _players = await Service.ListAsync();
+         }
+         catch (Exception exception)
+         {
+diff --git a/src/AlFariq.UI/Resources/Strings.resx b/src/AlFariq.UI/Resources/Strings.resx
+index 642ef47..1b2f9ff 100644
+--- a/src/AlFariq.UI/Resources/Strings.resx
++++ b/src/AlFariq.UI/Resources/Strings.resx
+@@ -27,7 +27,7 @@
+   <data name="Home_StepPlayers" xml:space="preserve"><value>Ajoute tes joueurs.</value></data>
+   <data name="Home_StepMatch" xml:space="preserve"><value>Crée un match : date, heure et format.</value></data>
+   <data name="Home_StepTeams" xml:space="preserve"><value>Compose les équipes et partage la composition.</value></data>
+-  <data name="Home_EmptyHint" xml:space="preserve"><value>Ces fonctions arrivent dans les prochaines versions.</value></data>
++  <data name="Home_EmptyHint" xml:space="preserve"><value>La création de match et les équipes arrivent dans les prochaines versions.</value></data>
+   <data name="Home_CreateMatch" xml:space="preserve"><value>Créer un match</value></data>
+   <data name="Home_Players" xml:space="preserve"><value>Mes joueurs</value></data>
+   <data name="Home_NextMatch" xml:space="preserve"><value>Prochain match</value></data>
+@@ -83,9 +83,36 @@
+ 
+   <data name="Matches_Title" xml:space="preserve"><value>Matchs</value></data>
+   <data name="Players_Title" xml:space="preserve"><value>Joueurs</value></data>
+-  <data name="Players_Empty" xml:space="preserve"><value>Ton répertoire est vide. Crée ton profil pour y figurer.</value></data>
++  <data name="Players_Empty" xml:space="preserve"><value>Ton répertoire est vide. Un prénom ou un pseudo suffit pour ajouter un joueur.</value></data>
+   <data name="Players_Me" xml:space="preserve"><value>Moi</value></data>
+-  <data name="Players_ComingSoon" xml:space="preserve"><value>L'ajout d'autres joueurs arrive bientôt.</value></data>
++  <data name="Players_Add" xml:space="preserve"><value>Ajouter un joueur</value></data>
++  <data name="Players_Search" xml:space="preserve"><value>Rechercher par nom</value></data>
++  <data name="Players_Filter" xml:space="preserve"><value>Joueurs affichés</value></data>
++  <data name="Players_Active" xml:space="preserve"><value>Actifs ({0})</value></data>
++  <data name="Players_Archived" xml:space="preserve"><value>Archivés ({0})</value></data>
++  <data name="Players_Count" xml:space="preserve"><value>Joueurs affichés : {0}</value></data>
++  <data name="Players_NoMatch" xml:space="preserve"><value>Aucun joueur ne correspond à cette recherche.</value></data>
++  <data name="Players_NoneInList" xml:space="preserve"><value>Aucun joueur dans cette liste.</value></data>
++  <data name="Players_LevelShort" xml:space="preserve"><value>Niv. {0}</value></data>
++
++  <data name="Player_NewTitle" xml:space="preserve"><value>Nouveau joueur</value></data>
++  <data name="Player_EditTitle" xml:space="preserve"><value>Fiche joueur</value></data>
++  <data name="Player_Name" xml:space="preserve"><value>Prénom ou pseudo</value></data>
++  <data name="Player_NameRequired" xml:space="preserve"><value>Indique un prénom ou un pseudo.</value></data>
++  <data name="Player_Duplicate" xml:space="preserve"><value>Un joueur porte déjà ce nom. Tu peux quand même l'enregistrer.</value></data>
++  <data name="Player_Position" xml:space="preserve"><value>Poste préféré ({0}, facultatif)</value></data>
++  <data name="Player_Level" xml:space="preserve"><value>Niveau perçu, de {0} à {1} (facultatif)</value></data>
++  <data name="Player_NoLevel" xml:space="preserve"><value>Non renseigné</value></data>
++  <data name="Player_LevelHint" xml:space="preserve"><value>1 = débutant, 5 = très fort.</value></data>
++  <data name="Player_Add" xml:space="preserve"><value>Ajouter</value></data>
++  <data name="Player_SaveFailed" xml:space="preserve"><value>L'enregistrement a échoué. Réessaie.</value></data>
++  <data name="Player_Archive" xml:space="preserve"><value>Archiver ce joueur</value></data>
++  <data name="Player_ArchiveHint" xml:space="preserve"><value>Un joueur archivé n'est plus proposé dans les sélections, mais reste dans l'historique.</value></data>
++  <data name="Player_Restore" xml:space="preserve"><value>Réactiver ce joueur</value></data>
++  <data name="Player_RestoreHint" xml:space="preserve"><value>Ce joueur est archivé : il n'est plus proposé dans les sélections.</value></data>
++  <data name="Player_MeHint" xml:space="preserve"><value>C'est toi : ton nom et ton poste viennent de ton profil.</value></data>
++  <data name="Player_NotFound" xml:space="preserve"><value>Ce joueur est introuvable.</value></data>
++  <data name="Player_Back" xml:space="preserve"><value>Retour aux joueurs</value></data>
+   <data name="More_Title" xml:space="preserve"><value>Plus</value></data>
+   <data name="Section_ComingSoon" xml:space="preserve"><value>Cette section arrive bientôt.</value></data>
+ 
+diff --git a/src/AlFariq.UI/wwwroot/css/app.css b/src/AlFariq.UI/wwwroot/css/app.css
+index 55cc21b..a801b5c 100644
+--- a/src/AlFariq.UI/wwwroot/css/app.css
++++ b/src/AlFariq.UI/wwwroot/css/app.css
+@@ -262,6 +262,23 @@ h1:focus {
+   color: var(--color-error);
+ }
+ 
++.field__warning {
++  margin: 0.5rem 0 0;
++  padding: 0.5rem 0.75rem;
++  border-radius: 10px;
++  background: var(--color-banner-offline-bg);
++  color: var(--color-banner-offline-text);
++}
++
++.field .hint {
++  margin-top: 0.25rem;
++}
++
++.field input:disabled,
++.field select:disabled {
++  opacity: 0.7;
++}
++
+ .button:disabled {
+   opacity: 0.6;
+   cursor: progress;
+@@ -280,12 +297,15 @@ h1:focus {
+   list-style: none;
+ }
+ 
+-.player-list li {
++.player-list__link {
+   display: flex;
+   flex-wrap: wrap;
+   align-items: center;
+   gap: 0.25rem 0.5rem;
++  min-height: 44px;
+   padding: 0.75rem 0;
++  color: inherit;
++  text-decoration: none;
+ }
+ 
+ .player-list li + li {
+@@ -297,11 +317,22 @@ h1:focus {
+   overflow-wrap: anywhere;
+ }
+ 
+-.player-list__position {
++.player-list__details {
++  display: flex;
++  gap: 0.75rem;
+   margin-inline-start: auto;
+   color: var(--color-muted);
+ }
+ 
++.segmented.players-filter {
++  margin-top: var(--gutter);
++}
++
++.players-none {
++  margin: var(--gutter) 0 0;
++  text-align: center;
++}
++
+ .badge {
+   padding: 0.125rem 0.625rem;
+   border-radius: 999px;
+diff --git a/tests/AlFariq.Client.Core.Tests/PlayerServiceTests.cs b/tests/AlFariq.Client.Core.Tests/PlayerServiceTests.cs
+new file mode 100644
+index 0000000..8e2250f
+--- /dev/null
++++ b/tests/AlFariq.Client.Core.Tests/PlayerServiceTests.cs
+@@ -0,0 +1,133 @@
++using AlFariq.Application;
++using AlFariq.Client.Core.Storage;
++using AlFariq.Domain;
++using Microsoft.Extensions.DependencyInjection;
++
++namespace AlFariq.Client.Core.Tests;
++
++public sealed class PlayerServiceTests : IDisposable
++{
++    private readonly ServiceProvider _app;
++    private readonly PlayerService _players;
++
++    public PlayerServiceTests()
++    {
++        var services = new ServiceCollection();
++        services.AddSingleton<IDocumentStore>(new InMemoryDocumentStore());
++        services.AddSingleton<TimeProvider>(new FakeClock());
++        services.AddAlFariqApplication();
++        services.AddLocalRepository<Profile>(LocalSchema.ProfilesStore);
++        services.AddLocalRepository<Player>(LocalSchema.PlayersStore);
++        _app = services.BuildServiceProvider();
++        _players = _app.GetRequiredService<PlayerService>();
++    }
++
++    public void Dispose() => _app.Dispose();
++
++    private ProfileService Profiles => _app.GetRequiredService<ProfileService>();
++
++    [Fact]
++    public async Task A_name_is_enough_to_add_a_player()
++    {
++        var added = await _players.AddAsync(new PlayerInput("  Sami "));
++
++        var stored = Assert.Single(await _players.ListAsync());
++        Assert.Equal(added.Id, stored.Id);
++        Assert.Equal("Sami", stored.Name);
++        Assert.Null(stored.PreferredPositionCode);
++        Assert.Null(stored.Level);
++        Assert.False(stored.IsArchived);
++    }
++
++    [Theory]
++    [InlineData(1)]
++    [InlineData(5)]
++    public async Task Level_bounds_are_accepted(int level)
++    {
++        var added = await _players.AddAsync(new PlayerInput("Sami", Level: level));
++
++        Assert.Equal(level, (await _players.FindAsync(added.Id))!.Level);
++    }
++
++    [Theory]
++    [InlineData("", null, null)]
++    [InlineData("   ", null, null)]
++    [InlineData("12345678901234567890123456789012345678901", null, null)]
++    [InlineData("Sami", "inconnu", null)]
++    [InlineData("Sami", null, 0)]
++    [InlineData("Sami", null, 6)]
++    public async Task Invalid_input_is_rejected_and_nothing_is_written(string name, string? position, int? level)
++    {
++        await Assert.ThrowsAsync<ArgumentException>(() => _players.AddAsync(new PlayerInput(name, position, level)));
++
++        Assert.Empty(await _players.ListAsync());
++    }
++
++    [Fact]
++    public async Task A_player_can_be_edited_and_the_level_removed()
++    {
++        var added = await _players.AddAsync(new PlayerInput("Sami", Level: 3));
++
++        await _players.UpdateAsync(added.Id, new PlayerInput("Samir", "football.defender"));
++
++        var stored = Assert.Single(await _players.ListAsync());
++        Assert.Equal("Samir", stored.Name);
++        Assert.Equal("football.defender", stored.PreferredPositionCode);
++        Assert.Null(stored.Level);
++    }
++
++    [Fact]
++    public async Task Two_players_may_share_a_name()
++    {
++        await _players.AddAsync(new PlayerInput("Sami"));
++        await _players.AddAsync(new PlayerInput("Sami"));
++
++        Assert.Equal(2, (await _players.ListAsync()).Count);
++    }
++
++    [Fact]
++    public async Task An_archived_player_leaves_selections_but_remains_findable_and_can_come_back()
++    {
++        var sami = await _players.AddAsync(new PlayerInput("Sami"));
++        await _players.AddAsync(new PlayerInput("Alice"));
++
++        await _players.SetArchivedAsync(sami.Id, archived: true);
++
++        Assert.Equal(new[] { "Alice" }, (await _players.ListSelectableAsync()).Select(p => p.Name));
++        Assert.True((await _players.FindAsync(sami.Id))!.IsArchived);
++        Assert.Equal(2, (await _players.ListAsync()).Count);
++
++        await _players.SetArchivedAsync(sami.Id, archived: false);
++
++        Assert.Equal(new[] { "Alice", "Sami" }, (await _players.ListSelectableAsync()).Select(p => p.Name));
++    }
++
++    [Fact]
++    public async Task My_own_player_keeps_the_profile_name_and_cannot_be_archived()
++    {
++        await Profiles.SaveAsync(new ProfileInput("Sami", PreferredPositionCode: "football.forward"));
++        var me = Assert.Single(await _players.ListAsync());
++
++        await _players.UpdateAsync(me.Id, new PlayerInput("Autre", "football.goalkeeper", 4));
++
++        var stored = (await _players.FindAsync(me.Id))!;
++        Assert.Equal("Sami", stored.Name);
++        Assert.Equal("football.forward", stored.PreferredPositionCode);
++        Assert.Equal(4, stored.Level);
++        await Assert.ThrowsAsync<InvalidOperationException>(() => _players.SetArchivedAsync(me.Id, archived: true));
++    }
++
++    [Fact]
++    public async Task Saving_the_profile_keeps_my_level()
++    {
++        await Profiles.SaveAsync(new ProfileInput("Sami"));
++        var me = Assert.Single(await _players.ListAsync());
++        await _players.UpdateAsync(me.Id, new PlayerInput("Sami", Level: 2));
++
++        await Profiles.SaveAsync(new ProfileInput("Samir"));
++
++        var stored = Assert.Single(await _players.ListAsync());
++        Assert.Equal("Samir", stored.Name);
++        Assert.Equal(2, stored.Level);
++    }
++}
+diff --git a/tests/AlFariq.Domain.Tests/PlayerDirectoryTests.cs b/tests/AlFariq.Domain.Tests/PlayerDirectoryTests.cs
+new file mode 100644
+index 0000000..8f2fe63
+--- /dev/null
++++ b/tests/AlFariq.Domain.Tests/PlayerDirectoryTests.cs
+@@ -0,0 +1,79 @@
++using System.Diagnostics;
++using AlFariq.Domain;
++
++namespace AlFariq.Domain.Tests;
++
++public class PlayerDirectoryTests
++{
++    private static Player[] Players(params string[] names) => names.Select(name => new Player { Name = name }).ToArray();
++
++    private static IEnumerable<string> Names(IEnumerable<Player> players) => players.Select(player => player.Name);
++
++    [Fact]
++    public void Without_a_query_all_players_are_sorted_by_name_ignoring_case_and_accents()
++    {
++        var players = Players("farid", "Élodie", "Dan", "Zoé", "alice");
++
++        var result = PlayerDirectory.Search(players, null);
++
++        Assert.Equal(new[] { "alice", "Dan", "Élodie", "farid", "Zoé" }, Names(result));
++    }
++
++    [Theory]
++    [InlineData("elo")]
++    [InlineData("ÉLODIE")]
++    [InlineData("  lodie ")]
++    public void Search_matches_part_of_the_name_ignoring_case_and_accents(string query)
++    {
++        var players = Players("Élodie", "Sami");
++
++        Assert.Equal(new[] { "Élodie" }, Names(PlayerDirectory.Search(players, query)));
++    }
++
++    [Fact]
++    public void Search_can_find_nobody()
++    {
++        Assert.Empty(PlayerDirectory.Search(Players("Sami"), "zzz"));
++    }
++
++    [Theory]
++    [InlineData("elodie martin", true)]
++    [InlineData("  ÉLODIE   Martin ", true)]
++    [InlineData("Élodie", false)]
++    [InlineData("", false)]
++    public void Same_name_ignores_case_accents_and_extra_spaces(string name, bool expected)
++    {
++        Assert.Equal(expected, PlayerDirectory.HasSameName(Players("Élodie Martin"), name));
++    }
++
++    [Fact]
++    public void A_player_is_not_a_duplicate_of_itself()
++    {
++        var players = Players("Sami");
++
++        Assert.False(PlayerDirectory.HasSameName(players, "Sami", players[0].Id));
++    }
++
++    [Fact]
++    public void CleanName_trims_and_collapses_spaces()
++    {
++        Assert.Equal("Jean Michel", PlayerDirectory.CleanName("  Jean \t  Michel  "));
++        Assert.Equal("", PlayerDirectory.CleanName(null));
++    }
++
++    [Fact]
++    public void Search_and_sort_stay_quick_with_many_players()
++    {
++        // Budget volontairement large (machines de CI) : il ne détecte qu'une régression grossière.
++        var players = Enumerable.Range(0, 1000).Select(i => new Player { Name = $"Joueur {(i * 7919) % 1000:D4}" }).ToList();
++        var watch = Stopwatch.StartNew();
++
++        var all = PlayerDirectory.Search(players, "");
++        var some = PlayerDirectory.Search(players, "joueur 09");
++
++        watch.Stop();
++        Assert.Equal(1000, all.Count);
++        Assert.Equal(100, some.Count);
++        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(1), $"Durée : {watch.Elapsed}");
++    }
++}
+diff --git a/tools/seed-players.js b/tools/seed-players.js
+new file mode 100644
+index 0000000..305d580
+--- /dev/null
++++ b/tools/seed-players.js
+@@ -0,0 +1,35 @@
++// Ajoute des joueurs fictifs à la base locale, pour essayer le répertoire avec beaucoup de monde (US-005).
++// Usage : ouvrir l'écran « Joueurs » de l'appli, coller ce fichier dans la console du navigateur, puis recharger.
++// Les joueurs créés s'appellent « Test 001 Élodie », « Test 002 Sami »... : la recherche « Test » les retrouve.
++(async () => {
++  const count = 250;
++  const names = ["Élodie", "Sami", "Chloé", "Yanis", "Inès", "Hugo", "Zoé", "Karim", "Léa", "Noé"];
++  const done = request => new Promise((resolve, reject) => {
++    request.onsuccess = () => resolve(request.result);
++    request.onerror = () => reject(request.error);
++  });
++
++  const db = await done(indexedDB.open("alfariq"));
++  try {
++    if (!db.objectStoreNames.contains("players")) {
++      throw new Error("Magasin « players » absent : ouvre d'abord l'écran Joueurs de l'appli.");
++    }
++
++    const transaction = db.transaction("players", "readwrite");
++    const store = transaction.objectStore("players");
++    const now = new Date().toISOString();
++    for (let i = 1; i <= count; i++) {
++      const id = crypto.randomUUID();
++      const name = `Test ${String(i).padStart(3, "0")} ${names[i % names.length]}`;
++      store.put({ id, createdAt: now, updatedAt: now, deletedAt: null, name, level: (i % 5) + 1, isArchived: i % 20 === 0 }, id);
++    }
++
++    await new Promise((resolve, reject) => {
++      transaction.oncomplete = resolve;
++      transaction.onerror = () => reject(transaction.error);
++    });
++    console.log(`${count} joueurs de test ajoutés. Recharge la page.`);
++  } finally {
++    db.close();
++  }
++})();

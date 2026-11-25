@@ -27,7 +27,7 @@
   <data name="Home_StepPlayers" xml:space="preserve"><value>Ajoute tes joueurs.</value></data>
   <data name="Home_StepMatch" xml:space="preserve"><value>Crée un match : date, heure et format.</value></data>
   <data name="Home_StepTeams" xml:space="preserve"><value>Compose les équipes et partage la composition.</value></data>
-  <data name="Home_EmptyHint" xml:space="preserve"><value>Ces fonctions arrivent dans les prochaines versions.</value></data>
+  <data name="Home_EmptyHint" xml:space="preserve"><value>La création de match et les équipes arrivent dans les prochaines versions.</value></data>
   <data name="Home_CreateMatch" xml:space="preserve"><value>Créer un match</value></data>
   <data name="Home_Players" xml:space="preserve"><value>Mes joueurs</value></data>
   <data name="Home_NextMatch" xml:space="preserve"><value>Prochain match</value></data>
@@ -83,9 +83,36 @@
 
   <data name="Matches_Title" xml:space="preserve"><value>Matchs</value></data>
   <data name="Players_Title" xml:space="preserve"><value>Joueurs</value></data>
-  <data name="Players_Empty" xml:space="preserve"><value>Ton répertoire est vide. Crée ton profil pour y figurer.</value></data>
+  <data name="Players_Empty" xml:space="preserve"><value>Ton répertoire est vide. Un prénom ou un pseudo suffit pour ajouter un joueur.</value></data>
   <data name="Players_Me" xml:space="preserve"><value>Moi</value></data>
-  <data name="Players_ComingSoon" xml:space="preserve"><value>L'ajout d'autres joueurs arrive bientôt.</value></data>
+  <data name="Players_Add" xml:space="preserve"><value>Ajouter un joueur</value></data>
+  <data name="Players_Search" xml:space="preserve"><value>Rechercher par nom</value></data>
+  <data name="Players_Filter" xml:space="preserve"><value>Joueurs affichés</value></data>
+  <data name="Players_Active" xml:space="preserve"><value>Actifs ({0})</value></data>
+  <data name="Players_Archived" xml:space="preserve"><value>Archivés ({0})</value></data>
+  <data name="Players_Count" xml:space="preserve"><value>Joueurs affichés : {0}</value></data>
+  <data name="Players_NoMatch" xml:space="preserve"><value>Aucun joueur ne correspond à cette recherche.</value></data>
+  <data name="Players_NoneInList" xml:space="preserve"><value>Aucun joueur dans cette liste.</value></data>
+  <data name="Players_LevelShort" xml:space="preserve"><value>Niv. {0}</value></data>
+
+  <data name="Player_NewTitle" xml:space="preserve"><value>Nouveau joueur</value></data>
+  <data name="Player_EditTitle" xml:space="preserve"><value>Fiche joueur</value></data>
+  <data name="Player_Name" xml:space="preserve"><value>Prénom ou pseudo</value></data>
+  <data name="Player_NameRequired" xml:space="preserve"><value>Indique un prénom ou un pseudo.</value></data>
+  <data name="Player_Duplicate" xml:space="preserve"><value>Un joueur porte déjà ce nom. Tu peux quand même l'enregistrer.</value></data>
+  <data name="Player_Position" xml:space="preserve"><value>Poste préféré ({0}, facultatif)</value></data>
+  <data name="Player_Level" xml:space="preserve"><value>Niveau perçu, de {0} à {1} (facultatif)</value></data>
+  <data name="Player_NoLevel" xml:space="preserve"><value>Non renseigné</value></data>
+  <data name="Player_LevelHint" xml:space="preserve"><value>1 = débutant, 5 = très fort.</value></data>
+  <data name="Player_Add" xml:space="preserve"><value>Ajouter</value></data>
+  <data name="Player_SaveFailed" xml:space="preserve"><value>L'enregistrement a échoué. Réessaie.</value></data>
+  <data name="Player_Archive" xml:space="preserve"><value>Archiver ce joueur</value></data>
+  <data name="Player_ArchiveHint" xml:space="preserve"><value>Un joueur archivé n'est plus proposé dans les sélections, mais reste dans l'historique.</value></data>
+  <data name="Player_Restore" xml:space="preserve"><value>Réactiver ce joueur</value></data>
+  <data name="Player_RestoreHint" xml:space="preserve"><value>Ce joueur est archivé : il n'est plus proposé dans les sélections.</value></data>
+  <data name="Player_MeHint" xml:space="preserve"><value>C'est toi : ton nom et ton poste viennent de ton profil.</value></data>
+  <data name="Player_NotFound" xml:space="preserve"><value>Ce joueur est introuvable.</value></data>
+  <data name="Player_Back" xml:space="preserve"><value>Retour aux joueurs</value></data>
   <data name="More_Title" xml:space="preserve"><value>Plus</value></data>
   <data name="Section_ComingSoon" xml:space="preserve"><value>Cette section arrive bientôt.</value></data>
 
