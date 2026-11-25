@@ -1,0 +1,25 @@
+@using System.Globalization
+@using AlFariq.Application
+@inject IStringLocalizer<Strings> L
+
+<article class="card next-match">
+    <h2>@L["Home_NextMatch"]</h2>
+    <p class="next-match__date">
+        <time datetime="@Start.ToString("yyyy-MM-ddTHH:mmzzz", CultureInfo.InvariantCulture)">
+            @L["Home_MatchDate", Start.ToString("dddd d MMMM", CultureInfo.CurrentUICulture), Start.ToString("HH:mm", CultureInfo.CurrentUICulture)]
+        </time>
+    </p>
+    <p>@L["Home_MatchFormat", Match.PlayersPerSide]</p>
+    @if (!string.IsNullOrWhiteSpace(Match.Location))
+    {
+        <p class="next-match__location" dir="auto">@Match.Location</p>
+    }
+    <a class="button button--small button--ghost" href="matchs">@L["Home_SeeMatches"]</a>
+</article>
+
+@code {
+    [Parameter, EditorRequired] public UpcomingMatch Match { get; set; } = default!;
+
+    /// <summary>Début du match à l'heure de l'appareil.</summary>
+    private DateTimeOffset Start => Match.StartsAt.ToLocalTime();
+}

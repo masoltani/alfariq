@@ -2,12 +2,15 @@
 @inject ConnectivityService Connectivity
 @inject IStringLocalizer<Strings> L
 
-@if (!Connectivity.IsOnline)
-{
-    <div class="banner banner--offline" role="status">
-        @L["Status_Offline"]
-    </div>
-}
+@* La zone « status » reste toujours présente : les lecteurs d'écran annoncent ainsi le message quand il apparaît. *@
+<div role="status">
+    @if (!Connectivity.IsOnline)
+    {
+        <div class="banner banner--offline">
+            @L["Status_Offline"]
+        </div>
+    }
+</div>
 
 @code {
     protected override void OnInitialized() => Connectivity.Changed += OnChanged;

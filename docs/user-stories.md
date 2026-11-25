@@ -96,6 +96,8 @@ Critères d'acceptation :
 - L'accueil affiche le prochain match (s'il existe), un bouton « Créer un match » et l'accès aux joueurs.
 - Un état vide explicite guide le premier lancement.
 
+**Note (US-003)** : tant que les matchs n'existent pas, l'accueil lit `IUpcomingMatchQuery` (implémentation vide, `NoUpcomingMatchQuery`) et « Créer un match » ouvre une page d'attente (`/matchs/nouveau`). US-006 fournira la lecture réelle (prochain match planifié à venir) et le formulaire.
+
 ### US-004 — Créer mon profil local
 En tant qu'utilisateur, je veux saisir mon nom ou pseudo, mon sport par défaut et mon poste préféré afin de personnaliser l'appli sans créer de compte.
 Priorité : M — Taille : S — Dépend de : US-002

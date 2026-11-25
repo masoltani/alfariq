@@ -1,0 +1,15 @@
+@page "/matchs/nouveau"
+@inject IStringLocalizer<Strings> L
+
+<PageTitle>@L["NewMatch_Title"] · @L["App_Name"]</PageTitle>
+
+@* Page d'attente : le formulaire de création arrive avec US-006. *@
+<section class="page">
+    <h1>@L["NewMatch_Title"]</h1>
+    <div class="card card--empty">
+        <p>@L["Section_ComingSoon"]</p>
+    </div>
+    <div class="actions">
+        <a class="button button--ghost" href="">@L["NotFound_Back"]</a>
+    </div>
+</section>

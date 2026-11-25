@@ -22,8 +22,20 @@
 
   <data name="Home_Title" xml:space="preserve"><value>Accueil</value></data>
   <data name="Home_Welcome" xml:space="preserve"><value>Bienvenue sur AlFariq</value></data>
-  <data name="Home_Intro" xml:space="preserve"><value>Prépare un match, compose les équipes et partage la composition avec tes amis. Tout fonctionne sans connexion.</value></data>
-  <data name="Home_EmptyState" xml:space="preserve"><value>Aucun match prévu pour l'instant. Les premières fonctionnalités arrivent bientôt.</value></data>
+  <data name="Home_EmptyTitle" xml:space="preserve"><value>Aucun match prévu</value></data>
+  <data name="Home_EmptyGuide" xml:space="preserve"><value>Avec AlFariq, un match se prépare en trois étapes, même sans connexion :</value></data>
+  <data name="Home_StepPlayers" xml:space="preserve"><value>Ajoute tes joueurs.</value></data>
+  <data name="Home_StepMatch" xml:space="preserve"><value>Crée un match : date, heure et format.</value></data>
+  <data name="Home_StepTeams" xml:space="preserve"><value>Compose les équipes et partage la composition.</value></data>
+  <data name="Home_EmptyHint" xml:space="preserve"><value>Ces fonctions arrivent dans les prochaines versions.</value></data>
+  <data name="Home_CreateMatch" xml:space="preserve"><value>Créer un match</value></data>
+  <data name="Home_Players" xml:space="preserve"><value>Mes joueurs</value></data>
+  <data name="Home_NextMatch" xml:space="preserve"><value>Prochain match</value></data>
+  <data name="Home_MatchDate" xml:space="preserve"><value>{0} à {1}</value></data>
+  <data name="Home_MatchFormat" xml:space="preserve"><value>{0} contre {0}</value></data>
+  <data name="Home_SeeMatches" xml:space="preserve"><value>Voir les matchs</value></data>
+
+  <data name="NewMatch_Title" xml:space="preserve"><value>Nouveau match</value></data>
 
   <data name="Matches_Title" xml:space="preserve"><value>Matchs</value></data>
   <data name="Players_Title" xml:space="preserve"><value>Joueurs</value></data>

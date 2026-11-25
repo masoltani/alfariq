@@ -39,6 +39,7 @@ dotnet publish src/AlFariq.Web -c Release -o artifacts/web
 | `tests/AlFariq.Web.Tests` | Contrôles du manifeste, de la page d'accueil, du service worker et des traductions. |
 | `tests/pwa-offline` | Test Chromium (Playwright) : ouverture hors ligne, mise à jour à la demande. |
 | `tests/local-db` | Test Chromium (Playwright) : IndexedDB réel, migrations de schéma, stockage persistant. |
+| `tests/connectivity` | Test Chromium (Playwright) : détection de la coupure et du retour du réseau. |
 | `tests/whats-new` | Test Chromium (Playwright) : mémorisation de la dernière version vue, y compris stockage bloqué. |
 
 ## Conventions

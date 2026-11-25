@@ -1,6 +1,28 @@
 {
   "entries": [
     {
+      "version": "0.4.0",
+      "date": "2026-11-25",
+      "changes": [
+        {
+          "type": "added",
+          "text": {
+            "fr": "Nouvel accueil : un guide pour démarrer et des raccourcis vers la création de match et les joueurs (bientôt disponibles).",
+            "en": "New home screen: a getting-started guide and shortcuts to match creation and players (coming soon).",
+            "ar": "شاشة رئيسية جديدة: دليل للبدء واختصارات لإنشاء مباراة وللاعبين (قريبًا)."
+          }
+        },
+        {
+          "type": "changed",
+          "text": {
+            "fr": "Le message « hors ligne » est mieux annoncé par les lecteurs d'écran.",
+            "en": "The offline message is now announced more reliably by screen readers.",
+            "ar": "أصبحت قارئات الشاشة تعلن رسالة عدم الاتصال بشكل أفضل."
+          }
+        }
+      ]
+    },
+    {
       "version": "0.3.0",
       "date": "2026-11-25",
       "changes": [

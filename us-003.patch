@@ -1,0 +1,483 @@
+diff --git a/Directory.Build.props b/Directory.Build.props
+index 1a33cbc..44b6407 100644
+--- a/Directory.Build.props
++++ b/Directory.Build.props
+@@ -6,7 +6,7 @@
+     <Nullable>enable</Nullable>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <AnalysisLevel>latest</AnalysisLevel>
+-    <Version>0.3.0</Version>
++    <Version>0.4.0</Version>
+     <Deterministic>true</Deterministic>
+   </PropertyGroup>
+ 
+diff --git a/README.md b/README.md
+index 37f7ebe..2539b6f 100644
+--- a/README.md
++++ b/README.md
+@@ -39,6 +39,7 @@ dotnet publish src/AlFariq.Web -c Release -o artifacts/web
+ | `tests/AlFariq.Web.Tests` | Contrôles du manifeste, de la page d'accueil, du service worker et des traductions. |
+ | `tests/pwa-offline` | Test Chromium (Playwright) : ouverture hors ligne, mise à jour à la demande. |
+ | `tests/local-db` | Test Chromium (Playwright) : IndexedDB réel, migrations de schéma, stockage persistant. |
++| `tests/connectivity` | Test Chromium (Playwright) : détection de la coupure et du retour du réseau. |
+ | `tests/whats-new` | Test Chromium (Playwright) : mémorisation de la dernière version vue, y compris stockage bloqué. |
+ 
+ ## Conventions
+diff --git a/docs/user-stories.md b/docs/user-stories.md
+index 1aabcb6..31e6859 100644
+--- a/docs/user-stories.md
++++ b/docs/user-stories.md
+@@ -96,6 +96,8 @@ Critères d'acceptation :
+ - L'accueil affiche le prochain match (s'il existe), un bouton « Créer un match » et l'accès aux joueurs.
+ - Un état vide explicite guide le premier lancement.
+ 
++**Note (US-003)** : tant que les matchs n'existent pas, l'accueil lit `IUpcomingMatchQuery` (implémentation vide, `NoUpcomingMatchQuery`) et « Créer un match » ouvre une page d'attente (`/matchs/nouveau`). US-006 fournira la lecture réelle (prochain match planifié à venir) et le formulaire.
++
+ ### US-004 — Créer mon profil local
+ En tant qu'utilisateur, je veux saisir mon nom ou pseudo, mon sport par défaut et mon poste préféré afin de personnaliser l'appli sans créer de compte.
+ Priorité : M — Taille : S — Dépend de : US-002
+diff --git a/src/AlFariq.Application/DependencyInjection.cs b/src/AlFariq.Application/DependencyInjection.cs
+index cc97689..3d062bb 100644
+--- a/src/AlFariq.Application/DependencyInjection.cs
++++ b/src/AlFariq.Application/DependencyInjection.cs
+@@ -1,4 +1,5 @@
+ using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.DependencyInjection.Extensions;
+ 
+ namespace AlFariq.Application;
+ 
+@@ -7,6 +8,8 @@ public static class DependencyInjection
+     /// <summary>Enregistre les cas d'usage de l'application (les premiers arrivent avec US-004).</summary>
+     public static IServiceCollection AddAlFariqApplication(this IServiceCollection services)
+     {
++        // US-003 : sans matchs pour l'instant. Un enregistrement ultérieur (US-006) prend le dessus.
++        services.TryAddSingleton<IUpcomingMatchQuery, NoUpcomingMatchQuery>();
+         return services;
+     }
+ }
+diff --git a/src/AlFariq.Application/IUpcomingMatchQuery.cs b/src/AlFariq.Application/IUpcomingMatchQuery.cs
+new file mode 100644
+index 0000000..959d94b
+--- /dev/null
++++ b/src/AlFariq.Application/IUpcomingMatchQuery.cs
+@@ -0,0 +1,15 @@
++namespace AlFariq.Application;
++
++/// <summary>Ce que l'accueil affiche du prochain match.</summary>
++/// <param name="Id">Identifiant du match.</param>
++/// <param name="StartsAt">Date et heure de début, avec leur décalage UTC.</param>
++/// <param name="Location">Lieu en texte libre ; null ou vide s'il n'est pas renseigné.</param>
++/// <param name="PlayersPerSide">Format du match : nombre de joueurs par équipe.</param>
++public sealed record UpcomingMatch(Guid Id, DateTimeOffset StartsAt, string? Location, int PlayersPerSide);
++
++/// <summary>Lecture du prochain match pour l'écran d'accueil (US-003).</summary>
++public interface IUpcomingMatchQuery
++{
++    /// <summary>Le prochain match planifié à venir, ou null s'il n'y en a pas.</summary>
++    Task<UpcomingMatch?> GetNextAsync(CancellationToken cancellationToken = default);
++}
+diff --git a/src/AlFariq.Application/NoUpcomingMatchQuery.cs b/src/AlFariq.Application/NoUpcomingMatchQuery.cs
+new file mode 100644
+index 0000000..27878bd
+--- /dev/null
++++ b/src/AlFariq.Application/NoUpcomingMatchQuery.cs
+@@ -0,0 +1,11 @@
++namespace AlFariq.Application;
++
++/// <summary>
++/// Implémentation utilisée tant que les matchs n'existent pas : il n'y a jamais de prochain match.
++/// US-006 enregistrera à sa place une implémentation qui lit le dépôt des matchs.
++/// </summary>
++public sealed class NoUpcomingMatchQuery : IUpcomingMatchQuery
++{
++    public Task<UpcomingMatch?> GetNextAsync(CancellationToken cancellationToken = default) =>
++        Task.FromResult<UpcomingMatch?>(null);
++}
+diff --git a/src/AlFariq.Domain/Releases/changelog.json b/src/AlFariq.Domain/Releases/changelog.json
+index cc7fb06..dc36b68 100644
+--- a/src/AlFariq.Domain/Releases/changelog.json
++++ b/src/AlFariq.Domain/Releases/changelog.json
+@@ -1,5 +1,27 @@
+ {
+   "entries": [
++    {
++      "version": "0.4.0",
++      "date": "2026-11-25",
++      "changes": [
++        {
++          "type": "added",
++          "text": {
++            "fr": "Nouvel accueil : un guide pour démarrer et des raccourcis vers la création de match et les joueurs (bientôt disponibles).",
++            "en": "New home screen: a getting-started guide and shortcuts to match creation and players (coming soon).",
++            "ar": "شاشة رئيسية جديدة: دليل للبدء واختصارات لإنشاء مباراة وللاعبين (قريبًا)."
++          }
++        },
++        {
++          "type": "changed",
++          "text": {
++            "fr": "Le message « hors ligne » est mieux annoncé par les lecteurs d'écran.",
++            "en": "The offline message is now announced more reliably by screen readers.",
++            "ar": "أصبحت قارئات الشاشة تعلن رسالة عدم الاتصال بشكل أفضل."
++          }
++        }
++      ]
++    },
+     {
+       "version": "0.3.0",
+       "date": "2026-11-25",
+diff --git a/src/AlFariq.UI/Components/NextMatchCard.razor b/src/AlFariq.UI/Components/NextMatchCard.razor
+new file mode 100644
+index 0000000..bfb874b
+--- /dev/null
++++ b/src/AlFariq.UI/Components/NextMatchCard.razor
+@@ -0,0 +1,25 @@
++@using System.Globalization
++@using AlFariq.Application
++@inject IStringLocalizer<Strings> L
++
++<article class="card next-match">
++    <h2>@L["Home_NextMatch"]</h2>
++    <p class="next-match__date">
++        <time datetime="@Start.ToString("yyyy-MM-ddTHH:mmzzz", CultureInfo.InvariantCulture)">
++            @L["Home_MatchDate", Start.ToString("dddd d MMMM", CultureInfo.CurrentUICulture), Start.ToString("HH:mm", CultureInfo.CurrentUICulture)]
++        </time>
++    </p>
++    <p>@L["Home_MatchFormat", Match.PlayersPerSide]</p>
++    @if (!string.IsNullOrWhiteSpace(Match.Location))
++    {
++        <p class="next-match__location" dir="auto">@Match.Location</p>
++    }
++    <a class="button button--small button--ghost" href="matchs">@L["Home_SeeMatches"]</a>
++</article>
++
++@code {
++    [Parameter, EditorRequired] public UpcomingMatch Match { get; set; } = default!;
++
++    /// <summary>Début du match à l'heure de l'appareil.</summary>
++    private DateTimeOffset Start => Match.StartsAt.ToLocalTime();
++}
+diff --git a/src/AlFariq.UI/Components/OfflineBanner.razor b/src/AlFariq.UI/Components/OfflineBanner.razor
+index aff3797..03a63ee 100644
+--- a/src/AlFariq.UI/Components/OfflineBanner.razor
++++ b/src/AlFariq.UI/Components/OfflineBanner.razor
+@@ -2,12 +2,15 @@
+ @inject ConnectivityService Connectivity
+ @inject IStringLocalizer<Strings> L
+ 
+-@if (!Connectivity.IsOnline)
+-{
+-    <div class="banner banner--offline" role="status">
+-        @L["Status_Offline"]
+-    </div>
+-}
++@* La zone « status » reste toujours présente : les lecteurs d'écran annoncent ainsi le message quand il apparaît. *@
++<div role="status">
++    @if (!Connectivity.IsOnline)
++    {
++        <div class="banner banner--offline">
++            @L["Status_Offline"]
++        </div>
++    }
++</div>
+ 
+ @code {
+     protected override void OnInitialized() => Connectivity.Changed += OnChanged;
+diff --git a/src/AlFariq.UI/Pages/Home.razor b/src/AlFariq.UI/Pages/Home.razor
+index 258d9fc..14f8eac 100644
+--- a/src/AlFariq.UI/Pages/Home.razor
++++ b/src/AlFariq.UI/Pages/Home.razor
+@@ -1,13 +1,48 @@
+ @page "/"
++@using AlFariq.Application
+ @inject IStringLocalizer<Strings> L
++@inject IUpcomingMatchQuery UpcomingMatches
+ 
+ <PageTitle>@L["App_Name"]</PageTitle>
+ 
+ <section class="page">
+     <h1>@L["Home_Welcome"]</h1>
+-    <p class="lead">@L["Home_Intro"]</p>
+ 
+-    <div class="card card--empty">
+-        <p>@L["Home_EmptyState"]</p>
++    @* Rien tant que la lecture n'est pas finie : l'état vide ne doit pas apparaître puis disparaître. *@
++    @if (_loaded)
++    {
++        if (_nextMatch is not null)
++        {
++            <NextMatchCard Match="_nextMatch" />
++        }
++        else
++        {
++            <div class="card">
++                <h2>@L["Home_EmptyTitle"]</h2>
++                <p>@L["Home_EmptyGuide"]</p>
++                <ol class="steps">
++                    <li>@L["Home_StepPlayers"]</li>
++                    <li>@L["Home_StepMatch"]</li>
++                    <li>@L["Home_StepTeams"]</li>
++                </ol>
++                <p class="hint">@L["Home_EmptyHint"]</p>
++            </div>
++        }
++    }
++
++    <div class="actions">
++        <a class="button" href="matchs/nouveau">@L["Home_CreateMatch"]</a>
++        <a class="button button--ghost" href="joueurs">@L["Home_Players"]</a>
+     </div>
+ </section>
++
++@code {
++    private UpcomingMatch? _nextMatch;
++    private bool _loaded;
++
++    protected override async Task OnInitializedAsync()
++    {
++        _nextMatch = await UpcomingMatches.GetNextAsync();
++        _loaded = true;
++    }
++}
+diff --git a/src/AlFariq.UI/Pages/NewMatch.razor b/src/AlFariq.UI/Pages/NewMatch.razor
+new file mode 100644
+index 0000000..6e744cc
+--- /dev/null
++++ b/src/AlFariq.UI/Pages/NewMatch.razor
+@@ -0,0 +1,15 @@
++@page "/matchs/nouveau"
++@inject IStringLocalizer<Strings> L
++
++<PageTitle>@L["NewMatch_Title"] · @L["App_Name"]</PageTitle>
++
++@* Page d'attente : le formulaire de création arrive avec US-006. *@
++<section class="page">
++    <h1>@L["NewMatch_Title"]</h1>
++    <div class="card card--empty">
++        <p>@L["Section_ComingSoon"]</p>
++    </div>
++    <div class="actions">
++        <a class="button button--ghost" href="">@L["NotFound_Back"]</a>
++    </div>
++</section>
+diff --git a/src/AlFariq.UI/Resources/Strings.resx b/src/AlFariq.UI/Resources/Strings.resx
+index f83b03b..1689ab0 100644
+--- a/src/AlFariq.UI/Resources/Strings.resx
++++ b/src/AlFariq.UI/Resources/Strings.resx
+@@ -22,8 +22,20 @@
+ 
+   <data name="Home_Title" xml:space="preserve"><value>Accueil</value></data>
+   <data name="Home_Welcome" xml:space="preserve"><value>Bienvenue sur AlFariq</value></data>
+-  <data name="Home_Intro" xml:space="preserve"><value>Prépare un match, compose les équipes et partage la composition avec tes amis. Tout fonctionne sans connexion.</value></data>
+-  <data name="Home_EmptyState" xml:space="preserve"><value>Aucun match prévu pour l'instant. Les premières fonctionnalités arrivent bientôt.</value></data>
++  <data name="Home_EmptyTitle" xml:space="preserve"><value>Aucun match prévu</value></data>
++  <data name="Home_EmptyGuide" xml:space="preserve"><value>Avec AlFariq, un match se prépare en trois étapes, même sans connexion :</value></data>
++  <data name="Home_StepPlayers" xml:space="preserve"><value>Ajoute tes joueurs.</value></data>
++  <data name="Home_StepMatch" xml:space="preserve"><value>Crée un match : date, heure et format.</value></data>
++  <data name="Home_StepTeams" xml:space="preserve"><value>Compose les équipes et partage la composition.</value></data>
++  <data name="Home_EmptyHint" xml:space="preserve"><value>Ces fonctions arrivent dans les prochaines versions.</value></data>
++  <data name="Home_CreateMatch" xml:space="preserve"><value>Créer un match</value></data>
++  <data name="Home_Players" xml:space="preserve"><value>Mes joueurs</value></data>
++  <data name="Home_NextMatch" xml:space="preserve"><value>Prochain match</value></data>
++  <data name="Home_MatchDate" xml:space="preserve"><value>{0} à {1}</value></data>
++  <data name="Home_MatchFormat" xml:space="preserve"><value>{0} contre {0}</value></data>
++  <data name="Home_SeeMatches" xml:space="preserve"><value>Voir les matchs</value></data>
++
++  <data name="NewMatch_Title" xml:space="preserve"><value>Nouveau match</value></data>
+ 
+   <data name="Matches_Title" xml:space="preserve"><value>Matchs</value></data>
+   <data name="Players_Title" xml:space="preserve"><value>Joueurs</value></data>
+diff --git a/src/AlFariq.UI/wwwroot/css/app.css b/src/AlFariq.UI/wwwroot/css/app.css
+index 8e643e9..ba71286 100644
+--- a/src/AlFariq.UI/wwwroot/css/app.css
++++ b/src/AlFariq.UI/wwwroot/css/app.css
+@@ -183,6 +183,44 @@ h1:focus {
+   color: var(--color-muted);
+ }
+ 
++/* ---------- Accueil ---------- */
++
++.actions {
++  display: flex;
++  flex-direction: column;
++  gap: 0.75rem;
++  margin-top: var(--gutter);
++}
++
++.steps {
++  margin: 0 0 0.75rem;
++  padding-inline-start: 1.5rem;
++}
++
++.steps li {
++  margin: 0.25rem 0;
++}
++
++.hint {
++  color: var(--color-muted);
++  font-size: 0.9375rem;
++}
++
++.next-match__date {
++  margin-bottom: 0.25rem;
++  font-size: 1.125rem;
++  font-weight: 600;
++}
++
++.next-match__date::first-letter {
++  text-transform: uppercase;
++}
++
++.next-match__location {
++  color: var(--color-muted);
++  overflow-wrap: anywhere;
++}
++
+ /* ---------- Bandeaux ---------- */
+ 
+ .banner {
+diff --git a/tests/AlFariq.Client.Core.Tests/UpcomingMatchQueryTests.cs b/tests/AlFariq.Client.Core.Tests/UpcomingMatchQueryTests.cs
+new file mode 100644
+index 0000000..ae7f28b
+--- /dev/null
++++ b/tests/AlFariq.Client.Core.Tests/UpcomingMatchQueryTests.cs
+@@ -0,0 +1,32 @@
++using AlFariq.Application;
++using Microsoft.Extensions.DependencyInjection;
++
++namespace AlFariq.Client.Core.Tests;
++
++public class UpcomingMatchQueryTests
++{
++    private sealed class OneMatch : IUpcomingMatchQuery
++    {
++        public Task<UpcomingMatch?> GetNextAsync(CancellationToken cancellationToken = default) =>
++            Task.FromResult<UpcomingMatch?>(new UpcomingMatch(Guid.CreateVersion7(), DateTimeOffset.UtcNow, null, 5));
++    }
++
++    [Fact]
++    public async Task By_default_there_is_no_upcoming_match()
++    {
++        using var provider = new ServiceCollection().AddAlFariqApplication().BuildServiceProvider();
++
++        Assert.Null(await provider.GetRequiredService<IUpcomingMatchQuery>().GetNextAsync());
++    }
++
++    [Fact]
++    public void A_later_registration_replaces_the_default_query()
++    {
++        var services = new ServiceCollection().AddAlFariqApplication();
++        services.AddSingleton<IUpcomingMatchQuery, OneMatch>();
++
++        using var provider = services.BuildServiceProvider();
++
++        Assert.IsType<OneMatch>(provider.GetRequiredService<IUpcomingMatchQuery>());
++    }
++}
+diff --git a/tests/AlFariq.Web.Tests/HomePageTests.cs b/tests/AlFariq.Web.Tests/HomePageTests.cs
+new file mode 100644
+index 0000000..6479b5e
+--- /dev/null
++++ b/tests/AlFariq.Web.Tests/HomePageTests.cs
+@@ -0,0 +1,16 @@
++namespace AlFariq.Web.Tests;
++
++public class HomePageTests
++{
++    private static string Page(string name) =>
++        File.ReadAllText(Path.Combine(RepoPaths.UiRoot, "Pages", name));
++
++    [Theory]
++    [InlineData("matchs/nouveau", "NewMatch.razor")]
++    [InlineData("joueurs", "Players.razor")]
++    public void Home_links_to_a_page_that_exists(string link, string pageFile)
++    {
++        Assert.Contains($"href=\"{link}\"", Page("Home.razor"));
++        Assert.Contains($"@page \"/{link}\"", Page(pageFile));
++    }
++}
+diff --git a/tests/connectivity/test_connectivity.py b/tests/connectivity/test_connectivity.py
+new file mode 100644
+index 0000000..77c4059
+--- /dev/null
++++ b/tests/connectivity/test_connectivity.py
+@@ -0,0 +1,80 @@
++"""Test de la détection hors ligne de alfariq.js dans un vrai Chromium (Playwright).
++
++Vérifie : état initial renvoyé à l'interface, notification à la coupure puis au retour du réseau,
++et démarrage alors que l'appareil est déjà hors ligne.
++
++Usage : python3 tests/connectivity/test_connectivity.py   (dépendance : playwright ; chromium installé)
++Il charge le VRAI fichier src/AlFariq.UI/wwwroot/js/alfariq.js du dépôt.
++"""
++import http.server, pathlib, socketserver, sys, threading
++from playwright.sync_api import sync_playwright
++
++REPO = pathlib.Path(__file__).resolve().parents[2]
++JS = REPO / "src/AlFariq.UI/wwwroot/js/alfariq.js"
++
++
++class Handler(http.server.BaseHTTPRequestHandler):
++    def do_GET(self):
++        if self.path.split("?")[0] == "/alfariq.js":
++            body, kind = JS.read_bytes(), "text/javascript"
++        else:
++            body, kind = b"<!doctype html><title>t</title>", "text/html"
++        self.send_response(200)
++        self.send_header("Content-Type", kind)
++        self.end_headers()
++        self.wfile.write(body)
++
++    def log_message(self, *args):
++        pass
++
++
++failures = []
++
++
++def check(name, condition, detail=""):
++    print(("OK   " if condition else "FAIL ") + name + (f"  [{detail}]" if detail and not condition else ""))
++    if not condition:
++        failures.append(name)
++
++
++# Remplace la référence .NET : enregistre les appels reçus.
++INIT = """async (key) => {
++    const m = await import('/alfariq.js');
++    window[key] = [];
++    return m.initConnectivity({ invokeMethodAsync: (method, online) => window[key].push([method, online]) });
++}"""
++
++with socketserver.TCPServer(("127.0.0.1", 0), Handler) as server:
++    threading.Thread(target=server.serve_forever, daemon=True).start()
++    url = f"http://127.0.0.1:{server.server_address[1]}/"
++
++    with sync_playwright() as p:
++        browser = p.chromium.launch()
++        context = browser.new_context()
++        page = context.new_page()
++        errors = []
++        page.on("pageerror", lambda e: errors.append(str(e)))
++        page.goto(url)
++
++        initial = page.evaluate(INIT, "calls")
++        check("en ligne au démarrage", initial is True, initial)
++
++        context.set_offline(True)
++        page.wait_for_function("window.calls.length >= 1")
++        calls = page.evaluate("window.calls")
++        check("coupure : l'interface est prévenue (hors ligne)", calls[-1] == ["OnConnectivityChanged", False], calls)
++
++        context.set_offline(False)
++        page.wait_for_function("window.calls.length >= 2")
++        calls = page.evaluate("window.calls")
++        check("retour du réseau : l'interface est prévenue (en ligne)", calls[-1] == ["OnConnectivityChanged", True], calls)
++
++        context.set_offline(True)
++        initial = page.evaluate(INIT, "late")
++        check("démarrage hors ligne : état initial hors ligne", initial is False, initial)
++
++        check("aucune erreur JavaScript non gérée", not errors, errors)
++        browser.close()
++
++print("\n" + ("TOUS LES CONTRÔLES PASSENT" if not failures else f"{len(failures)} ÉCHEC(S) : {failures}"))
++sys.exit(1 if failures else 0)
