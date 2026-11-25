@@ -5,7 +5,7 @@ namespace AlFariq.UI;
 
 public static class DependencyInjection
 {
-    /// <summary>Enregistre les services de l'interface (traductions, connexion, thème, mises à jour).</summary>
+    /// <summary>Enregistre les services de l'interface (traductions, connexion, thème, mises à jour, nouveautés).</summary>
     public static IServiceCollection AddAlFariqUi(this IServiceCollection services)
     {
         services.AddLocalization();
@@ -13,6 +13,7 @@ public static class DependencyInjection
         services.AddScoped<ConnectivityService>();
         services.AddScoped<ThemeService>();
         services.AddScoped<UpdateService>();
+        services.AddScoped<WhatsNewService>();
         return services;
     }
 }

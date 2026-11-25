@@ -11,6 +11,9 @@ public static class AppInfo
     public static string Version { get; } = StripBuildMetadata(
         typeof(AppInfo).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion);
 
+    /// <summary>Version sémantique comparable ; 0.0.0 si la version de l'assembly n'est pas lisible.</summary>
+    public static AppVersion SemanticVersion { get; } = AppVersion.TryParse(Version, out var parsed) ? parsed : default;
+
     /// <summary>Retire le suffixe de build : « 1.2.3+abc123 » devient « 1.2.3 ».</summary>
     public static string StripBuildMetadata(string? version)
     {

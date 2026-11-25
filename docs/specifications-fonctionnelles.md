@@ -152,6 +152,7 @@ Barre inférieure à 4 entrées : **Accueil**, **Matchs**, **Joueurs** (R0) puis
 | Statistiques | Classements et filtres par période. | R0 |
 | Sauvegarde / restauration | Export, import, rappel. | R0 |
 | Paramètres | Langue, thème, sport par défaut, à propos. | R0 |
+| Versions et nouveautés | Version affichée, journal des changements multilingue, bandeau après mise à jour. | R0 |
 | Connexion / inscription | E-mail et mot de passe ou lien magique. | R1 |
 | Équipes | Liste, détail, membres, rôles. | R1 |
 | Invitations | Génération et suivi des liens, réponses. | R1 |

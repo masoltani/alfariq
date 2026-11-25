@@ -2,4 +2,9 @@
 
   <!-- Domaine : entités, règles métier et algorithmes. Aucune dépendance externe. -->
 
+  <ItemGroup>
+    <!-- Journal des changements embarqué dans l'assembly : lisible hors ligne, sans appel réseau (US-017). -->
+    <EmbeddedResource Include="Releases\changelog.json" LogicalName="AlFariq.Domain.changelog.json" />
+  </ItemGroup>
+
 </Project>

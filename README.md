@@ -34,11 +34,12 @@ dotnet publish src/AlFariq.Web -c Release -o artifacts/web
 | `AlFariq.Client.Core` | Services du client : stockage local IndexedDB (US-002), synchronisation (US-022). |
 | `AlFariq.UI` | Bibliothèque Razor : toute l'interface, réutilisable par un futur hôte MAUI Blazor Hybrid. |
 | `AlFariq.Web` | Hôte de la PWA : composition, manifeste, icônes, service worker. |
-| `tests/AlFariq.Domain.Tests` | Tests unitaires du domaine. |
+| `tests/AlFariq.Domain.Tests` | Tests unitaires du domaine (versions, journal des changements, entités). |
 | `tests/AlFariq.Client.Core.Tests` | Dépôt local, suppression logique, schéma et migrations (stockage en mémoire). |
 | `tests/AlFariq.Web.Tests` | Contrôles du manifeste, de la page d'accueil, du service worker et des traductions. |
 | `tests/pwa-offline` | Test Chromium (Playwright) : ouverture hors ligne, mise à jour à la demande. |
 | `tests/local-db` | Test Chromium (Playwright) : IndexedDB réel, migrations de schéma, stockage persistant. |
+| `tests/whats-new` | Test Chromium (Playwright) : mémorisation de la dernière version vue, y compris stockage bloqué. |
 
 ## Conventions
 
@@ -51,3 +52,14 @@ dotnet publish src/AlFariq.Web -c Release -o artifacts/web
 - Les entités héritent de `Entity` (GUID créé côté client, `CreatedAt`, `UpdatedAt`, `DeletedAt`) et s'utilisent via `IRepository<T>`.
 - Pour ajouter une entité : l'ajouter dans une **nouvelle migration** de `LocalSchema` (ne jamais modifier une migration déjà livrée), puis `services.AddLocalRepository<MonEntite>("nom-du-magasin")` dans `Program.cs`.
 - Détails : `docs/adr/0002-stockage-local-indexeddb.md`.
+
+## Publier une version
+
+La version suit le versionnement sémantique (avant 1.0 : le numéro mineur monte à chaque lot de fonctionnalités, le dernier chiffre pour les correctifs).
+
+1. Changer `<Version>` dans `Directory.Build.props` (seul endroit où elle est définie).
+2. Ajouter **en tête** de `src/AlFariq.Domain/Releases/changelog.json` une entrée : version, date (AAAA-MM-JJ) et changements (`added`, `changed` ou `fixed`) avec le texte `fr` (obligatoire), `en` et `ar`.
+3. Lancer `dotnet test` : les tests échouent si la dernière entrée du journal n'est pas la version de l'appli, si le JSON est invalide (version, date, langue inconnue, texte français manquant) ou si l'anglais ou l'arabe manque.
+4. Après fusion, poser l'étiquette `vMAJEUR.MINEUR.CORRECTIF`.
+
+Les utilisateurs voient le journal dans **Plus → À propos → Voir les nouveautés** et un bandeau après chaque mise à jour. Détails : `docs/adr/0003-versionnement-et-journal-des-changements.md`.

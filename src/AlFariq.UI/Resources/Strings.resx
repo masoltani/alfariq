@@ -39,6 +39,16 @@
   <data name="About_Version" xml:space="preserve"><value>Version</value></data>
   <data name="About_Storage" xml:space="preserve"><value>Tes données sont enregistrées sur cet appareil.</value></data>
 
+  <data name="WhatsNew_Title" xml:space="preserve"><value>Nouveautés</value></data>
+  <data name="WhatsNew_Empty" xml:space="preserve"><value>Aucune nouveauté à afficher pour l'instant.</value></data>
+  <data name="WhatsNew_Current" xml:space="preserve"><value>Version installée</value></data>
+  <data name="WhatsNew_Banner" xml:space="preserve"><value>AlFariq a été mis à jour (version {0}).</value></data>
+  <data name="WhatsNew_See" xml:space="preserve"><value>Voir les nouveautés</value></data>
+  <data name="WhatsNew_Dismiss" xml:space="preserve"><value>Fermer</value></data>
+  <data name="Changelog_Added" xml:space="preserve"><value>Nouveautés</value></data>
+  <data name="Changelog_Changed" xml:space="preserve"><value>Améliorations</value></data>
+  <data name="Changelog_Fixed" xml:space="preserve"><value>Corrections</value></data>
+
   <data name="NotFound_Title" xml:space="preserve"><value>Page introuvable</value></data>
   <data name="NotFound_Message" xml:space="preserve"><value>Cette page n'existe pas.</value></data>
   <data name="NotFound_Back" xml:space="preserve"><value>Retour à l'accueil</value></data>

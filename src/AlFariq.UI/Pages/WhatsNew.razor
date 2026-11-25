@@ -1,0 +1,71 @@
+@page "/nouveautes"
+@using System.Globalization
+@inject IStringLocalizer<Strings> L
+@inject WhatsNewService WhatsNewService
+
+<PageTitle>@L["WhatsNew_Title"] · @L["App_Name"]</PageTitle>
+
+<section class="page">
+    <h1>@L["WhatsNew_Title"]</h1>
+
+    @if (WhatsNewService.Changelog.Entries.Count == 0)
+    {
+        <div class="card card--empty">
+            <p>@L["WhatsNew_Empty"]</p>
+        </div>
+    }
+    else
+    {
+        foreach (var entry in WhatsNewService.Changelog.Entries)
+        {
+            <article class="card release">
+                <h2 class="release__title">
+                    <span>@L["About_Version"] @entry.Version</span>
+                    @if (entry.Version == AppInfo.SemanticVersion)
+                    {
+                        <span class="release__badge">@L["WhatsNew_Current"]</span>
+                    }
+                </h2>
+                <p class="release__date">
+                    <time datetime="@IsoDate(entry.Date)">@LongDate(entry.Date)</time>
+                </p>
+
+                @foreach (var group in entry.Changes.GroupBy(c => c.Type).OrderBy(g => g.Key))
+                {
+                    <h3>@Heading(group.Key)</h3>
+                    <ul class="release__list">
+                        @foreach (var change in group)
+                        {
+                            var text = change.Text.Resolve(Culture.Name);
+                            <li lang="@text.Language" dir="@text.Direction">@text.Text</li>
+                        }
+                    </ul>
+                }
+            </article>
+        }
+    }
+</section>
+
+@code {
+    private static CultureInfo Culture => CultureInfo.CurrentUICulture;
+
+    private static string IsoDate(DateOnly date) => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+    private static string LongDate(DateOnly date) => date.ToString("d MMMM yyyy", Culture);
+
+    private string Heading(ChangeType type) => type switch
+    {
+        ChangeType.Added => L["Changelog_Added"],
+        ChangeType.Changed => L["Changelog_Changed"],
+        _ => L["Changelog_Fixed"],
+    };
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Ouvrir cet écran vaut lecture des nouveautés : le bandeau disparaît.
+        if (firstRender)
+        {
+            await WhatsNewService.MarkSeenAsync();
+        }
+    }
+}

@@ -1,0 +1,30 @@
+@implements IDisposable
+@inject WhatsNewService WhatsNew
+@inject IStringLocalizer<Strings> L
+
+@if (WhatsNew.IsAnnouncementVisible)
+{
+    <div class="banner banner--news" role="status">
+        <span>@L["WhatsNew_Banner", AppInfo.Version]</span>
+        <span class="banner__actions">
+            <a class="button button--small" href="nouveautes">@L["WhatsNew_See"]</a>
+            <button type="button" class="button button--small button--ghost" @onclick="WhatsNew.MarkSeenAsync">@L["WhatsNew_Dismiss"]</button>
+        </span>
+    </div>
+}
+
+@code {
+    protected override void OnInitialized() => WhatsNew.Changed += OnChanged;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await WhatsNew.InitializeAsync();
+        }
+    }
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => WhatsNew.Changed -= OnChanged;
+}

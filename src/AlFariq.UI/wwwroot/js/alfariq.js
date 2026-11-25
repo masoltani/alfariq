@@ -47,6 +47,27 @@ export function applyTheme(theme) {
   }
 }
 
+// ---------- Nouveautés ----------
+
+const SEEN_VERSION_KEY = "alfariq.lastSeenVersion";
+
+/** Dernier numéro de version dont l'utilisateur a vu les nouveautés (null au premier lancement). */
+export function getLastSeenVersion() {
+  try {
+    return localStorage.getItem(SEEN_VERSION_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setLastSeenVersion(version) {
+  try {
+    localStorage.setItem(SEEN_VERSION_KEY, version);
+  } catch {
+    // Stockage indisponible : l'annonce ne se répétera simplement pas à la prochaine visite.
+  }
+}
+
 // ---------- Mises à jour de l'application ----------
 
 export async function initUpdates(dotnetRef) {

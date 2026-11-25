@@ -1,0 +1,86 @@
+{
+  "entries": [
+    {
+      "version": "0.3.0",
+      "date": "2026-11-25",
+      "changes": [
+        {
+          "type": "added",
+          "text": {
+            "fr": "Un écran « Nouveautés » liste les changements de chaque version.",
+            "en": "A “What's new” screen lists the changes in each version.",
+            "ar": "شاشة «الجديد» تعرض التغييرات في كل إصدار."
+          }
+        },
+        {
+          "type": "added",
+          "text": {
+            "fr": "Après une mise à jour, un message te propose de découvrir ce qui a changé.",
+            "en": "After an update, a message offers to show you what changed.",
+            "ar": "بعد كل تحديث، تظهر رسالة تتيح لك الاطلاع على ما تغيّر."
+          }
+        },
+        {
+          "type": "changed",
+          "text": {
+            "fr": "L'écran « À propos » donne accès aux nouveautés.",
+            "en": "The About screen now links to what's new.",
+            "ar": "تتيح شاشة «حول التطبيق» الوصول إلى الجديد."
+          }
+        }
+      ]
+    },
+    {
+      "version": "0.2.0",
+      "date": "2026-11-25",
+      "changes": [
+        {
+          "type": "added",
+          "text": {
+            "fr": "Tes données sont désormais conservées dans une base locale sur ton appareil, prête à accueillir les joueurs et les matchs.",
+            "en": "Your data is now kept in a local database on your device, ready for players and matches.",
+            "ar": "أصبحت بياناتك محفوظة في قاعدة بيانات محلية على جهازك، جاهزة لاستقبال اللاعبين والمباريات."
+          }
+        },
+        {
+          "type": "added",
+          "text": {
+            "fr": "L'appli demande au navigateur de protéger ces données contre l'effacement automatique.",
+            "en": "The app asks the browser to protect this data from automatic deletion.",
+            "ar": "يطلب التطبيق من المتصفح حماية هذه البيانات من الحذف التلقائي."
+          }
+        }
+      ]
+    },
+    {
+      "version": "0.1.0",
+      "date": "2026-11-23",
+      "changes": [
+        {
+          "type": "added",
+          "text": {
+            "fr": "Première version : appli installable sur l'écran d'accueil, utilisable sans connexion.",
+            "en": "First version: installable on the home screen and usable offline.",
+            "ar": "الإصدار الأول: تطبيق قابل للتثبيت على الشاشة الرئيسية ويعمل دون اتصال."
+          }
+        },
+        {
+          "type": "added",
+          "text": {
+            "fr": "Thème clair, sombre ou automatique.",
+            "en": "Light, dark or automatic theme.",
+            "ar": "سمة فاتحة أو داكنة أو تلقائية."
+          }
+        },
+        {
+          "type": "added",
+          "text": {
+            "fr": "Mises à jour proposées sans interrompre ta saisie.",
+            "en": "Updates are offered without interrupting what you are typing.",
+            "ar": "تُعرض التحديثات دون مقاطعة ما تكتبه."
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -330,7 +330,7 @@ erDiagram
 ### 9.2 Conventions
 - `.editorconfig`, analyseurs Roslyn et nullabilité activés ; avertissements traités comme des erreurs en CI.
 - Revue de code par soi-même via requête de fusion (checklist), même en solo.
-- Commits conventionnels ; versionnement sémantique ; journal des changements.
+- Commits conventionnels ; versionnement sémantique ; journal des changements (voir `docs/adr/0003-versionnement-et-journal-des-changements.md`).
 - Décisions d'architecture consignées dans un dossier `docs/adr/` (une page par décision).
 
 ### 9.3 Pipeline CI/CD (GitHub Actions ou GitLab CI)

@@ -218,6 +218,24 @@ Critères d'acceptation :
 - Tous les textes passent par des ressources de traduction.
 - Un lien « À propos » indique la version et le mode de stockage des données.
 
+### US-017 — Versionnement et journal des changements
+En tant qu'utilisateur, je veux voir la version que j'utilise et lire ce qui a changé depuis ma dernière visite afin de comprendre les nouveautés et de savoir si mon appli est à jour ; en tant que développeur, je veux une source unique pour la version et pour le journal afin de publier sans oubli.
+Priorité : S — Taille : S — Dépend de : US-001 (la sélection de la langue d'affichage viendra avec US-016 puis R5)
+Critères d'acceptation :
+- La version suit le **versionnement sémantique** (`MAJEUR.MINEUR.CORRECTIF`, avant 1.0 : chaque lot de fonctionnalités incrémente le numéro mineur) et est définie **en un seul endroit** (`Directory.Build.props`). L'écran « À propos » l'affiche, sans suffixe de build.
+- Le journal des changements est un **fichier unique et versionné** (`changelog.json`), embarqué dans l'appli : il s'affiche **sans réseau**. Chaque entrée porte une version, une date (AAAA-MM-JJ) et des changements classés en *Nouveautés*, *Améliorations* ou *Corrections*.
+- Chaque changement est rédigé en **français (obligatoire), anglais et arabe (facultatifs pour l'instant)**. Un texte absent dans la langue d'affichage est remplacé par le français, balisé avec sa langue et son sens d'écriture (`lang`, `dir`) pour s'afficher correctement, y compris en arabe (de droite à gauche).
+- Un écran « Nouveautés » liste les versions de la plus récente à la plus ancienne et repère la version installée. Il est accessible depuis « À propos ».
+- Après une mise à jour, un bandeau discret propose de voir les nouveautés (une seule fois par version, fermable). Il n'apparaît **jamais au premier lancement**, ni quand le journal ne contient rien de nouveau depuis la dernière version vue.
+- Des contrôles automatiques échouent si : une version est invalide ou en double, les entrées ne sont pas classées, une date est invalide, un texte français manque, une langue inconnue apparaît, ou si la **dernière entrée du journal ne correspond pas à la version de l'appli**.
+
+**Analyse (US-017)**
+- *Pourquoi maintenant :* R0 sera testé par de vrais utilisateurs ; leur dire ce qui change (et savoir quelle version ils ont quand ils font un retour) vaut mieux que de le découvrir par hasard. Le mécanisme de mise à jour (US-001) existe déjà ; cette US lui donne un sens lisible.
+- *Source unique :* un seul fichier de journal, lu par l'appli et vérifié en test. Un `CHANGELOG.md` séparé divergerait tôt ou tard ; il pourra être généré à partir du JSON si besoin (notes de version GitHub).
+- *Langues :* l'interface reste en français jusqu'à US-016 / R5, mais les données du journal sont prêtes pour l'anglais et l'arabe. Les traductions arabes et anglaises sont à faire relire avant publication (hors R0, le français fait foi).
+- *Hors périmètre :* notes de version envoyées par notification (R5), journal côté serveur (R1), numéro de build ou identifiant de commit affiché (utile au support, à ajouter si besoin).
+- *Risques :* oublier de mettre à jour le journal (couvert par le contrôle de cohérence) ; bandeau jugé intrusif (limité à une fois par version, fermable) ; stockage du « dernier numéro vu » effacé par le navigateur (le bandeau ne s'affiche alors pas : sans gravité).
+
 **Fin de R0 — point de décision :** avant de lancer R1, analyser l'usage réel (matchs créés, retours des testeurs). Les US de R1 peuvent être réordonnées.
 
 ---
