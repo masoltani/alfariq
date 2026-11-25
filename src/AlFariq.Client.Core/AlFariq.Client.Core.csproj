@@ -1,6 +1,11 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk.Razor">
 
-  <!-- Services propres au client : stockage local (US-002) et synchronisation (US-022). -->
+  <!-- Services propres au client : stockage local (US-002) et synchronisation (US-022).
+       SDK Razor uniquement pour publier le module JavaScript d'IndexedDB (wwwroot/js/local-db.js) comme ressource web statique. -->
+
+  <ItemGroup>
+    <SupportedPlatform Include="browser" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\AlFariq.Application\AlFariq.Application.csproj" />
@@ -9,6 +14,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.JSInterop" />
   </ItemGroup>
 
 </Project>

@@ -1,0 +1,1419 @@
+diff --git a/AlFariq.slnx b/AlFariq.slnx
+index 3fa2dda..3164c9b 100644
+--- a/AlFariq.slnx
++++ b/AlFariq.slnx
+@@ -7,6 +7,7 @@
+     <Project Path="src/AlFariq.Web/AlFariq.Web.csproj" />
+   </Folder>
+   <Folder Name="/tests/">
++    <Project Path="tests/AlFariq.Client.Core.Tests/AlFariq.Client.Core.Tests.csproj" />
+     <Project Path="tests/AlFariq.Domain.Tests/AlFariq.Domain.Tests.csproj" />
+     <Project Path="tests/AlFariq.Web.Tests/AlFariq.Web.Tests.csproj" />
+   </Folder>
+diff --git a/Directory.Packages.props b/Directory.Packages.props
+index be1a877..1371b99 100644
+--- a/Directory.Packages.props
++++ b/Directory.Packages.props
+@@ -9,8 +9,10 @@
+     <PackageVersion Include="Microsoft.AspNetCore.Components.Web" Version="10.0.0" />
+     <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.0" />
+     <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.0" />
++    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" />
+     <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
+     <PackageVersion Include="Microsoft.Extensions.Localization" Version="10.0.0" />
++    <PackageVersion Include="Microsoft.JSInterop" Version="10.0.0" />
+   </ItemGroup>
+ 
+   <ItemGroup Label="Tests">
+diff --git a/README.md b/README.md
+index 73026e6..b5bdb42 100644
+--- a/README.md
++++ b/README.md
+@@ -8,7 +8,7 @@ Documents de référence dans `docs/` : user stories, spécifications fonctionne
+ 
+ - SDK .NET **10** (version épinglée dans `global.json`).
+ - Python 3 + Pillow, uniquement pour régénérer les icônes (`python3 tools/generate-icons.py`).
+-- Python 3 + Playwright + Chromium, uniquement pour le test hors ligne du service worker.
++- Python 3 + Playwright + Chromium, uniquement pour les tests dans un vrai navigateur (service worker hors ligne, IndexedDB).
+ 
+ ## Démarrer
+ 
+@@ -31,15 +31,23 @@ dotnet publish src/AlFariq.Web -c Release -o artifacts/web
+ |---|---|
+ | `AlFariq.Domain` | Entités, règles métier, algorithmes. Aucune dépendance externe. |
+ | `AlFariq.Application` | Cas d'usage, interfaces de dépôt. |
+-| `AlFariq.Client.Core` | Services du client : stockage local (US-002), synchronisation (US-022). |
++| `AlFariq.Client.Core` | Services du client : stockage local IndexedDB (US-002), synchronisation (US-022). |
+ | `AlFariq.UI` | Bibliothèque Razor : toute l'interface, réutilisable par un futur hôte MAUI Blazor Hybrid. |
+ | `AlFariq.Web` | Hôte de la PWA : composition, manifeste, icônes, service worker. |
+ | `tests/AlFariq.Domain.Tests` | Tests unitaires du domaine. |
++| `tests/AlFariq.Client.Core.Tests` | Dépôt local, suppression logique, schéma et migrations (stockage en mémoire). |
+ | `tests/AlFariq.Web.Tests` | Contrôles du manifeste, de la page d'accueil, du service worker et des traductions. |
+ | `tests/pwa-offline` | Test Chromium (Playwright) : ouverture hors ligne, mise à jour à la demande. |
++| `tests/local-db` | Test Chromium (Playwright) : IndexedDB réel, migrations de schéma, stockage persistant. |
+ 
+ ## Conventions
+ 
+ - Aucun texte en dur dans l'interface : tout passe par `src/AlFariq.UI/Resources/Strings.resx` (`L["Cle"]`).
+ - Écrans pensés pour 360 px de large, cibles tactiles d'au moins 44 px.
+ - Hébergement dans un sous-dossier : adapter `<base href>` dans `index.html` **et** la constante `base` de `service-worker.published.js`.
++
++## Stockage local
++
++- Les entités héritent de `Entity` (GUID créé côté client, `CreatedAt`, `UpdatedAt`, `DeletedAt`) et s'utilisent via `IRepository<T>`.
++- Pour ajouter une entité : l'ajouter dans une **nouvelle migration** de `LocalSchema` (ne jamais modifier une migration déjà livrée), puis `services.AddLocalRepository<MonEntite>("nom-du-magasin")` dans `Program.cs`.
++- Détails : `docs/adr/0002-stockage-local-indexeddb.md`.
+diff --git a/docs/adr/0002-stockage-local-indexeddb.md b/docs/adr/0002-stockage-local-indexeddb.md
+new file mode 100644
+index 0000000..a7849cf
+--- /dev/null
++++ b/docs/adr/0002-stockage-local-indexeddb.md
+@@ -0,0 +1,33 @@
++# ADR 0002 — Stockage local IndexedDB derrière une interface de dépôt
++
++Statut : proposé — 25/11/2026 (US-002)
++
++## Contexte
++
++- L'appli est « hors ligne d'abord » : l'interface lit et écrit toujours en local ; la synchronisation (US-022) viendra s'ajouter.
++- Les identifiants doivent exister avant tout échange avec un serveur ; les suppressions doivent pouvoir être propagées.
++- Le navigateur peut effacer les données d'un site peu utilisé (surtout sur iOS).
++
++## Décision
++
++- **Interface `IRepository<T>`** (`AlFariq.Application`) : ajout, lecture, liste, modification, suppression logique. Le reste de l'appli ne connaît qu'elle.
++- **`Entity`** (`AlFariq.Domain`) : `Id` (GUID version 7 créé côté client), `CreatedAt`, `UpdatedAt` (UTC, gérés par le dépôt), `DeletedAt` (suppression logique). Les dates passées par l'appelant sont ignorées.
++- **Deux couches côté client** (`AlFariq.Client.Core`) :
++  - `IDocumentStore` : stockage clé-valeur de documents JSON par magasin. Implémentation du navigateur : `IndexedDbDocumentStore` + module `local-db.js` ; implémentation en mémoire pour les tests.
++  - `LocalRepository<T>` : règles communes (dates, suppression logique, unicité) au-dessus de `IDocumentStore`. Aucune règle métier dans le JavaScript.
++- **Migrations de schéma** : `LocalSchema.Migrations` liste des étapes numérotées 1, 2, 3… ; la version de la base IndexedDB est celle de la dernière. À l'ouverture, seules les étapes plus récentes que la base de l'appareil sont appliquées, dans l'ordre. Une migration livrée n'est jamais modifiée ; on en ajoute une.
++- **Un magasin d'objets par type d'entité**, déclaré dans une migration ; `AddLocalRepository<T>(nom)` refuse un magasin non déclaré dès le démarrage.
++- **Stockage persistant** : `navigator.storage.persist()` est demandé au premier affichage (`MainLayout`). Un refus ou une absence de support n'empêche jamais l'appli de démarrer.
++
++## Alternatives écartées
++
++- `localStorage` : trop limité, synchrone, pas d'index.
++- SQLite WASM : plus lourd au chargement ; à réévaluer si les requêtes deviennent complexes (derrière la même interface).
++- Bibliothèque IndexedDB tierce : une dépendance de plus pour un besoin simple (get/put/liste) ; l'interface `IDocumentStore` permettrait d'en adopter une plus tard.
++
++## Conséquences
++
++- Lire une liste charge tout le magasin en mémoire puis filtre en C# : suffisant pour des centaines d'éléments (US-005). Si besoin, des index IndexedDB sont déjà prévus dans `StoreDefinition`.
++- La suppression logique garde les données : il faudra une purge si le volume le justifie.
++- Les écritures d'un dépôt sont sérialisées (lecture puis réécriture). Deux onglets ouverts en même temps peuvent encore s'écraser : à traiter avec la synchronisation.
++- L'identifiant d'appareil, `OwnerId` et `Version` de la spec technique (§ 5.2) ne sont pas encore portés : ils arriveront avec US-022 et US-023, par migration.
+diff --git a/src/AlFariq.Application/IRepository.cs b/src/AlFariq.Application/IRepository.cs
+new file mode 100644
+index 0000000..e032840
+--- /dev/null
++++ b/src/AlFariq.Application/IRepository.cs
+@@ -0,0 +1,30 @@
++using AlFariq.Domain;
++
++namespace AlFariq.Application;
++
++/// <summary>
++/// Accès aux entités d'un type. Le reste de l'application ne connaît que cette interface :
++/// l'implémentation locale (IndexedDB) pourra être complétée par une version synchronisée (US-022).
++/// </summary>
++/// <remarks>
++/// Les suppressions sont logiques (<see cref="Entity.DeletedAt"/>). Par défaut, les entités supprimées
++/// sont invisibles ; <c>includeDeleted</c> permet de les retrouver (historique, synchronisation).
++/// </remarks>
++public interface IRepository<T> where T : Entity
++{
++    /// <summary>Ajoute une entité. Renseigne <c>CreatedAt</c> et <c>UpdatedAt</c> et l'efface de toute suppression.</summary>
++    /// <exception cref="InvalidOperationException">Une entité avec le même identifiant existe déjà (même supprimée).</exception>
++    Task<T> AddAsync(T entity, CancellationToken cancellationToken = default);
++
++    Task<T?> GetAsync(Guid id, bool includeDeleted = false, CancellationToken cancellationToken = default);
++
++    /// <summary>Liste les entités par date de création croissante.</summary>
++    Task<IReadOnlyList<T>> ListAsync(bool includeDeleted = false, CancellationToken cancellationToken = default);
++
++    /// <summary>Remplace une entité existante et active. Conserve <c>CreatedAt</c>, met à jour <c>UpdatedAt</c>.</summary>
++    /// <exception cref="KeyNotFoundException">L'entité n'existe pas ou est supprimée.</exception>
++    Task<T> UpdateAsync(T entity, CancellationToken cancellationToken = default);
++
++    /// <summary>Supprime logiquement une entité. Renvoie false si elle n'existe pas ou est déjà supprimée.</summary>
++    Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
++}
+diff --git a/src/AlFariq.Application/IStoragePersistence.cs b/src/AlFariq.Application/IStoragePersistence.cs
+new file mode 100644
+index 0000000..b7ca868
+--- /dev/null
++++ b/src/AlFariq.Application/IStoragePersistence.cs
+@@ -0,0 +1,20 @@
++namespace AlFariq.Application;
++
++public enum StoragePersistenceStatus
++{
++    /// <summary>Le navigateur ne propose pas le stockage persistant.</summary>
++    Unsupported,
++
++    /// <summary>Le navigateur a refusé (ou n'a pas encore accordé) la persistance : les données peuvent être effacées.</summary>
++    NotPersisted,
++
++    /// <summary>Les données locales ne seront pas effacées sans action de l'utilisateur.</summary>
++    Persisted,
++}
++
++/// <summary>Demande au navigateur de ne pas effacer les données locales en cas de manque d'espace.</summary>
++public interface IStoragePersistence
++{
++    /// <summary>Demande la persistance si elle n'est pas déjà acquise. Ne lève jamais d'exception.</summary>
++    Task<StoragePersistenceStatus> RequestAsync();
++}
+diff --git a/src/AlFariq.Client.Core/AlFariq.Client.Core.csproj b/src/AlFariq.Client.Core/AlFariq.Client.Core.csproj
+index 1c48b22..2f633d7 100644
+--- a/src/AlFariq.Client.Core/AlFariq.Client.Core.csproj
++++ b/src/AlFariq.Client.Core/AlFariq.Client.Core.csproj
+@@ -1,6 +1,11 @@
+-<Project Sdk="Microsoft.NET.Sdk">
++<Project Sdk="Microsoft.NET.Sdk.Razor">
+ 
+-  <!-- Services propres au client : stockage local (US-002) et synchronisation (US-022). -->
++  <!-- Services propres au client : stockage local (US-002) et synchronisation (US-022).
++       SDK Razor uniquement pour publier le module JavaScript d'IndexedDB (wwwroot/js/local-db.js) comme ressource web statique. -->
++
++  <ItemGroup>
++    <SupportedPlatform Include="browser" />
++  </ItemGroup>
+ 
+   <ItemGroup>
+     <ProjectReference Include="..\AlFariq.Application\AlFariq.Application.csproj" />
+@@ -9,6 +14,7 @@
+ 
+   <ItemGroup>
+     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
++    <PackageReference Include="Microsoft.JSInterop" />
+   </ItemGroup>
+ 
+ </Project>
+diff --git a/src/AlFariq.Client.Core/DependencyInjection.cs b/src/AlFariq.Client.Core/DependencyInjection.cs
+index 59560d3..101490a 100644
+--- a/src/AlFariq.Client.Core/DependencyInjection.cs
++++ b/src/AlFariq.Client.Core/DependencyInjection.cs
+@@ -1,12 +1,39 @@
++using AlFariq.Application;
++using AlFariq.Client.Core.Storage;
++using AlFariq.Domain;
+ using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.DependencyInjection.Extensions;
+ 
+ namespace AlFariq.Client.Core;
+ 
+ public static class DependencyInjection
+ {
+-    /// <summary>Enregistre les services du client (stockage local avec US-002).</summary>
++    /// <summary>Enregistre les services du client : horloge, stockage IndexedDB et demande de persistance.</summary>
+     public static IServiceCollection AddAlFariqClientCore(this IServiceCollection services)
+     {
++        services.TryAddSingleton(TimeProvider.System);
++        services.TryAddSingleton<IDocumentStore, IndexedDbDocumentStore>();
++        services.TryAddSingleton<IStoragePersistence, StoragePersistence>();
++        return services;
++    }
++
++    /// <summary>
++    /// Enregistre le dépôt local d'un type d'entité. Le magasin doit être déclaré dans <see cref="LocalSchema"/>
++    /// (une migration le crée) ; l'oubli est signalé tout de suite plutôt qu'à la première écriture.
++    /// </summary>
++    public static IServiceCollection AddLocalRepository<T>(this IServiceCollection services, string storeName)
++        where T : Entity
++    {
++        if (!LocalSchema.ContainsStore(storeName))
++        {
++            throw new InvalidOperationException(
++                $"Le magasin « {storeName} » n'est déclaré dans aucune migration de LocalSchema.");
++        }
++
++        services.AddSingleton<IRepository<T>>(sp => new LocalRepository<T>(
++            sp.GetRequiredService<IDocumentStore>(),
++            sp.GetRequiredService<TimeProvider>(),
++            storeName));
+         return services;
+     }
+ }
+diff --git a/src/AlFariq.Client.Core/Storage/IDocumentStore.cs b/src/AlFariq.Client.Core/Storage/IDocumentStore.cs
+new file mode 100644
+index 0000000..83b946d
+--- /dev/null
++++ b/src/AlFariq.Client.Core/Storage/IDocumentStore.cs
+@@ -0,0 +1,16 @@
++namespace AlFariq.Client.Core.Storage;
++
++/// <summary>
++/// Stockage clé-valeur de bas niveau : des documents JSON rangés par magasin (un magasin par type d'entité).
++/// Implémentation du navigateur : <see cref="IndexedDbDocumentStore"/>. Les tests utilisent une version en mémoire.
++/// </summary>
++public interface IDocumentStore
++{
++    /// <summary>Renvoie le document JSON, ou null s'il n'existe pas.</summary>
++    Task<string?> GetAsync(string store, string id);
++
++    Task<IReadOnlyList<string>> GetAllAsync(string store);
++
++    /// <summary>Crée ou remplace le document.</summary>
++    Task PutAsync(string store, string id, string json);
++}
+diff --git a/src/AlFariq.Client.Core/Storage/IndexedDbDocumentStore.cs b/src/AlFariq.Client.Core/Storage/IndexedDbDocumentStore.cs
+new file mode 100644
+index 0000000..0cdf775
+--- /dev/null
++++ b/src/AlFariq.Client.Core/Storage/IndexedDbDocumentStore.cs
+@@ -0,0 +1,57 @@
++using Microsoft.JSInterop;
++
++namespace AlFariq.Client.Core.Storage;
++
++/// <summary>
++/// <see cref="IDocumentStore"/> adossé à IndexedDB. La base est ouverte (et migrée, voir <see cref="LocalSchema"/>)
++/// à la première opération ; un échec d'ouverture est signalé à l'appelant et retenté à l'opération suivante.
++/// </summary>
++public sealed class IndexedDbDocumentStore : IDocumentStore
++{
++    private readonly LocalDbModule _module;
++    private Task? _opening;
++
++    public IndexedDbDocumentStore(IJSRuntime js) => _module = new LocalDbModule(js);
++
++    public async Task<string?> GetAsync(string store, string id)
++    {
++        await EnsureOpenAsync();
++        return await _module.InvokeAsync<string?>("get", store, id);
++    }
++
++    public async Task<IReadOnlyList<string>> GetAllAsync(string store)
++    {
++        await EnsureOpenAsync();
++        return await _module.InvokeAsync<string[]>("getAll", store);
++    }
++
++    public async Task PutAsync(string store, string id, string json)
++    {
++        await EnsureOpenAsync();
++        await _module.InvokeVoidAsync("put", store, id, json);
++    }
++
++    private async Task EnsureOpenAsync()
++    {
++        _opening ??= OpenAsync();
++        try
++        {
++            await _opening;
++        }
++        catch
++        {
++            _opening = null;
++            throw;
++        }
++    }
++
++    private async Task OpenAsync()
++    {
++        LocalSchema.Validate(LocalSchema.Migrations);
++        await _module.InvokeVoidAsync(
++            "open",
++            LocalSchema.DatabaseName,
++            LocalSchema.CurrentVersion,
++            LocalSchema.ToJson(LocalSchema.Migrations));
++    }
++}
+diff --git a/src/AlFariq.Client.Core/Storage/LocalDbModule.cs b/src/AlFariq.Client.Core/Storage/LocalDbModule.cs
+new file mode 100644
+index 0000000..19627bf
+--- /dev/null
++++ b/src/AlFariq.Client.Core/Storage/LocalDbModule.cs
+@@ -0,0 +1,40 @@
++using Microsoft.JSInterop;
++
++namespace AlFariq.Client.Core.Storage;
++
++/// <summary>Accès au module JavaScript <c>local-db.js</c> (chargé à la première utilisation, rechargé si le chargement a échoué).</summary>
++internal sealed class LocalDbModule
++{
++    private const string ModulePath = "./_content/AlFariq.Client.Core/js/local-db.js";
++
++    private readonly IJSRuntime _js;
++    private Task<IJSObjectReference>? _module;
++
++    public LocalDbModule(IJSRuntime js) => _js = js;
++
++    public async ValueTask InvokeVoidAsync(string identifier, params object?[] args)
++    {
++        var module = await GetModuleAsync();
++        await module.InvokeVoidAsync(identifier, args);
++    }
++
++    public async ValueTask<T> InvokeAsync<T>(string identifier, params object?[] args)
++    {
++        var module = await GetModuleAsync();
++        return await module.InvokeAsync<T>(identifier, args);
++    }
++
++    private async Task<IJSObjectReference> GetModuleAsync()
++    {
++        _module ??= _js.InvokeAsync<IJSObjectReference>("import", ModulePath).AsTask();
++        try
++        {
++            return await _module;
++        }
++        catch
++        {
++            _module = null;
++            throw;
++        }
++    }
++}
+diff --git a/src/AlFariq.Client.Core/Storage/LocalRepository.cs b/src/AlFariq.Client.Core/Storage/LocalRepository.cs
+new file mode 100644
+index 0000000..b33465c
+--- /dev/null
++++ b/src/AlFariq.Client.Core/Storage/LocalRepository.cs
+@@ -0,0 +1,154 @@
++using System.Text.Json;
++using AlFariq.Application;
++using AlFariq.Domain;
++
++namespace AlFariq.Client.Core.Storage;
++
++/// <summary>
++/// Dépôt local : sérialise les entités en JSON dans un magasin de l'<see cref="IDocumentStore"/>.
++/// Gère les dates (UTC, via <see cref="TimeProvider"/>) et la suppression logique.
++/// </summary>
++public sealed class LocalRepository<T> : IRepository<T> where T : Entity
++{
++    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
++
++    private readonly IDocumentStore _store;
++    private readonly TimeProvider _clock;
++    private readonly string _storeName;
++
++    // Les écritures sont lues puis réécrites : on les fait une par une pour qu'aucune modification ne soit perdue.
++    private readonly SemaphoreSlim _writeGate = new(1, 1);
++
++    public LocalRepository(IDocumentStore store, TimeProvider clock, string storeName)
++    {
++        ArgumentNullException.ThrowIfNull(store);
++        ArgumentNullException.ThrowIfNull(clock);
++        ArgumentException.ThrowIfNullOrWhiteSpace(storeName);
++
++        _store = store;
++        _clock = clock;
++        _storeName = storeName;
++    }
++
++    public async Task<T> AddAsync(T entity, CancellationToken cancellationToken = default)
++    {
++        ArgumentNullException.ThrowIfNull(entity);
++        RequireId(entity.Id);
++
++        await _writeGate.WaitAsync(cancellationToken);
++        try
++        {
++            if (await ReadAsync(entity.Id) is not null)
++            {
++                throw new InvalidOperationException($"Une entité avec l'identifiant {entity.Id} existe déjà.");
++            }
++
++            var now = _clock.GetUtcNow();
++            entity.CreatedAt = now;
++            entity.UpdatedAt = now;
++            entity.DeletedAt = null;
++
++            await WriteAsync(entity);
++            return entity;
++        }
++        finally
++        {
++            _writeGate.Release();
++        }
++    }
++
++    public async Task<T?> GetAsync(Guid id, bool includeDeleted = false, CancellationToken cancellationToken = default)
++    {
++        cancellationToken.ThrowIfCancellationRequested();
++
++        var entity = await ReadAsync(id);
++        return entity is not null && (includeDeleted || !entity.IsDeleted) ? entity : null;
++    }
++
++    public async Task<IReadOnlyList<T>> ListAsync(bool includeDeleted = false, CancellationToken cancellationToken = default)
++    {
++        cancellationToken.ThrowIfCancellationRequested();
++
++        var documents = await _store.GetAllAsync(_storeName);
++        return documents
++            .Select(Deserialize)
++            .Where(entity => includeDeleted || !entity.IsDeleted)
++            .OrderBy(entity => entity.CreatedAt)
++            .ThenBy(entity => entity.Id)
++            .ToList();
++    }
++
++    public async Task<T> UpdateAsync(T entity, CancellationToken cancellationToken = default)
++    {
++        ArgumentNullException.ThrowIfNull(entity);
++        RequireId(entity.Id);
++
++        await _writeGate.WaitAsync(cancellationToken);
++        try
++        {
++            var existing = await ReadAsync(entity.Id);
++            if (existing is null || existing.IsDeleted)
++            {
++                throw new KeyNotFoundException($"Aucune entité active avec l'identifiant {entity.Id}.");
++            }
++
++            entity.CreatedAt = existing.CreatedAt;
++            entity.UpdatedAt = _clock.GetUtcNow();
++            entity.DeletedAt = null;
++
++            await WriteAsync(entity);
++            return entity;
++        }
++        finally
++        {
++            _writeGate.Release();
++        }
++    }
++
++    public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
++    {
++        await _writeGate.WaitAsync(cancellationToken);
++        try
++        {
++            var existing = await ReadAsync(id);
++            if (existing is null || existing.IsDeleted)
++            {
++                return false;
++            }
++
++            var now = _clock.GetUtcNow();
++            existing.DeletedAt = now;
++            existing.UpdatedAt = now;
++
++            await WriteAsync(existing);
++            return true;
++        }
++        finally
++        {
++            _writeGate.Release();
++        }
++    }
++
++    private static void RequireId(Guid id)
++    {
++        if (id == Guid.Empty)
++        {
++            throw new ArgumentException("L'identifiant d'une entité ne peut pas être vide.", nameof(id));
++        }
++    }
++
++    private static string Key(Guid id) => id.ToString("D");
++
++    private static T Deserialize(string json) =>
++        JsonSerializer.Deserialize<T>(json, JsonOptions)
++        ?? throw new InvalidOperationException("Document local illisible.");
++
++    private async Task<T?> ReadAsync(Guid id)
++    {
++        var json = await _store.GetAsync(_storeName, Key(id));
++        return json is null ? null : Deserialize(json);
++    }
++
++    private Task WriteAsync(T entity) =>
++        _store.PutAsync(_storeName, Key(entity.Id), JsonSerializer.Serialize(entity, JsonOptions));
++}
+diff --git a/src/AlFariq.Client.Core/Storage/LocalSchema.cs b/src/AlFariq.Client.Core/Storage/LocalSchema.cs
+new file mode 100644
+index 0000000..0812a8b
+--- /dev/null
++++ b/src/AlFariq.Client.Core/Storage/LocalSchema.cs
+@@ -0,0 +1,85 @@
++using System.Text.Json;
++using System.Text.Json.Serialization;
++
++namespace AlFariq.Client.Core.Storage;
++
++/// <summary>Index d'un magasin d'objets IndexedDB (par exemple la date d'un match).</summary>
++public sealed record IndexDefinition(string Name, string KeyPath, bool Unique = false);
++
++/// <summary>Magasin d'objets IndexedDB : un par type d'entité.</summary>
++public sealed record StoreDefinition(string Name, IReadOnlyList<IndexDefinition>? Indexes = null);
++
++/// <summary>Une étape de migration : ce que la version <see cref="Version"/> de la base locale ajoute.</summary>
++public sealed record SchemaMigration(int Version, IReadOnlyList<StoreDefinition> CreateStores);
++
++/// <summary>
++/// Schéma de la base locale. Le numéro de version de la base IndexedDB est celui de la dernière migration.
++/// À l'ouverture, le navigateur compare sa version à <see cref="CurrentVersion"/> et le module JavaScript
++/// n'applique que les migrations manquantes, dans l'ordre.
++/// </summary>
++/// <remarks>
++/// Pour ajouter une entité (par exemple dans US-004) : ajouter une migration avec la version suivante qui crée son
++/// magasin. Ne jamais modifier une migration déjà livrée : les appareils qui l'ont appliquée ne la rejouent pas.
++/// </remarks>
++public static class LocalSchema
++{
++    public const string DatabaseName = "alfariq";
++
++    /// <summary>Magasin technique (identifiant d'appareil, réglages internes).</summary>
++    public const string MetaStore = "meta";
++
++    public static IReadOnlyList<SchemaMigration> Migrations { get; } =
++    [
++        new SchemaMigration(1, [new StoreDefinition(MetaStore)]),
++    ];
++
++    public static int CurrentVersion => Migrations[Migrations.Count - 1].Version;
++
++    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
++    {
++        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
++    };
++
++    public static bool ContainsStore(string name) =>
++        Migrations.SelectMany(m => m.CreateStores).Any(s => s.Name == name);
++
++    /// <summary>Sérialise les migrations pour le module JavaScript (clés en camelCase).</summary>
++    public static string ToJson(IReadOnlyList<SchemaMigration> migrations) =>
++        JsonSerializer.Serialize(migrations, JsonOptions);
++
++    /// <summary>Vérifie qu'une liste de migrations est cohérente : versions 1, 2, 3... et noms de magasins uniques.</summary>
++    /// <exception cref="InvalidOperationException">La liste est incohérente.</exception>
++    public static void Validate(IReadOnlyList<SchemaMigration> migrations)
++    {
++        ArgumentNullException.ThrowIfNull(migrations);
++
++        if (migrations.Count == 0)
++        {
++            throw new InvalidOperationException("Le schéma local doit contenir au moins une migration.");
++        }
++
++        var seen = new HashSet<string>(StringComparer.Ordinal);
++        for (var i = 0; i < migrations.Count; i++)
++        {
++            var migration = migrations[i];
++            if (migration.Version != i + 1)
++            {
++                throw new InvalidOperationException(
++                    $"Les versions du schéma local doivent se suivre à partir de 1 : attendu {i + 1}, trouvé {migration.Version}.");
++            }
++
++            foreach (var store in migration.CreateStores)
++            {
++                if (string.IsNullOrWhiteSpace(store.Name))
++                {
++                    throw new InvalidOperationException($"La migration {migration.Version} déclare un magasin sans nom.");
++                }
++
++                if (!seen.Add(store.Name))
++                {
++                    throw new InvalidOperationException($"Le magasin « {store.Name} » est déclaré plusieurs fois.");
++                }
++            }
++        }
++    }
++}
+diff --git a/src/AlFariq.Client.Core/Storage/StoragePersistence.cs b/src/AlFariq.Client.Core/Storage/StoragePersistence.cs
+new file mode 100644
+index 0000000..5d0461e
+--- /dev/null
++++ b/src/AlFariq.Client.Core/Storage/StoragePersistence.cs
+@@ -0,0 +1,31 @@
++using AlFariq.Application;
++using Microsoft.JSInterop;
++
++namespace AlFariq.Client.Core.Storage;
++
++/// <summary>Demande le stockage persistant au navigateur (<c>navigator.storage.persist()</c>).</summary>
++public sealed class StoragePersistence : IStoragePersistence
++{
++    private readonly LocalDbModule _module;
++
++    public StoragePersistence(IJSRuntime js) => _module = new LocalDbModule(js);
++
++    public async Task<StoragePersistenceStatus> RequestAsync()
++    {
++        try
++        {
++            var result = await _module.InvokeAsync<string>("requestPersistence");
++            return result switch
++            {
++                "granted" => StoragePersistenceStatus.Persisted,
++                "denied" => StoragePersistenceStatus.NotPersisted,
++                _ => StoragePersistenceStatus.Unsupported,
++            };
++        }
++        catch (Exception)
++        {
++            // La persistance est un confort : son absence ne doit jamais empêcher l'appli de démarrer.
++            return StoragePersistenceStatus.Unsupported;
++        }
++    }
++}
+diff --git a/src/AlFariq.Client.Core/wwwroot/js/local-db.js b/src/AlFariq.Client.Core/wwwroot/js/local-db.js
+new file mode 100644
+index 0000000..9490bab
+--- /dev/null
++++ b/src/AlFariq.Client.Core/wwwroot/js/local-db.js
+@@ -0,0 +1,121 @@
++// Module IndexedDB : magasin de documents JSON (un magasin d'objets par type d'entité) et demande de persistance.
++// Chargé comme module ES par LocalDbModule (C#). Aucune règle métier ici : elle vit dans LocalRepository.
++//
++// Les documents arrivent et repartent sous forme de texte JSON. Ils sont stockés comme objets pour que des index
++// sur leurs champs soient possibles, avec une clé externe (l'identifiant de l'entité).
++
++let dbPromise = null;
++
++// ---------- Ouverture et migrations ----------
++
++/**
++ * Ouvre la base. `version` est la version la plus récente du schéma ; `migrationsJson` la liste de toutes les migrations
++ * ([{ version, createStores: [{ name, indexes: [{ name, keyPath, unique }] }] }]).
++ * Seules les migrations plus récentes que la base de l'appareil sont appliquées, dans l'ordre.
++ */
++export async function open(name, version, migrationsJson) {
++  if (!dbPromise) {
++    dbPromise = openDatabase(name, version, JSON.parse(migrationsJson));
++    // En cas d'échec, la prochaine opération pourra retenter l'ouverture.
++    dbPromise.catch(() => { dbPromise = null; });
++  }
++  await dbPromise;
++}
++
++function openDatabase(name, version, migrations) {
++  return new Promise((resolve, reject) => {
++    if (typeof indexedDB === "undefined") {
++      reject(new Error("IndexedDB n'est pas disponible dans ce navigateur."));
++      return;
++    }
++
++    const request = indexedDB.open(name, version);
++
++    request.onupgradeneeded = event => {
++      const db = request.result;
++      const ordered = [...migrations].sort((a, b) => a.version - b.version);
++      for (const migration of ordered) {
++        if (migration.version <= event.oldVersion || migration.version > version) {
++          continue;
++        }
++        for (const store of migration.createStores ?? []) {
++          createStore(db, store);
++        }
++      }
++    };
++
++    request.onsuccess = () => {
++      const db = request.result;
++      // Une autre fenêtre veut migrer vers une version plus récente : on libère la base pour ne pas la bloquer.
++      db.onversionchange = () => {
++        db.close();
++        dbPromise = null;
++      };
++      resolve(db);
++    };
++
++    request.onerror = () => reject(request.error ?? new Error("Ouverture de la base locale impossible."));
++    // onblocked : une ancienne version est encore ouverte ailleurs ; elle se fermera (onversionchange) et l'ouverture reprendra.
++  });
++}
++
++function createStore(db, definition) {
++  if (db.objectStoreNames.contains(definition.name)) {
++    return;
++  }
++  const store = db.createObjectStore(definition.name);
++  for (const index of definition.indexes ?? []) {
++    store.createIndex(index.name, index.keyPath, { unique: !!index.unique });
++  }
++}
++
++// ---------- Documents ----------
++
++async function run(storeName, mode, action) {
++  if (!dbPromise) {
++    throw new Error("La base locale n'est pas ouverte.");
++  }
++  const db = await dbPromise;
++
++  return new Promise((resolve, reject) => {
++    const transaction = db.transaction(storeName, mode);
++    const request = action(transaction.objectStore(storeName));
++    // On attend la fin de la transaction (et pas seulement de la requête) : l'écriture est alors validée.
++    transaction.oncomplete = () => resolve(request.result);
++    transaction.onerror = () => reject(transaction.error);
++    transaction.onabort = () => reject(transaction.error ?? new Error("Transaction annulée."));
++  });
++}
++
++export async function get(store, id) {
++  const value = await run(store, "readonly", s => s.get(id));
++  return value === undefined ? null : JSON.stringify(value);
++}
++
++export async function getAll(store) {
++  const values = await run(store, "readonly", s => s.getAll());
++  return values.map(value => JSON.stringify(value));
++}
++
++export async function put(store, id, json) {
++  await run(store, "readwrite", s => s.put(JSON.parse(json), id));
++}
++
++// ---------- Stockage persistant ----------
++
++/** Renvoie « granted », « denied » ou « unsupported ». */
++export async function requestPersistence() {
++  const storage = navigator.storage;
++  if (!storage || typeof storage.persist !== "function") {
++    return "unsupported";
++  }
++
++  try {
++    if (typeof storage.persisted === "function" && (await storage.persisted())) {
++      return "granted";
++    }
++    return (await storage.persist()) ? "granted" : "denied";
++  } catch {
++    return "denied";
++  }
++}
+diff --git a/src/AlFariq.Domain/Entity.cs b/src/AlFariq.Domain/Entity.cs
+new file mode 100644
+index 0000000..dc0e69c
+--- /dev/null
++++ b/src/AlFariq.Domain/Entity.cs
+@@ -0,0 +1,23 @@
++using System.Text.Json.Serialization;
++
++namespace AlFariq.Domain;
++
++/// <summary>
++/// Base de toutes les entités stockées localement (puis synchronisées, US-022).
++/// L'identifiant est créé côté client (GUID version 7, triable par date) : une entité créée hors ligne
++/// a déjà son identifiant définitif. Les dates sont gérées par le dépôt, en UTC.
++/// </summary>
++public abstract class Entity
++{
++    public Guid Id { get; init; } = Guid.CreateVersion7();
++
++    public DateTimeOffset CreatedAt { get; set; }
++
++    public DateTimeOffset UpdatedAt { get; set; }
++
++    /// <summary>Date de suppression logique ; null tant que l'entité est active.</summary>
++    public DateTimeOffset? DeletedAt { get; set; }
++
++    [JsonIgnore]
++    public bool IsDeleted => DeletedAt is not null;
++}
+diff --git a/src/AlFariq.UI/Layout/MainLayout.razor b/src/AlFariq.UI/Layout/MainLayout.razor
+index b7a6fd3..e171a65 100644
+--- a/src/AlFariq.UI/Layout/MainLayout.razor
++++ b/src/AlFariq.UI/Layout/MainLayout.razor
+@@ -2,6 +2,7 @@
+ @inject ConnectivityService Connectivity
+ @inject ThemeService Theme
+ @inject UpdateService Update
++@inject AlFariq.Application.IStoragePersistence StoragePersistence
+ 
+ <div class="app-shell">
+     <OfflineBanner />
+@@ -26,5 +27,8 @@
+         await Theme.InitializeAsync();
+         await Connectivity.InitializeAsync();
+         await Update.InitializeAsync();
++
++        // US-002 : demande au navigateur de ne pas effacer les données locales (sans effet s'il ne le propose pas).
++        await StoragePersistence.RequestAsync();
+     }
+ }
+diff --git a/tests/AlFariq.Client.Core.Tests/AlFariq.Client.Core.Tests.csproj b/tests/AlFariq.Client.Core.Tests/AlFariq.Client.Core.Tests.csproj
+new file mode 100644
+index 0000000..678c02a
+--- /dev/null
++++ b/tests/AlFariq.Client.Core.Tests/AlFariq.Client.Core.Tests.csproj
+@@ -0,0 +1,29 @@
++<Project Sdk="Microsoft.NET.Sdk">
++
++  <!-- Tests du stockage local : dépôt, suppression logique, schéma et migrations.
++       Le stockage du navigateur est remplacé par une version en mémoire ; IndexedDB lui-même est vérifié par tests/local-db. -->
++
++  <PropertyGroup>
++    <IsPackable>false</IsPackable>
++    <IsTestProject>true</IsTestProject>
++  </PropertyGroup>
++
++  <ItemGroup>
++    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
++    <PackageReference Include="Microsoft.NET.Test.Sdk" />
++    <PackageReference Include="xunit" />
++    <PackageReference Include="xunit.runner.visualstudio">
++      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
++      <PrivateAssets>all</PrivateAssets>
++    </PackageReference>
++  </ItemGroup>
++
++  <ItemGroup>
++    <Using Include="Xunit" />
++  </ItemGroup>
++
++  <ItemGroup>
++    <ProjectReference Include="..\..\src\AlFariq.Client.Core\AlFariq.Client.Core.csproj" />
++  </ItemGroup>
++
++</Project>
+diff --git a/tests/AlFariq.Client.Core.Tests/DependencyInjectionTests.cs b/tests/AlFariq.Client.Core.Tests/DependencyInjectionTests.cs
+new file mode 100644
+index 0000000..c9b2f01
+--- /dev/null
++++ b/tests/AlFariq.Client.Core.Tests/DependencyInjectionTests.cs
+@@ -0,0 +1,32 @@
++using AlFariq.Application;
++using AlFariq.Client.Core.Storage;
++using AlFariq.Domain;
++using Microsoft.Extensions.DependencyInjection;
++
++namespace AlFariq.Client.Core.Tests;
++
++public class DependencyInjectionTests
++{
++    private sealed class Dummy : Entity;
++
++    [Fact]
++    public void AddLocalRepository_fails_fast_when_the_store_is_not_in_the_schema()
++    {
++        var services = new ServiceCollection();
++
++        Assert.Throws<InvalidOperationException>(() => services.AddLocalRepository<Dummy>("inconnu"));
++    }
++
++    [Fact]
++    public void AddLocalRepository_resolves_a_repository_for_a_declared_store()
++    {
++        var services = new ServiceCollection();
++        services.AddSingleton<IDocumentStore>(new InMemoryDocumentStore());
++        services.AddSingleton<TimeProvider>(new FakeClock());
++        services.AddLocalRepository<Dummy>(LocalSchema.MetaStore);
++
++        using var provider = services.BuildServiceProvider();
++
++        Assert.IsType<LocalRepository<Dummy>>(provider.GetRequiredService<IRepository<Dummy>>());
++    }
++}
+diff --git a/tests/AlFariq.Client.Core.Tests/InMemoryDocumentStore.cs b/tests/AlFariq.Client.Core.Tests/InMemoryDocumentStore.cs
+new file mode 100644
+index 0000000..97df7fa
+--- /dev/null
++++ b/tests/AlFariq.Client.Core.Tests/InMemoryDocumentStore.cs
+@@ -0,0 +1,37 @@
++using AlFariq.Client.Core.Storage;
++
++namespace AlFariq.Client.Core.Tests;
++
++/// <summary>Stockage en mémoire pour les tests : même contrat que IndexedDB (documents JSON par magasin).</summary>
++internal sealed class InMemoryDocumentStore : IDocumentStore
++{
++    private readonly Dictionary<string, Dictionary<string, string>> _stores = new();
++
++    public Task<string?> GetAsync(string store, string id) =>
++        Task.FromResult(_stores.TryGetValue(store, out var documents) && documents.TryGetValue(id, out var json) ? json : null);
++
++    public Task<IReadOnlyList<string>> GetAllAsync(string store) =>
++        Task.FromResult<IReadOnlyList<string>>(
++            _stores.TryGetValue(store, out var documents) ? documents.Values.ToList() : []);
++
++    public Task PutAsync(string store, string id, string json)
++    {
++        if (!_stores.TryGetValue(store, out var documents))
++        {
++            _stores[store] = documents = new Dictionary<string, string>();
++        }
++
++        documents[id] = json;
++        return Task.CompletedTask;
++    }
++}
++
++/// <summary>Horloge réglable.</summary>
++internal sealed class FakeClock : TimeProvider
++{
++    private DateTimeOffset _now = new(2026, 11, 25, 10, 0, 0, TimeSpan.Zero);
++
++    public override DateTimeOffset GetUtcNow() => _now;
++
++    public void Advance(TimeSpan duration) => _now += duration;
++}
+diff --git a/tests/AlFariq.Client.Core.Tests/LocalRepositoryTests.cs b/tests/AlFariq.Client.Core.Tests/LocalRepositoryTests.cs
+new file mode 100644
+index 0000000..cedadd4
+--- /dev/null
++++ b/tests/AlFariq.Client.Core.Tests/LocalRepositoryTests.cs
+@@ -0,0 +1,192 @@
++using AlFariq.Client.Core.Storage;
++using AlFariq.Domain;
++
++namespace AlFariq.Client.Core.Tests;
++
++public class LocalRepositoryTests
++{
++    private sealed class Player : Entity
++    {
++        public string Name { get; set; } = "";
++    }
++
++    private readonly FakeClock _clock = new();
++    private readonly LocalRepository<Player> _players;
++
++    public LocalRepositoryTests()
++    {
++        _players = new LocalRepository<Player>(new InMemoryDocumentStore(), _clock, "players");
++    }
++
++    // ---------- Création ----------
++
++    [Fact]
++    public async Task Add_sets_both_dates_to_now_and_keeps_the_client_generated_id()
++    {
++        var player = new Player { Name = "Sami" };
++        var id = player.Id;
++
++        var added = await _players.AddAsync(player);
++
++        Assert.NotEqual(Guid.Empty, id);
++        Assert.Equal(id, added.Id);
++        Assert.Equal(_clock.GetUtcNow(), added.CreatedAt);
++        Assert.Equal(_clock.GetUtcNow(), added.UpdatedAt);
++        Assert.Null(added.DeletedAt);
++    }
++
++    [Fact]
++    public async Task Add_rejects_an_existing_id_even_if_the_entity_was_deleted()
++    {
++        var player = await _players.AddAsync(new Player { Name = "Sami" });
++        await _players.DeleteAsync(player.Id);
++
++        await Assert.ThrowsAsync<InvalidOperationException>(() => _players.AddAsync(player));
++    }
++
++    // ---------- Lecture ----------
++
++    [Fact]
++    public async Task Get_returns_the_stored_entity()
++    {
++        var added = await _players.AddAsync(new Player { Name = "Sami" });
++
++        var read = await _players.GetAsync(added.Id);
++
++        Assert.NotNull(read);
++        Assert.Equal("Sami", read.Name);
++        Assert.Equal(added.CreatedAt, read.CreatedAt);
++    }
++
++    [Fact]
++    public async Task Get_returns_null_for_an_unknown_id()
++    {
++        Assert.Null(await _players.GetAsync(Guid.CreateVersion7()));
++    }
++
++    [Fact]
++    public async Task List_returns_entities_in_creation_order()
++    {
++        var first = await _players.AddAsync(new Player { Name = "A" });
++        _clock.Advance(TimeSpan.FromMinutes(1));
++        var second = await _players.AddAsync(new Player { Name = "B" });
++
++        var all = await _players.ListAsync();
++
++        Assert.Equal(new[] { first.Id, second.Id }, all.Select(p => p.Id));
++    }
++
++    // ---------- Modification ----------
++
++    [Fact]
++    public async Task Update_changes_the_data_and_UpdatedAt_but_not_CreatedAt()
++    {
++        var added = await _players.AddAsync(new Player { Name = "Sami" });
++        var createdAt = added.CreatedAt;
++        _clock.Advance(TimeSpan.FromHours(2));
++
++        added.Name = "Samy";
++        await _players.UpdateAsync(added);
++
++        var read = await _players.GetAsync(added.Id);
++        Assert.NotNull(read);
++        Assert.Equal("Samy", read.Name);
++        Assert.Equal(createdAt, read.CreatedAt);
++        Assert.Equal(_clock.GetUtcNow(), read.UpdatedAt);
++        Assert.True(read.UpdatedAt > read.CreatedAt);
++    }
++
++    [Fact]
++    public async Task Update_ignores_dates_set_by_the_caller()
++    {
++        var added = await _players.AddAsync(new Player { Name = "Sami" });
++        var createdAt = added.CreatedAt;
++
++        added.CreatedAt = DateTimeOffset.MinValue;
++        added.DeletedAt = DateTimeOffset.MaxValue;
++        await _players.UpdateAsync(added);
++
++        var read = await _players.GetAsync(added.Id);
++        Assert.NotNull(read);
++        Assert.Equal(createdAt, read.CreatedAt);
++        Assert.Null(read.DeletedAt);
++    }
++
++    [Fact]
++    public async Task Update_fails_for_an_unknown_entity()
++    {
++        await Assert.ThrowsAsync<KeyNotFoundException>(() => _players.UpdateAsync(new Player { Name = "Fantôme" }));
++    }
++
++    [Fact]
++    public async Task Update_fails_for_a_deleted_entity()
++    {
++        var added = await _players.AddAsync(new Player { Name = "Sami" });
++        await _players.DeleteAsync(added.Id);
++
++        await Assert.ThrowsAsync<KeyNotFoundException>(() => _players.UpdateAsync(added));
++    }
++
++    // ---------- Suppression logique ----------
++
++    [Fact]
++    public async Task Delete_is_logical_the_entity_stays_stored_with_DeletedAt()
++    {
++        var added = await _players.AddAsync(new Player { Name = "Sami" });
++        _clock.Advance(TimeSpan.FromMinutes(5));
++
++        var deleted = await _players.DeleteAsync(added.Id);
++
++        Assert.True(deleted);
++        var kept = await _players.GetAsync(added.Id, includeDeleted: true);
++        Assert.NotNull(kept);
++        Assert.Equal(_clock.GetUtcNow(), kept.DeletedAt);
++        Assert.Equal(_clock.GetUtcNow(), kept.UpdatedAt);
++        Assert.True(kept.IsDeleted);
++    }
++
++    [Fact]
++    public async Task Deleted_entities_are_hidden_unless_requested()
++    {
++        var kept = await _players.AddAsync(new Player { Name = "A" });
++        var removed = await _players.AddAsync(new Player { Name = "B" });
++        await _players.DeleteAsync(removed.Id);
++
++        Assert.Null(await _players.GetAsync(removed.Id));
++        Assert.Equal(new[] { kept.Id }, (await _players.ListAsync()).Select(p => p.Id));
++        Assert.Equal(2, (await _players.ListAsync(includeDeleted: true)).Count);
++    }
++
++    [Fact]
++    public async Task Delete_returns_false_for_an_unknown_or_already_deleted_entity()
++    {
++        var added = await _players.AddAsync(new Player { Name = "Sami" });
++
++        Assert.False(await _players.DeleteAsync(Guid.CreateVersion7()));
++        Assert.True(await _players.DeleteAsync(added.Id));
++        Assert.False(await _players.DeleteAsync(added.Id));
++    }
++
++    // ---------- Isolation ----------
++
++    [Fact]
++    public async Task Stores_are_separate_per_entity_type()
++    {
++        var store = new InMemoryDocumentStore();
++        var players = new LocalRepository<Player>(store, _clock, "players");
++        var venues = new LocalRepository<Player>(store, _clock, "venues");
++
++        await players.AddAsync(new Player { Name = "Sami" });
++
++        Assert.Empty(await venues.ListAsync());
++    }
++
++    [Fact]
++    public async Task Concurrent_updates_do_not_lose_entities()
++    {
++        var tasks = Enumerable.Range(0, 20).Select(i => _players.AddAsync(new Player { Name = $"P{i}" }));
++        await Task.WhenAll(tasks);
++
++        Assert.Equal(20, (await _players.ListAsync()).Count);
++    }
++}
+diff --git a/tests/AlFariq.Client.Core.Tests/LocalSchemaTests.cs b/tests/AlFariq.Client.Core.Tests/LocalSchemaTests.cs
+new file mode 100644
+index 0000000..d92a19d
+--- /dev/null
++++ b/tests/AlFariq.Client.Core.Tests/LocalSchemaTests.cs
+@@ -0,0 +1,77 @@
++using System.Text.Json;
++using AlFariq.Client.Core.Storage;
++
++namespace AlFariq.Client.Core.Tests;
++
++public class LocalSchemaTests
++{
++    [Fact]
++    public void Shipped_migrations_are_valid()
++    {
++        LocalSchema.Validate(LocalSchema.Migrations);
++    }
++
++    [Fact]
++    public void Current_version_is_the_last_migration_version()
++    {
++        Assert.Equal(LocalSchema.Migrations.Max(m => m.Version), LocalSchema.CurrentVersion);
++        Assert.True(LocalSchema.CurrentVersion >= 1);
++    }
++
++    [Fact]
++    public void Validate_rejects_a_gap_in_versions()
++    {
++        var migrations = new[]
++        {
++            new SchemaMigration(1, [new StoreDefinition("a")]),
++            new SchemaMigration(3, [new StoreDefinition("b")]),
++        };
++
++        Assert.Throws<InvalidOperationException>(() => LocalSchema.Validate(migrations));
++    }
++
++    [Fact]
++    public void Validate_rejects_a_store_declared_twice()
++    {
++        var migrations = new[]
++        {
++            new SchemaMigration(1, [new StoreDefinition("a")]),
++            new SchemaMigration(2, [new StoreDefinition("a")]),
++        };
++
++        Assert.Throws<InvalidOperationException>(() => LocalSchema.Validate(migrations));
++    }
++
++    [Fact]
++    public void Validate_rejects_an_empty_list()
++    {
++        Assert.Throws<InvalidOperationException>(() => LocalSchema.Validate([]));
++    }
++
++    [Fact]
++    public void ToJson_uses_the_camelCase_shape_expected_by_the_javascript_module()
++    {
++        var migrations = new[]
++        {
++            new SchemaMigration(1, [new StoreDefinition("matches", [new IndexDefinition("byDate", "startsAt")])]),
++        };
++
++        using var document = JsonDocument.Parse(LocalSchema.ToJson(migrations));
++        var migration = document.RootElement[0];
++        var store = migration.GetProperty("createStores")[0];
++        var index = store.GetProperty("indexes")[0];
++
++        Assert.Equal(1, migration.GetProperty("version").GetInt32());
++        Assert.Equal("matches", store.GetProperty("name").GetString());
++        Assert.Equal("byDate", index.GetProperty("name").GetString());
++        Assert.Equal("startsAt", index.GetProperty("keyPath").GetString());
++        Assert.False(index.GetProperty("unique").GetBoolean());
++    }
++
++    [Fact]
++    public void ContainsStore_finds_declared_stores_only()
++    {
++        Assert.True(LocalSchema.ContainsStore(LocalSchema.MetaStore));
++        Assert.False(LocalSchema.ContainsStore("inconnu"));
++    }
++}
+diff --git a/tests/AlFariq.Domain.Tests/EntityTests.cs b/tests/AlFariq.Domain.Tests/EntityTests.cs
+new file mode 100644
+index 0000000..305376d
+--- /dev/null
++++ b/tests/AlFariq.Domain.Tests/EntityTests.cs
+@@ -0,0 +1,35 @@
++using AlFariq.Domain;
++
++namespace AlFariq.Domain.Tests;
++
++public class EntityTests
++{
++    private sealed class Sample : Entity;
++
++    [Fact]
++    public void New_entities_get_a_unique_non_empty_guid()
++    {
++        var ids = Enumerable.Range(0, 100).Select(_ => new Sample().Id).ToList();
++
++        Assert.DoesNotContain(Guid.Empty, ids);
++        Assert.Equal(ids.Count, ids.Distinct().Count());
++    }
++
++    [Fact]
++    public void Ids_are_version_7_so_they_sort_by_creation_time()
++    {
++        var id = new Sample().Id;
++
++        Assert.Equal(7, id.Version);
++    }
++
++    [Fact]
++    public void IsDeleted_follows_DeletedAt()
++    {
++        var entity = new Sample();
++        Assert.False(entity.IsDeleted);
++
++        entity.DeletedAt = DateTimeOffset.UtcNow;
++        Assert.True(entity.IsDeleted);
++    }
++}
+diff --git a/tests/local-db/test_local_db.py b/tests/local-db/test_local_db.py
+new file mode 100644
+index 0000000..2a8d7ed
+--- /dev/null
++++ b/tests/local-db/test_local_db.py
+@@ -0,0 +1,142 @@
++"""Test du module local-db.js dans un vrai Chromium (Playwright) : IndexedDB, migrations de schéma, persistance.
++
++Vérifie : création des magasins à la première ouverture, écriture/lecture/liste, migration 1 -> 2 qui AJOUTE un
++magasin sans perdre les données existantes, ordre des migrations, erreur claire hors schéma, demande de persistance.
++
++Usage : python3 tests/local-db/test_local_db.py   (dépendance : playwright ; chromium installé)
++Il charge le VRAI fichier src/AlFariq.Client.Core/wwwroot/js/local-db.js du dépôt.
++"""
++import http.server, json, pathlib, socketserver, sys, threading
++from playwright.sync_api import sync_playwright
++
++REPO = pathlib.Path(__file__).resolve().parents[2]
++JS = REPO / "src/AlFariq.Client.Core/wwwroot/js/local-db.js"
++
++
++class Handler(http.server.BaseHTTPRequestHandler):
++    def do_GET(self):
++        if self.path.split("?")[0] == "/local-db.js":
++            body, kind = JS.read_bytes(), "text/javascript"
++        else:
++            body, kind = b"<!doctype html><title>t</title>", "text/html"
++        self.send_response(200)
++        self.send_header("Content-Type", kind)
++        self.end_headers()
++        self.wfile.write(body)
++
++    def log_message(self, *args):
++        pass
++
++
++failures = []
++
++
++def check(name, condition, detail=""):
++    print(("OK   " if condition else "FAIL ") + name + (f"  [{detail}]" if detail and not condition else ""))
++    if not condition:
++        failures.append(name)
++
++
++V1 = [{"version": 1, "createStores": [{"name": "meta"}]}]
++V2 = V1 + [{"version": 2, "createStores": [{"name": "players", "indexes": [{"name": "byName", "keyPath": "name"}]}]}]
++
++with socketserver.TCPServer(("127.0.0.1", 0), Handler) as server:
++    threading.Thread(target=server.serve_forever, daemon=True).start()
++    url = f"http://127.0.0.1:{server.server_address[1]}/"
++
++    with sync_playwright() as p:
++        browser = p.chromium.launch()
++        page = browser.new_page()
++        errors = []
++        page.on("pageerror", lambda e: errors.append(str(e)))
++        page.goto(url)
++
++        # Chaque « import('/local-db.js?x') » charge un module neuf : c'est comme rouvrir la page.
++
++        # --- Version 1 : création, écriture, lecture ---
++        r = page.evaluate("""async ([v1]) => {
++            const m = await import('/local-db.js?a');
++            await m.open('t1', 1, JSON.stringify(v1));
++            await m.put('meta', 'k', JSON.stringify({ id: 'k', value: 42 }));
++            return {
++              got: JSON.parse(await m.get('meta', 'k')),
++              missing: await m.get('meta', 'absent'),
++              all: (await m.getAll('meta')).map(JSON.parse),
++            };
++        }""", [V1])
++        check("écriture puis lecture d'un document", r["got"] == {"id": "k", "value": 42}, r)
++        check("lecture d'un document absent renvoie null", r["missing"] is None, r)
++        check("liste des documents d'un magasin", r["all"] == [{"id": "k", "value": 42}], r)
++
++        # --- Migration 1 -> 2 : ajoute un magasin, conserve les données ---
++        r = page.evaluate("""async ([v2]) => {
++            const m = await import('/local-db.js?b');   // module neuf : base rouverte
++            await m.open('t1', 2, JSON.stringify(v2));
++            await m.put('players', 'p1', JSON.stringify({ id: 'p1', name: 'Sami' }));
++            const db = await new Promise((res, rej) => { const q = indexedDB.open('t1'); q.onsuccess = () => res(q.result); q.onerror = rej; });
++            const info = {
++              version: db.version,
++              stores: [...db.objectStoreNames].sort(),
++              indexes: [...db.transaction('players').objectStore('players').indexNames],
++            };
++            db.close();
++            return {
++              info,
++              oldData: JSON.parse(await m.get('meta', 'k')),
++              player: JSON.parse(await m.get('players', 'p1')),
++            };
++        }""", [V2])
++        check("migration vers la version 2", r["info"]["version"] == 2, r)
++        check("le nouveau magasin est créé, l'ancien conservé", r["info"]["stores"] == ["meta", "players"], r)
++        check("l'index déclaré est créé", r["info"]["indexes"] == ["byName"], r)
++        check("les données de la version 1 survivent à la migration", r["oldData"] == {"id": "k", "value": 42}, r)
++        check("le nouveau magasin est utilisable", r["player"]["name"] == "Sami", r)
++
++        # --- Migrations déclarées dans le désordre : appliquées dans l'ordre ---
++        r = page.evaluate("""async ([v2]) => {
++            const m = await import('/local-db.js?c');
++            await m.open('t2', 2, JSON.stringify([...v2].reverse()));
++            const db = await new Promise((res, rej) => { const q = indexedDB.open('t2'); q.onsuccess = () => res(q.result); q.onerror = rej; });
++            const stores = [...db.objectStoreNames].sort();
++            db.close();
++            return stores;
++        }""", [V2])
++        check("une base neuve reçoit toutes les migrations", r == ["meta", "players"], r)
++
++        # --- Magasin inconnu : erreur claire, pas de silence ---
++        r = page.evaluate("""async ([v1]) => {
++            const m = await import('/local-db.js?d');
++            await m.open('t3', 1, JSON.stringify(v1));
++            try { await m.put('inconnu', 'x', '{}'); return 'pas d\\'erreur'; } catch (e) { return 'erreur'; }
++        }""", [V1])
++        check("écrire dans un magasin non déclaré échoue", r == "erreur", r)
++
++        # --- Utilisation avant ouverture ---
++        r = page.evaluate("""async () => {
++            const m = await import('/local-db.js?e');
++            try { await m.get('meta', 'k'); return 'pas d\\'erreur'; } catch (e) { return 'erreur'; }
++        }""")
++        check("lire avant open() échoue clairement", r == "erreur", r)
++
++        # --- Persistance ---
++        r = page.evaluate("""async () => {
++            const m = await import('/local-db.js?f');
++            return await m.requestPersistence();
++        }""")
++        check("requestPersistence renvoie une valeur connue", r in ("granted", "denied"), r)
++
++        r = page.evaluate("""async () => {
++            const original = navigator.storage.persist;
++            Object.defineProperty(navigator.storage, 'persist', { value: undefined, configurable: true });
++            const m = await import('/local-db.js?g');
++            const result = await m.requestPersistence();
++            Object.defineProperty(navigator.storage, 'persist', { value: original, configurable: true });
++            return result;
++        }""")
++        check("navigateur sans persist() : « unsupported »", r == "unsupported", r)
++
++        check("aucune erreur JavaScript non gérée", not errors, errors)
++        browser.close()
++
++print("\n" + ("TOUS LES CONTRÔLES PASSENT" if not failures else f"{len(failures)} ÉCHEC(S) : {failures}"))
++sys.exit(1 if failures else 0)

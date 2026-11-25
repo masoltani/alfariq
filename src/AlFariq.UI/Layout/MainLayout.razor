@@ -2,6 +2,7 @@
 @inject ConnectivityService Connectivity
 @inject ThemeService Theme
 @inject UpdateService Update
+@inject AlFariq.Application.IStoragePersistence StoragePersistence
 
 <div class="app-shell">
     <OfflineBanner />
@@ -26,5 +27,8 @@
         await Theme.InitializeAsync();
         await Connectivity.InitializeAsync();
         await Update.InitializeAsync();
+
+        // US-002 : demande au navigateur de ne pas effacer les données locales (sans effet s'il ne le propose pas).
+        await StoragePersistence.RequestAsync();
     }
 }

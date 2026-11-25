@@ -7,6 +7,7 @@
     <Project Path="src/AlFariq.Web/AlFariq.Web.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/AlFariq.Client.Core.Tests/AlFariq.Client.Core.Tests.csproj" />
     <Project Path="tests/AlFariq.Domain.Tests/AlFariq.Domain.Tests.csproj" />
     <Project Path="tests/AlFariq.Web.Tests/AlFariq.Web.Tests.csproj" />
   </Folder>

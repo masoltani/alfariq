@@ -1,0 +1,1485 @@
+diff --git a/Directory.Build.props b/Directory.Build.props
+index 89ba627..1a33cbc 100644
+--- a/Directory.Build.props
++++ b/Directory.Build.props
+@@ -6,7 +6,7 @@
+     <Nullable>enable</Nullable>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <AnalysisLevel>latest</AnalysisLevel>
+-    <Version>0.1.0</Version>
++    <Version>0.3.0</Version>
+     <Deterministic>true</Deterministic>
+   </PropertyGroup>
+ 
+diff --git a/README.md b/README.md
+index b5bdb42..37f7ebe 100644
+--- a/README.md
++++ b/README.md
+@@ -34,11 +34,12 @@ dotnet publish src/AlFariq.Web -c Release -o artifacts/web
+ | `AlFariq.Client.Core` | Services du client : stockage local IndexedDB (US-002), synchronisation (US-022). |
+ | `AlFariq.UI` | Bibliothèque Razor : toute l'interface, réutilisable par un futur hôte MAUI Blazor Hybrid. |
+ | `AlFariq.Web` | Hôte de la PWA : composition, manifeste, icônes, service worker. |
+-| `tests/AlFariq.Domain.Tests` | Tests unitaires du domaine. |
++| `tests/AlFariq.Domain.Tests` | Tests unitaires du domaine (versions, journal des changements, entités). |
+ | `tests/AlFariq.Client.Core.Tests` | Dépôt local, suppression logique, schéma et migrations (stockage en mémoire). |
+ | `tests/AlFariq.Web.Tests` | Contrôles du manifeste, de la page d'accueil, du service worker et des traductions. |
+ | `tests/pwa-offline` | Test Chromium (Playwright) : ouverture hors ligne, mise à jour à la demande. |
+ | `tests/local-db` | Test Chromium (Playwright) : IndexedDB réel, migrations de schéma, stockage persistant. |
++| `tests/whats-new` | Test Chromium (Playwright) : mémorisation de la dernière version vue, y compris stockage bloqué. |
+ 
+ ## Conventions
+ 
+@@ -51,3 +52,14 @@ dotnet publish src/AlFariq.Web -c Release -o artifacts/web
+ - Les entités héritent de `Entity` (GUID créé côté client, `CreatedAt`, `UpdatedAt`, `DeletedAt`) et s'utilisent via `IRepository<T>`.
+ - Pour ajouter une entité : l'ajouter dans une **nouvelle migration** de `LocalSchema` (ne jamais modifier une migration déjà livrée), puis `services.AddLocalRepository<MonEntite>("nom-du-magasin")` dans `Program.cs`.
+ - Détails : `docs/adr/0002-stockage-local-indexeddb.md`.
++
++## Publier une version
++
++La version suit le versionnement sémantique (avant 1.0 : le numéro mineur monte à chaque lot de fonctionnalités, le dernier chiffre pour les correctifs).
++
++1. Changer `<Version>` dans `Directory.Build.props` (seul endroit où elle est définie).
++2. Ajouter **en tête** de `src/AlFariq.Domain/Releases/changelog.json` une entrée : version, date (AAAA-MM-JJ) et changements (`added`, `changed` ou `fixed`) avec le texte `fr` (obligatoire), `en` et `ar`.
++3. Lancer `dotnet test` : les tests échouent si la dernière entrée du journal n'est pas la version de l'appli, si le JSON est invalide (version, date, langue inconnue, texte français manquant) ou si l'anglais ou l'arabe manque.
++4. Après fusion, poser l'étiquette `vMAJEUR.MINEUR.CORRECTIF`.
++
++Les utilisateurs voient le journal dans **Plus → À propos → Voir les nouveautés** et un bandeau après chaque mise à jour. Détails : `docs/adr/0003-versionnement-et-journal-des-changements.md`.
+diff --git a/docs/adr/0003-versionnement-et-journal-des-changements.md b/docs/adr/0003-versionnement-et-journal-des-changements.md
+new file mode 100644
+index 0000000..b9c8bc0
+--- /dev/null
++++ b/docs/adr/0003-versionnement-et-journal-des-changements.md
+@@ -0,0 +1,34 @@
++# ADR 0003 — Versionnement et journal des changements
++
++Statut : proposé — 25/11/2026 (US-017)
++
++## Contexte
++
++- R0 sera testé par de vrais utilisateurs : il faut savoir quelle version ils utilisent et leur dire ce qui change.
++- Le journal doit être lisible **hors ligne**, et prévu pour le français, l'anglais et l'arabe (écriture de droite à gauche) alors que l'interface n'est encore qu'en français.
++- Un seul développeur : la publication ne doit pas dépendre de la mémoire.
++
++## Décision
++
++- **Version sémantique** `MAJEUR.MINEUR.CORRECTIF`, définie uniquement dans `Directory.Build.props`. `AppInfo.Version` la lit (sans suffixe de build). Avant 1.0 : chaque lot de fonctionnalités incrémente le mineur, les correctifs le dernier chiffre.
++- **Journal = un fichier `changelog.json`** (`src/AlFariq.Domain/Releases/`), **embarqué dans l'assembly** du domaine. Pas d'appel réseau, pas de dépendance au service worker, disponible dès le premier démarrage.
++- **Forme** : entrées de la plus récente à la plus ancienne ; chaque entrée = version, date, liste de changements ; chaque changement = type (`added`, `changed`, `fixed`) et textes par langue (`fr`, `en`, `ar`).
++- **Langues** : `fr` obligatoire (langue de repli), `en` et `ar` facultatives. Langues inconnues refusées (détecte les fautes de frappe). Un texte de repli est balisé avec `lang` et `dir` de sa propre langue.
++- **Modèle et analyse dans le domaine** (`AppVersion`, `Changelog`) : logique pure, testée sans navigateur.
++- **Cohérence imposée par les tests** : la dernière entrée du journal doit être la version de l'appli ; versions valides, uniques, décroissantes ; dates valides ; texte français présent.
++- **Bandeau « nouveautés »** : le dernier numéro de version vu est gardé dans `localStorage` (confort propre à l'appareil, comme le thème). Premier lancement : on enregistre sans rien afficher.
++
++## Alternatives écartées
++
++- `CHANGELOG.md` en plus du JSON : deux sources qui divergent. Pourra être généré depuis le JSON.
++- Journal chargé par HTTP (`wwwroot`) : un échec réseau possible, et dépendance au cache du service worker pour rester disponible hors ligne.
++- Fichiers de ressources `.resx` par langue pour le journal : les entrées s'ajoutent à chaque version, un fichier par langue éparpille le contenu d'une même ligne de journal.
++- Stocker le « dernier numéro vu » dans IndexedDB (US-002) : la dépendance n'apporte rien pour une simple valeur d'appareil.
++
++## Conséquences
++
++- Publier = changer `<Version>` **et** ajouter l'entrée en tête de `changelog.json` ; sinon les tests échouent.
++- L'interface affichera les textes dans la langue active dès que US-016 / R5 permettra de la choisir ; rien à refaire côté données.
++- Les traductions en anglais et en arabe doivent être relues avant d'être montrées aux utilisateurs de ces langues.
++- Le journal grossit avec les versions ; si cela pèse, on pourra n'afficher que les N dernières entrées.
++- Pour afficher les dates en arabe, il faudra charger toutes les données de globalisation de Blazor WebAssembly (`BlazorWebAssemblyLoadAllGlobalizationData`) : à traiter avec le choix de langue (US-016).
+diff --git a/docs/specifications-fonctionnelles.md b/docs/specifications-fonctionnelles.md
+index 06606eb..4737c83 100644
+--- a/docs/specifications-fonctionnelles.md
++++ b/docs/specifications-fonctionnelles.md
+@@ -152,6 +152,7 @@ Barre inférieure à 4 entrées : **Accueil**, **Matchs**, **Joueurs** (R0) puis
+ | Statistiques | Classements et filtres par période. | R0 |
+ | Sauvegarde / restauration | Export, import, rappel. | R0 |
+ | Paramètres | Langue, thème, sport par défaut, à propos. | R0 |
++| Versions et nouveautés | Version affichée, journal des changements multilingue, bandeau après mise à jour. | R0 |
+ | Connexion / inscription | E-mail et mot de passe ou lien magique. | R1 |
+ | Équipes | Liste, détail, membres, rôles. | R1 |
+ | Invitations | Génération et suivi des liens, réponses. | R1 |
+diff --git a/docs/specifications-techniques.md b/docs/specifications-techniques.md
+index bfc31bb..975fcc3 100644
+--- a/docs/specifications-techniques.md
++++ b/docs/specifications-techniques.md
+@@ -330,7 +330,7 @@ erDiagram
+ ### 9.2 Conventions
+ - `.editorconfig`, analyseurs Roslyn et nullabilité activés ; avertissements traités comme des erreurs en CI.
+ - Revue de code par soi-même via requête de fusion (checklist), même en solo.
+-- Commits conventionnels ; versionnement sémantique ; journal des changements.
++- Commits conventionnels ; versionnement sémantique ; journal des changements (voir `docs/adr/0003-versionnement-et-journal-des-changements.md`).
+ - Décisions d'architecture consignées dans un dossier `docs/adr/` (une page par décision).
+ 
+ ### 9.3 Pipeline CI/CD (GitHub Actions ou GitLab CI)
+diff --git a/docs/user-stories.md b/docs/user-stories.md
+index b8b090a..1aabcb6 100644
+--- a/docs/user-stories.md
++++ b/docs/user-stories.md
+@@ -218,6 +218,24 @@ Critères d'acceptation :
+ - Tous les textes passent par des ressources de traduction.
+ - Un lien « À propos » indique la version et le mode de stockage des données.
+ 
++### US-017 — Versionnement et journal des changements
++En tant qu'utilisateur, je veux voir la version que j'utilise et lire ce qui a changé depuis ma dernière visite afin de comprendre les nouveautés et de savoir si mon appli est à jour ; en tant que développeur, je veux une source unique pour la version et pour le journal afin de publier sans oubli.
++Priorité : S — Taille : S — Dépend de : US-001 (la sélection de la langue d'affichage viendra avec US-016 puis R5)
++Critères d'acceptation :
++- La version suit le **versionnement sémantique** (`MAJEUR.MINEUR.CORRECTIF`, avant 1.0 : chaque lot de fonctionnalités incrémente le numéro mineur) et est définie **en un seul endroit** (`Directory.Build.props`). L'écran « À propos » l'affiche, sans suffixe de build.
++- Le journal des changements est un **fichier unique et versionné** (`changelog.json`), embarqué dans l'appli : il s'affiche **sans réseau**. Chaque entrée porte une version, une date (AAAA-MM-JJ) et des changements classés en *Nouveautés*, *Améliorations* ou *Corrections*.
++- Chaque changement est rédigé en **français (obligatoire), anglais et arabe (facultatifs pour l'instant)**. Un texte absent dans la langue d'affichage est remplacé par le français, balisé avec sa langue et son sens d'écriture (`lang`, `dir`) pour s'afficher correctement, y compris en arabe (de droite à gauche).
++- Un écran « Nouveautés » liste les versions de la plus récente à la plus ancienne et repère la version installée. Il est accessible depuis « À propos ».
++- Après une mise à jour, un bandeau discret propose de voir les nouveautés (une seule fois par version, fermable). Il n'apparaît **jamais au premier lancement**, ni quand le journal ne contient rien de nouveau depuis la dernière version vue.
++- Des contrôles automatiques échouent si : une version est invalide ou en double, les entrées ne sont pas classées, une date est invalide, un texte français manque, une langue inconnue apparaît, ou si la **dernière entrée du journal ne correspond pas à la version de l'appli**.
++
++**Analyse (US-017)**
++- *Pourquoi maintenant :* R0 sera testé par de vrais utilisateurs ; leur dire ce qui change (et savoir quelle version ils ont quand ils font un retour) vaut mieux que de le découvrir par hasard. Le mécanisme de mise à jour (US-001) existe déjà ; cette US lui donne un sens lisible.
++- *Source unique :* un seul fichier de journal, lu par l'appli et vérifié en test. Un `CHANGELOG.md` séparé divergerait tôt ou tard ; il pourra être généré à partir du JSON si besoin (notes de version GitHub).
++- *Langues :* l'interface reste en français jusqu'à US-016 / R5, mais les données du journal sont prêtes pour l'anglais et l'arabe. Les traductions arabes et anglaises sont à faire relire avant publication (hors R0, le français fait foi).
++- *Hors périmètre :* notes de version envoyées par notification (R5), journal côté serveur (R1), numéro de build ou identifiant de commit affiché (utile au support, à ajouter si besoin).
++- *Risques :* oublier de mettre à jour le journal (couvert par le contrôle de cohérence) ; bandeau jugé intrusif (limité à une fois par version, fermable) ; stockage du « dernier numéro vu » effacé par le navigateur (le bandeau ne s'affiche alors pas : sans gravité).
++
+ **Fin de R0 — point de décision :** avant de lancer R1, analyser l'usage réel (matchs créés, retours des testeurs). Les US de R1 peuvent être réordonnées.
+ 
+ ---
+diff --git a/src/AlFariq.Domain/AlFariq.Domain.csproj b/src/AlFariq.Domain/AlFariq.Domain.csproj
+index dff7506..756fab1 100644
+--- a/src/AlFariq.Domain/AlFariq.Domain.csproj
++++ b/src/AlFariq.Domain/AlFariq.Domain.csproj
+@@ -2,4 +2,9 @@
+ 
+   <!-- Domaine : entités, règles métier et algorithmes. Aucune dépendance externe. -->
+ 
++  <ItemGroup>
++    <!-- Journal des changements embarqué dans l'assembly : lisible hors ligne, sans appel réseau (US-017). -->
++    <EmbeddedResource Include="Releases\changelog.json" LogicalName="AlFariq.Domain.changelog.json" />
++  </ItemGroup>
++
+ </Project>
+diff --git a/src/AlFariq.Domain/AppInfo.cs b/src/AlFariq.Domain/AppInfo.cs
+index 775df5e..12b6587 100644
+--- a/src/AlFariq.Domain/AppInfo.cs
++++ b/src/AlFariq.Domain/AppInfo.cs
+@@ -11,6 +11,9 @@ public static class AppInfo
+     public static string Version { get; } = StripBuildMetadata(
+         typeof(AppInfo).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion);
+ 
++    /// <summary>Version sémantique comparable ; 0.0.0 si la version de l'assembly n'est pas lisible.</summary>
++    public static AppVersion SemanticVersion { get; } = AppVersion.TryParse(Version, out var parsed) ? parsed : default;
++
+     /// <summary>Retire le suffixe de build : « 1.2.3+abc123 » devient « 1.2.3 ».</summary>
+     public static string StripBuildMetadata(string? version)
+     {
+diff --git a/src/AlFariq.Domain/Releases/AppVersion.cs b/src/AlFariq.Domain/Releases/AppVersion.cs
+new file mode 100644
+index 0000000..474a765
+--- /dev/null
++++ b/src/AlFariq.Domain/Releases/AppVersion.cs
+@@ -0,0 +1,136 @@
++using System.Text.RegularExpressions;
++
++namespace AlFariq.Domain;
++
++/// <summary>
++/// Version sémantique « MAJEUR.MINEUR.CORRECTIF » avec pré-version facultative (« 1.0.0-beta.1 »).
++/// Les métadonnées de build (« +abc123 ») sont ignorées. Comparable selon les règles de semver.org.
++/// </summary>
++public readonly partial record struct AppVersion(int Major, int Minor, int Patch, string? Prerelease = null)
++    : IComparable<AppVersion>
++{
++    [GeneratedRegex(@"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$")]
++    private static partial Regex Pattern();
++
++    public static bool TryParse(string? text, out AppVersion version)
++    {
++        version = default;
++        if (string.IsNullOrWhiteSpace(text))
++        {
++            return false;
++        }
++
++        var trimmed = text.Trim();
++        var plus = trimmed.IndexOf('+');
++        if (plus >= 0)
++        {
++            trimmed = trimmed[..plus];
++        }
++
++        var match = Pattern().Match(trimmed);
++        if (!match.Success
++            || !int.TryParse(match.Groups[1].Value, out var major)
++            || !int.TryParse(match.Groups[2].Value, out var minor)
++            || !int.TryParse(match.Groups[3].Value, out var patch))
++        {
++            return false;
++        }
++
++        var prerelease = match.Groups[4].Success ? match.Groups[4].Value : null;
++        version = new AppVersion(major, minor, patch, prerelease);
++        return true;
++    }
++
++    /// <exception cref="FormatException">Le texte n'est pas une version sémantique.</exception>
++    public static AppVersion Parse(string? text) =>
++        TryParse(text, out var version)
++            ? version
++            : throw new FormatException($"Version invalide : « {text} » (attendu : MAJEUR.MINEUR.CORRECTIF).");
++
++    public int CompareTo(AppVersion other)
++    {
++        var result = Major.CompareTo(other.Major);
++        if (result != 0)
++        {
++            return result;
++        }
++
++        result = Minor.CompareTo(other.Minor);
++        if (result != 0)
++        {
++            return result;
++        }
++
++        result = Patch.CompareTo(other.Patch);
++        return result != 0 ? result : ComparePrerelease(Prerelease, other.Prerelease);
++    }
++
++    public static bool operator <(AppVersion left, AppVersion right) => left.CompareTo(right) < 0;
++
++    public static bool operator >(AppVersion left, AppVersion right) => left.CompareTo(right) > 0;
++
++    public static bool operator <=(AppVersion left, AppVersion right) => left.CompareTo(right) <= 0;
++
++    public static bool operator >=(AppVersion left, AppVersion right) => left.CompareTo(right) >= 0;
++
++    public override string ToString() =>
++        Prerelease is null ? $"{Major}.{Minor}.{Patch}" : $"{Major}.{Minor}.{Patch}-{Prerelease}";
++
++    // Une version sans pré-version est plus récente que la même avec pré-version (1.0.0 > 1.0.0-beta).
++    private static int ComparePrerelease(string? left, string? right)
++    {
++        if (left is null && right is null)
++        {
++            return 0;
++        }
++
++        if (left is null)
++        {
++            return 1;
++        }
++
++        if (right is null)
++        {
++            return -1;
++        }
++
++        var leftParts = left.Split('.');
++        var rightParts = right.Split('.');
++        for (var i = 0; i < Math.Min(leftParts.Length, rightParts.Length); i++)
++        {
++            var result = CompareIdentifier(leftParts[i], rightParts[i]);
++            if (result != 0)
++            {
++                return result;
++            }
++        }
++
++        return leftParts.Length.CompareTo(rightParts.Length);
++    }
++
++    // Identifiants numériques comparés comme des nombres, et plus petits que les identifiants alphanumériques.
++    private static int CompareIdentifier(string left, string right)
++    {
++        var leftIsNumber = left.All(char.IsAsciiDigit);
++        var rightIsNumber = right.All(char.IsAsciiDigit);
++
++        if (leftIsNumber && rightIsNumber)
++        {
++            // Comparaison par longueur puis lexicale : correcte sans limite de taille (pas de dépassement d'entier).
++            var lengthResult = left.Length.CompareTo(right.Length);
++            return lengthResult != 0 ? lengthResult : string.CompareOrdinal(left, right);
++        }
++
++        if (leftIsNumber)
++        {
++            return -1;
++        }
++
++        if (rightIsNumber)
++        {
++            return 1;
++        }
++
++        return Math.Sign(string.CompareOrdinal(left, right));
++    }
++}
+diff --git a/src/AlFariq.Domain/Releases/Changelog.cs b/src/AlFariq.Domain/Releases/Changelog.cs
+new file mode 100644
+index 0000000..3ead829
+--- /dev/null
++++ b/src/AlFariq.Domain/Releases/Changelog.cs
+@@ -0,0 +1,176 @@
++using System.Globalization;
++using System.Text;
++using System.Text.Json;
++
++namespace AlFariq.Domain;
++
++/// <summary>
++/// Journal des changements : versions de la plus récente à la plus ancienne, textes en français (obligatoire),
++/// anglais et arabe. Source unique : <c>Releases/changelog.json</c>, embarqué dans l'assembly (lisible hors ligne).
++/// </summary>
++public sealed class Changelog
++{
++    private const string ResourceName = "AlFariq.Domain.changelog.json";
++
++    public Changelog(IReadOnlyList<ChangelogEntry> entries)
++    {
++        ArgumentNullException.ThrowIfNull(entries);
++        Entries = entries;
++    }
++
++    public IReadOnlyList<ChangelogEntry> Entries { get; }
++
++    /// <summary>Entrée la plus récente, ou null si le journal est vide.</summary>
++    public ChangelogEntry? Latest => Entries.Count > 0 ? Entries[0] : null;
++
++    /// <summary>Entrées strictement plus récentes que <paramref name="lastSeen"/>, jusqu'à <paramref name="current"/> incluse.</summary>
++    public IReadOnlyList<ChangelogEntry> EntriesSince(AppVersion lastSeen, AppVersion current) =>
++        Entries.Where(e => e.Version > lastSeen && e.Version <= current).ToList();
++
++    /// <summary>
++    /// Vrai s'il faut annoncer des nouveautés : une version a déjà été vue (pas le premier lancement), l'appli est plus
++    /// récente, et le journal contient quelque chose entre les deux. Un numéro mémorisé illisible ne déclenche rien.
++    /// </summary>
++    public bool HasNewsSince(string? lastSeenVersion, AppVersion current) =>
++        AppVersion.TryParse(lastSeenVersion, out var lastSeen) && EntriesSince(lastSeen, current).Count > 0;
++
++    /// <summary>Charge le journal embarqué.</summary>
++    /// <exception cref="InvalidOperationException">La ressource est absente de l'assembly.</exception>
++    /// <exception cref="FormatException">Le journal est invalide.</exception>
++    public static Changelog LoadEmbedded()
++    {
++        using var stream = typeof(Changelog).Assembly.GetManifestResourceStream(ResourceName)
++            ?? throw new InvalidOperationException($"Ressource embarquée introuvable : {ResourceName}.");
++        using var reader = new StreamReader(stream, Encoding.UTF8);
++        return Parse(reader.ReadToEnd());
++    }
++
++    /// <summary>Analyse et valide un journal au format JSON (voir <c>changelog.json</c>).</summary>
++    /// <exception cref="FormatException">Le contenu est invalide ; le message dit quoi et où.</exception>
++    public static Changelog Parse(string json)
++    {
++        ArgumentException.ThrowIfNullOrWhiteSpace(json);
++
++        JsonDocument document;
++        try
++        {
++            document = JsonDocument.Parse(json);
++        }
++        catch (JsonException exception)
++        {
++            throw new FormatException($"Journal des changements illisible : {exception.Message}", exception);
++        }
++
++        using (document)
++        {
++            var root = document.RootElement;
++            if (root.ValueKind != JsonValueKind.Object
++                || !root.TryGetProperty("entries", out var entriesElement)
++                || entriesElement.ValueKind != JsonValueKind.Array)
++            {
++                throw new FormatException("Le journal doit être un objet contenant un tableau « entries ».");
++            }
++
++            var entries = new List<ChangelogEntry>();
++            foreach (var element in entriesElement.EnumerateArray())
++            {
++                var entry = ParseEntry(element);
++                if (entries.Count > 0 && entry.Version >= entries[^1].Version)
++                {
++                    throw new FormatException(
++                        $"Les versions doivent être uniques et classées de la plus récente à la plus ancienne : {entry.Version} suit {entries[^1].Version}.");
++                }
++
++                entries.Add(entry);
++            }
++
++            return new Changelog(entries);
++        }
++    }
++
++    private static ChangelogEntry ParseEntry(JsonElement element)
++    {
++        var versionText = RequireString(element, "version", "une entrée");
++        if (!AppVersion.TryParse(versionText, out var version))
++        {
++            throw new FormatException($"Version invalide : « {versionText} » (attendu : MAJEUR.MINEUR.CORRECTIF).");
++        }
++
++        var where = $"la version {versionText}";
++        var dateText = RequireString(element, "date", where);
++        if (!DateOnly.TryParseExact(dateText, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
++        {
++            throw new FormatException($"Date invalide pour {where} : « {dateText} » (attendu : AAAA-MM-JJ).");
++        }
++
++        if (!element.TryGetProperty("changes", out var changesElement)
++            || changesElement.ValueKind != JsonValueKind.Array
++            || changesElement.GetArrayLength() == 0)
++        {
++            throw new FormatException($"La version {versionText} doit contenir au moins un changement (« changes »).");
++        }
++
++        var changes = new List<ChangelogChange>();
++        foreach (var changeElement in changesElement.EnumerateArray())
++        {
++            changes.Add(ParseChange(changeElement, where));
++        }
++
++        return new ChangelogEntry(version, date, changes);
++    }
++
++    private static ChangelogChange ParseChange(JsonElement element, string where)
++    {
++        var typeText = RequireString(element, "type", where);
++        var type = typeText switch
++        {
++            "added" => ChangeType.Added,
++            "changed" => ChangeType.Changed,
++            "fixed" => ChangeType.Fixed,
++            _ => throw new FormatException($"Type de changement inconnu pour {where} : « {typeText} » (attendu : added, changed ou fixed)."),
++        };
++
++        if (!element.TryGetProperty("text", out var textElement) || textElement.ValueKind != JsonValueKind.Object)
++        {
++            throw new FormatException($"Un changement de {where} n'a pas de « text » par langue.");
++        }
++
++        var values = new Dictionary<string, string>(StringComparer.Ordinal);
++        foreach (var property in textElement.EnumerateObject())
++        {
++            if (!ChangelogLanguages.IsSupported(property.Name))
++            {
++                throw new FormatException(
++                    $"Langue inconnue pour {where} : « {property.Name} » (langues : {string.Join(", ", ChangelogLanguages.Supported)}).");
++            }
++
++            var value = property.Value.ValueKind == JsonValueKind.String ? property.Value.GetString() : null;
++            if (string.IsNullOrWhiteSpace(value))
++            {
++                throw new FormatException($"Texte vide ou invalide pour {where} en « {property.Name} ».");
++            }
++
++            values[property.Name] = value.Trim();
++        }
++
++        if (!values.ContainsKey(ChangelogLanguages.Default))
++        {
++            throw new FormatException($"Le texte français est obligatoire pour chaque changement ({where}).");
++        }
++
++        return new ChangelogChange(type, new LocalizedText(values));
++    }
++
++    private static string RequireString(JsonElement element, string name, string where)
++    {
++        if (element.ValueKind == JsonValueKind.Object
++            && element.TryGetProperty(name, out var property)
++            && property.ValueKind == JsonValueKind.String
++            && !string.IsNullOrWhiteSpace(property.GetString()))
++        {
++            return property.GetString()!.Trim();
++        }
++
++        throw new FormatException($"Champ « {name} » manquant ou vide pour {where}.");
++    }
++}
+diff --git a/src/AlFariq.Domain/Releases/ChangelogModel.cs b/src/AlFariq.Domain/Releases/ChangelogModel.cs
+new file mode 100644
+index 0000000..3cd783d
+--- /dev/null
++++ b/src/AlFariq.Domain/Releases/ChangelogModel.cs
+@@ -0,0 +1,81 @@
++namespace AlFariq.Domain;
++
++public enum ChangeType
++{
++    /// <summary>Nouveauté.</summary>
++    Added,
++
++    /// <summary>Amélioration d'une fonctionnalité existante.</summary>
++    Changed,
++
++    /// <summary>Correction d'un défaut.</summary>
++    Fixed,
++}
++
++/// <summary>Langues du journal. Le français est obligatoire et sert de repli ; l'anglais et l'arabe sont facultatifs.</summary>
++public static class ChangelogLanguages
++{
++    public const string Default = "fr";
++
++    public static IReadOnlyList<string> Supported { get; } = ["fr", "en", "ar"];
++
++    public static bool IsSupported(string language) => Supported.Contains(language, StringComparer.Ordinal);
++
++    /// <summary>Les langues écrites de droite à gauche (arabe pour l'instant).</summary>
++    public static bool IsRightToLeft(string language) => language == "ar";
++
++    /// <summary>Langue de base d'un nom de culture : « fr-FR » devient « fr ». Vide ou inconnu : français.</summary>
++    public static string FromCulture(string? cultureName)
++    {
++        if (string.IsNullOrWhiteSpace(cultureName))
++        {
++            return Default;
++        }
++
++        var dash = cultureName.IndexOf('-');
++        var language = (dash >= 0 ? cultureName[..dash] : cultureName).Trim().ToLowerInvariant();
++        return IsSupported(language) ? language : Default;
++    }
++}
++
++/// <summary>Texte d'un changement et la langue dans laquelle il est effectivement fourni.</summary>
++/// <param name="Text">Le texte à afficher.</param>
++/// <param name="Language">Sa langue (« fr », « en » ou « ar ») : à reporter dans l'attribut <c>lang</c>.</param>
++public readonly record struct ResolvedText(string Text, string Language)
++{
++    /// <summary>« rtl » ou « ltr » : à reporter dans l'attribut <c>dir</c>.</summary>
++    public string Direction => ChangelogLanguages.IsRightToLeft(Language) ? "rtl" : "ltr";
++}
++
++/// <summary>Un même texte dans plusieurs langues. Le français est toujours présent.</summary>
++public sealed class LocalizedText
++{
++    private readonly IReadOnlyDictionary<string, string> _values;
++
++    public LocalizedText(IReadOnlyDictionary<string, string> values)
++    {
++        ArgumentNullException.ThrowIfNull(values);
++
++        if (!values.ContainsKey(ChangelogLanguages.Default))
++        {
++            throw new ArgumentException("Le texte français est obligatoire.", nameof(values));
++        }
++
++        _values = values;
++    }
++
++    public IReadOnlyDictionary<string, string> Values => _values;
++
++    /// <summary>Texte dans la langue de la culture ; à défaut, texte français (avec sa propre langue indiquée).</summary>
++    public ResolvedText Resolve(string? cultureName)
++    {
++        var language = ChangelogLanguages.FromCulture(cultureName);
++        return _values.TryGetValue(language, out var text)
++            ? new ResolvedText(text, language)
++            : new ResolvedText(_values[ChangelogLanguages.Default], ChangelogLanguages.Default);
++    }
++}
++
++public sealed record ChangelogChange(ChangeType Type, LocalizedText Text);
++
++public sealed record ChangelogEntry(AppVersion Version, DateOnly Date, IReadOnlyList<ChangelogChange> Changes);
+diff --git a/src/AlFariq.Domain/Releases/changelog.json b/src/AlFariq.Domain/Releases/changelog.json
+new file mode 100644
+index 0000000..cc7fb06
+--- /dev/null
++++ b/src/AlFariq.Domain/Releases/changelog.json
+@@ -0,0 +1,86 @@
++{
++  "entries": [
++    {
++      "version": "0.3.0",
++      "date": "2026-11-25",
++      "changes": [
++        {
++          "type": "added",
++          "text": {
++            "fr": "Un écran « Nouveautés » liste les changements de chaque version.",
++            "en": "A “What's new” screen lists the changes in each version.",
++            "ar": "شاشة «الجديد» تعرض التغييرات في كل إصدار."
++          }
++        },
++        {
++          "type": "added",
++          "text": {
++            "fr": "Après une mise à jour, un message te propose de découvrir ce qui a changé.",
++            "en": "After an update, a message offers to show you what changed.",
++            "ar": "بعد كل تحديث، تظهر رسالة تتيح لك الاطلاع على ما تغيّر."
++          }
++        },
++        {
++          "type": "changed",
++          "text": {
++            "fr": "L'écran « À propos » donne accès aux nouveautés.",
++            "en": "The About screen now links to what's new.",
++            "ar": "تتيح شاشة «حول التطبيق» الوصول إلى الجديد."
++          }
++        }
++      ]
++    },
++    {
++      "version": "0.2.0",
++      "date": "2026-11-25",
++      "changes": [
++        {
++          "type": "added",
++          "text": {
++            "fr": "Tes données sont désormais conservées dans une base locale sur ton appareil, prête à accueillir les joueurs et les matchs.",
++            "en": "Your data is now kept in a local database on your device, ready for players and matches.",
++            "ar": "أصبحت بياناتك محفوظة في قاعدة بيانات محلية على جهازك، جاهزة لاستقبال اللاعبين والمباريات."
++          }
++        },
++        {
++          "type": "added",
++          "text": {
++            "fr": "L'appli demande au navigateur de protéger ces données contre l'effacement automatique.",
++            "en": "The app asks the browser to protect this data from automatic deletion.",
++            "ar": "يطلب التطبيق من المتصفح حماية هذه البيانات من الحذف التلقائي."
++          }
++        }
++      ]
++    },
++    {
++      "version": "0.1.0",
++      "date": "2026-11-23",
++      "changes": [
++        {
++          "type": "added",
++          "text": {
++            "fr": "Première version : appli installable sur l'écran d'accueil, utilisable sans connexion.",
++            "en": "First version: installable on the home screen and usable offline.",
++            "ar": "الإصدار الأول: تطبيق قابل للتثبيت على الشاشة الرئيسية ويعمل دون اتصال."
++          }
++        },
++        {
++          "type": "added",
++          "text": {
++            "fr": "Thème clair, sombre ou automatique.",
++            "en": "Light, dark or automatic theme.",
++            "ar": "سمة فاتحة أو داكنة أو تلقائية."
++          }
++        },
++        {
++          "type": "added",
++          "text": {
++            "fr": "Mises à jour proposées sans interrompre ta saisie.",
++            "en": "Updates are offered without interrupting what you are typing.",
++            "ar": "تُعرض التحديثات دون مقاطعة ما تكتبه."
++          }
++        }
++      ]
++    }
++  ]
++}
+diff --git a/src/AlFariq.UI/Components/WhatsNewPrompt.razor b/src/AlFariq.UI/Components/WhatsNewPrompt.razor
+new file mode 100644
+index 0000000..9411d2a
+--- /dev/null
++++ b/src/AlFariq.UI/Components/WhatsNewPrompt.razor
+@@ -0,0 +1,30 @@
++@implements IDisposable
++@inject WhatsNewService WhatsNew
++@inject IStringLocalizer<Strings> L
++
++@if (WhatsNew.IsAnnouncementVisible)
++{
++    <div class="banner banner--news" role="status">
++        <span>@L["WhatsNew_Banner", AppInfo.Version]</span>
++        <span class="banner__actions">
++            <a class="button button--small" href="nouveautes">@L["WhatsNew_See"]</a>
++            <button type="button" class="button button--small button--ghost" @onclick="WhatsNew.MarkSeenAsync">@L["WhatsNew_Dismiss"]</button>
++        </span>
++    </div>
++}
++
++@code {
++    protected override void OnInitialized() => WhatsNew.Changed += OnChanged;
++
++    protected override async Task OnAfterRenderAsync(bool firstRender)
++    {
++        if (firstRender)
++        {
++            await WhatsNew.InitializeAsync();
++        }
++    }
++
++    private void OnChanged() => InvokeAsync(StateHasChanged);
++
++    public void Dispose() => WhatsNew.Changed -= OnChanged;
++}
+diff --git a/src/AlFariq.UI/DependencyInjection.cs b/src/AlFariq.UI/DependencyInjection.cs
+index 907791f..d0de9f8 100644
+--- a/src/AlFariq.UI/DependencyInjection.cs
++++ b/src/AlFariq.UI/DependencyInjection.cs
+@@ -5,7 +5,7 @@ namespace AlFariq.UI;
+ 
+ public static class DependencyInjection
+ {
+-    /// <summary>Enregistre les services de l'interface (traductions, connexion, thème, mises à jour).</summary>
++    /// <summary>Enregistre les services de l'interface (traductions, connexion, thème, mises à jour, nouveautés).</summary>
+     public static IServiceCollection AddAlFariqUi(this IServiceCollection services)
+     {
+         services.AddLocalization();
+@@ -13,6 +13,7 @@ public static class DependencyInjection
+         services.AddScoped<ConnectivityService>();
+         services.AddScoped<ThemeService>();
+         services.AddScoped<UpdateService>();
++        services.AddScoped<WhatsNewService>();
+         return services;
+     }
+ }
+diff --git a/src/AlFariq.UI/Layout/MainLayout.razor b/src/AlFariq.UI/Layout/MainLayout.razor
+index e171a65..c74b2ab 100644
+--- a/src/AlFariq.UI/Layout/MainLayout.razor
++++ b/src/AlFariq.UI/Layout/MainLayout.razor
+@@ -7,6 +7,7 @@
+ <div class="app-shell">
+     <OfflineBanner />
+     <UpdatePrompt />
++    <WhatsNewPrompt />
+ 
+     <main class="app-main" id="main">
+         @Body
+diff --git a/src/AlFariq.UI/Pages/More.razor b/src/AlFariq.UI/Pages/More.razor
+index 7dbe01c..d60b6e3 100644
+--- a/src/AlFariq.UI/Pages/More.razor
++++ b/src/AlFariq.UI/Pages/More.razor
+@@ -17,5 +17,6 @@
+             <dd>@L["About_Version"] @AppInfo.Version</dd>
+         </dl>
+         <p>@L["About_Storage"]</p>
++        <a class="button button--small button--ghost" href="nouveautes">@L["WhatsNew_See"]</a>
+     </div>
+ </section>
+diff --git a/src/AlFariq.UI/Pages/WhatsNew.razor b/src/AlFariq.UI/Pages/WhatsNew.razor
+new file mode 100644
+index 0000000..e5576a7
+--- /dev/null
++++ b/src/AlFariq.UI/Pages/WhatsNew.razor
+@@ -0,0 +1,71 @@
++@page "/nouveautes"
++@using System.Globalization
++@inject IStringLocalizer<Strings> L
++@inject WhatsNewService WhatsNew
++
++<PageTitle>@L["WhatsNew_Title"] · @L["App_Name"]</PageTitle>
++
++<section class="page">
++    <h1>@L["WhatsNew_Title"]</h1>
++
++    @if (WhatsNew.Changelog.Entries.Count == 0)
++    {
++        <div class="card card--empty">
++            <p>@L["WhatsNew_Empty"]</p>
++        </div>
++    }
++    else
++    {
++        foreach (var entry in WhatsNew.Changelog.Entries)
++        {
++            <article class="card release">
++                <h2 class="release__title">
++                    <span>@L["About_Version"] @entry.Version</span>
++                    @if (entry.Version == AppInfo.SemanticVersion)
++                    {
++                        <span class="release__badge">@L["WhatsNew_Current"]</span>
++                    }
++                </h2>
++                <p class="release__date">
++                    <time datetime="@IsoDate(entry.Date)">@LongDate(entry.Date)</time>
++                </p>
++
++                @foreach (var group in entry.Changes.GroupBy(c => c.Type).OrderBy(g => g.Key))
++                {
++                    <h3>@Heading(group.Key)</h3>
++                    <ul class="release__list">
++                        @foreach (var change in group)
++                        {
++                            var text = change.Text.Resolve(Culture.Name);
++                            <li lang="@text.Language" dir="@text.Direction">@text.Text</li>
++                        }
++                    </ul>
++                }
++            </article>
++        }
++    }
++</section>
++
++@code {
++    private static CultureInfo Culture => CultureInfo.CurrentUICulture;
++
++    private static string IsoDate(DateOnly date) => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
++
++    private static string LongDate(DateOnly date) => date.ToString("d MMMM yyyy", Culture);
++
++    private string Heading(ChangeType type) => type switch
++    {
++        ChangeType.Added => L["Changelog_Added"],
++        ChangeType.Changed => L["Changelog_Changed"],
++        _ => L["Changelog_Fixed"],
++    };
++
++    protected override async Task OnAfterRenderAsync(bool firstRender)
++    {
++        // Ouvrir cet écran vaut lecture des nouveautés : le bandeau disparaît.
++        if (firstRender)
++        {
++            await WhatsNew.MarkSeenAsync();
++        }
++    }
++}
+diff --git a/src/AlFariq.UI/Resources/Strings.resx b/src/AlFariq.UI/Resources/Strings.resx
+index 559e02d..f83b03b 100644
+--- a/src/AlFariq.UI/Resources/Strings.resx
++++ b/src/AlFariq.UI/Resources/Strings.resx
+@@ -39,6 +39,16 @@
+   <data name="About_Version" xml:space="preserve"><value>Version</value></data>
+   <data name="About_Storage" xml:space="preserve"><value>Tes données sont enregistrées sur cet appareil.</value></data>
+ 
++  <data name="WhatsNew_Title" xml:space="preserve"><value>Nouveautés</value></data>
++  <data name="WhatsNew_Empty" xml:space="preserve"><value>Aucune nouveauté à afficher pour l'instant.</value></data>
++  <data name="WhatsNew_Current" xml:space="preserve"><value>Version installée</value></data>
++  <data name="WhatsNew_Banner" xml:space="preserve"><value>AlFariq a été mis à jour (version {0}).</value></data>
++  <data name="WhatsNew_See" xml:space="preserve"><value>Voir les nouveautés</value></data>
++  <data name="WhatsNew_Dismiss" xml:space="preserve"><value>Fermer</value></data>
++  <data name="Changelog_Added" xml:space="preserve"><value>Nouveautés</value></data>
++  <data name="Changelog_Changed" xml:space="preserve"><value>Améliorations</value></data>
++  <data name="Changelog_Fixed" xml:space="preserve"><value>Corrections</value></data>
++
+   <data name="NotFound_Title" xml:space="preserve"><value>Page introuvable</value></data>
+   <data name="NotFound_Message" xml:space="preserve"><value>Cette page n'existe pas.</value></data>
+   <data name="NotFound_Back" xml:space="preserve"><value>Retour à l'accueil</value></data>
+diff --git a/src/AlFariq.UI/Services/WhatsNewService.cs b/src/AlFariq.UI/Services/WhatsNewService.cs
+new file mode 100644
+index 0000000..39c6c77
+--- /dev/null
++++ b/src/AlFariq.UI/Services/WhatsNewService.cs
+@@ -0,0 +1,109 @@
++using AlFariq.Domain;
++using Microsoft.JSInterop;
++
++namespace AlFariq.UI.Services;
++
++/// <summary>
++/// Journal des changements (embarqué, lisible hors ligne) et annonce des nouveautés après une mise à jour.
++/// Le dernier numéro de version vu est gardé sur l'appareil. Premier lancement : on l'enregistre sans rien afficher.
++/// </summary>
++public sealed class WhatsNewService
++{
++    private readonly ShellInterop _interop;
++    private bool _initialized;
++    private bool _markedSeen;
++
++    public WhatsNewService(ShellInterop interop)
++    {
++        _interop = interop;
++        Changelog = LoadChangelog();
++    }
++
++    public Changelog Changelog { get; }
++
++    /// <summary>Vrai tant que le bandeau « nouveautés » doit être affiché.</summary>
++    public bool IsAnnouncementVisible { get; private set; }
++
++    public event Action? Changed;
++
++    /// <summary>À appeler une fois après le premier rendu (l'interopérabilité JavaScript n'existe pas avant).</summary>
++    public async Task InitializeAsync()
++    {
++        if (_initialized)
++        {
++            return;
++        }
++
++        _initialized = true;
++        var current = AppInfo.SemanticVersion;
++
++        string? lastSeen;
++        try
++        {
++            lastSeen = await _interop.InvokeAsync<string?>("getLastSeenVersion");
++        }
++        catch (JSException)
++        {
++            return;
++        }
++
++        // L'utilisateur a déjà ouvert l'écran des nouveautés pendant la lecture : rien à annoncer.
++        if (_markedSeen)
++        {
++            return;
++        }
++
++        if (Changelog.HasNewsSince(lastSeen, current))
++        {
++            IsAnnouncementVisible = true;
++            Changed?.Invoke();
++            return;
++        }
++
++        // Premier lancement, ou version sans rien de nouveau à dire : on aligne le numéro mémorisé en silence.
++        if (lastSeen != current.ToString())
++        {
++            await RememberAsync(current);
++        }
++    }
++
++    /// <summary>L'utilisateur a vu (ou écarté) les nouveautés de la version installée.</summary>
++    public async Task MarkSeenAsync()
++    {
++        _markedSeen = true;
++        var wasVisible = IsAnnouncementVisible;
++        IsAnnouncementVisible = false;
++
++        await RememberAsync(AppInfo.SemanticVersion);
++
++        if (wasVisible)
++        {
++            Changed?.Invoke();
++        }
++    }
++
++    private async Task RememberAsync(AppVersion version)
++    {
++        try
++        {
++            await _interop.InvokeVoidAsync("setLastSeenVersion", version.ToString());
++        }
++        catch (JSException)
++        {
++            // Stockage indisponible : l'annonce ne se répétera simplement pas à la prochaine visite.
++        }
++    }
++
++    private static Changelog LoadChangelog()
++    {
++        try
++        {
++            return Changelog.LoadEmbedded();
++        }
++        catch (Exception exception) when (exception is FormatException or InvalidOperationException)
++        {
++            // Un journal défectueux ne doit jamais empêcher l'appli de démarrer (les tests l'empêchent d'être publié).
++            return new Changelog([]);
++        }
++    }
++}
+diff --git a/src/AlFariq.UI/wwwroot/css/app.css b/src/AlFariq.UI/wwwroot/css/app.css
+index e082c92..8e643e9 100644
+--- a/src/AlFariq.UI/wwwroot/css/app.css
++++ b/src/AlFariq.UI/wwwroot/css/app.css
+@@ -201,7 +201,8 @@ h1:focus {
+   color: var(--color-banner-offline-text);
+ }
+ 
+-.banner--update {
++.banner--update,
++.banner--news {
+   background: var(--color-banner-update-bg);
+   color: var(--color-banner-update-text);
+ }
+@@ -211,6 +212,47 @@ h1:focus {
+   gap: 0.5rem;
+ }
+ 
++/* ---------- Nouveautés (journal des changements) ---------- */
++
++.release__title {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  gap: 0.5rem;
++  margin: 0;
++  font-size: 1.125rem;
++}
++
++.release__badge {
++  padding: 0.125rem 0.625rem;
++  border-radius: 999px;
++  background: var(--color-banner-update-bg);
++  color: var(--color-banner-update-text);
++  font-size: 0.8125rem;
++  font-weight: 600;
++}
++
++.release__date {
++  margin: 0.25rem 0 0;
++  color: var(--color-muted);
++  font-size: 0.9375rem;
++}
++
++.release h3 {
++  margin: 1rem 0 0.25rem;
++  color: var(--color-muted);
++  font-size: 0.9375rem;
++}
++
++.release__list {
++  margin: 0;
++  padding-inline-start: 1.25rem;
++}
++
++.release__list li {
++  margin: 0.25rem 0;
++}
++
+ /* ---------- Navigation du bas ---------- */
+ 
+ .bottom-nav {
+diff --git a/src/AlFariq.UI/wwwroot/js/alfariq.js b/src/AlFariq.UI/wwwroot/js/alfariq.js
+index c07f9e5..96035b9 100644
+--- a/src/AlFariq.UI/wwwroot/js/alfariq.js
++++ b/src/AlFariq.UI/wwwroot/js/alfariq.js
+@@ -47,6 +47,27 @@ export function applyTheme(theme) {
+   }
+ }
+ 
++// ---------- Nouveautés ----------
++
++const SEEN_VERSION_KEY = "alfariq.lastSeenVersion";
++
++/** Dernier numéro de version dont l'utilisateur a vu les nouveautés (null au premier lancement). */
++export function getLastSeenVersion() {
++  try {
++    return localStorage.getItem(SEEN_VERSION_KEY);
++  } catch {
++    return null;
++  }
++}
++
++export function setLastSeenVersion(version) {
++  try {
++    localStorage.setItem(SEEN_VERSION_KEY, version);
++  } catch {
++    // Stockage indisponible : l'annonce ne se répétera simplement pas à la prochaine visite.
++  }
++}
++
+ // ---------- Mises à jour de l'application ----------
+ 
+ export async function initUpdates(dotnetRef) {
+diff --git a/tests/AlFariq.Domain.Tests/AppVersionTests.cs b/tests/AlFariq.Domain.Tests/AppVersionTests.cs
+new file mode 100644
+index 0000000..9b74b44
+--- /dev/null
++++ b/tests/AlFariq.Domain.Tests/AppVersionTests.cs
+@@ -0,0 +1,81 @@
++using AlFariq.Domain;
++
++namespace AlFariq.Domain.Tests;
++
++public class AppVersionTests
++{
++    [Theory]
++    [InlineData("0.1.0", 0, 1, 0, null)]
++    [InlineData("1.22.333", 1, 22, 333, null)]
++    [InlineData("1.0.0-beta.1", 1, 0, 0, "beta.1")]
++    [InlineData("2.3.4+abc123", 2, 3, 4, null)]
++    [InlineData("2.3.4-rc.1+abc123", 2, 3, 4, "rc.1")]
++    [InlineData("  0.3.0  ", 0, 3, 0, null)]
++    public void TryParse_reads_valid_versions(string text, int major, int minor, int patch, string? prerelease)
++    {
++        Assert.True(AppVersion.TryParse(text, out var version));
++        Assert.Equal(new AppVersion(major, minor, patch, prerelease), version);
++    }
++
++    [Theory]
++    [InlineData(null)]
++    [InlineData("")]
++    [InlineData("   ")]
++    [InlineData("1")]
++    [InlineData("1.2")]
++    [InlineData("1.2.3.4")]
++    [InlineData("01.2.3")]
++    [InlineData("1.2.x")]
++    [InlineData("v1.2.3")]
++    [InlineData("1.2.3-")]
++    [InlineData("1.2.3-beta..1")]
++    [InlineData("99999999999.0.0")]
++    public void TryParse_rejects_invalid_versions(string? text)
++    {
++        Assert.False(AppVersion.TryParse(text, out _));
++    }
++
++    [Fact]
++    public void Parse_throws_a_clear_error_on_invalid_text()
++    {
++        var error = Assert.Throws<FormatException>(() => AppVersion.Parse("abc"));
++        Assert.Contains("abc", error.Message);
++    }
++
++    [Fact]
++    public void ToString_round_trips()
++    {
++        Assert.Equal("1.2.3", new AppVersion(1, 2, 3).ToString());
++        Assert.Equal("1.2.3-beta.2", AppVersion.Parse("1.2.3-beta.2+build9").ToString());
++    }
++
++    [Theory]
++    [InlineData("0.2.0", "0.10.0", -1)]      // comparaison numérique, pas lexicale
++    [InlineData("1.0.0", "0.99.99", 1)]
++    [InlineData("1.2.3", "1.2.3", 0)]
++    [InlineData("1.2.3", "1.2.4", -1)]
++    [InlineData("1.0.0-beta", "1.0.0", -1)]  // une pré-version précède la version finale
++    [InlineData("1.0.0-alpha", "1.0.0-beta", -1)]
++    [InlineData("1.0.0-beta.2", "1.0.0-beta.11", -1)]
++    [InlineData("1.0.0-beta.1", "1.0.0-beta", 1)]
++    [InlineData("1.0.0-1", "1.0.0-alpha", -1)] // numérique avant alphanumérique
++    [InlineData("1.2.3+a", "1.2.3+b", 0)]      // les métadonnées de build sont ignorées
++    public void CompareTo_follows_semver_rules(string left, string right, int expectedSign)
++    {
++        var a = AppVersion.Parse(left);
++        var b = AppVersion.Parse(right);
++
++        Assert.Equal(expectedSign, Math.Sign(a.CompareTo(b)));
++        Assert.Equal(-expectedSign, Math.Sign(b.CompareTo(a)));
++        Assert.Equal(expectedSign < 0, a < b);
++        Assert.Equal(expectedSign > 0, a > b);
++        Assert.Equal(expectedSign <= 0, a <= b);
++        Assert.Equal(expectedSign >= 0, a >= b);
++    }
++
++    [Fact]
++    public void AppInfo_exposes_a_parsed_version_matching_the_text_version()
++    {
++        Assert.Equal(AppInfo.Version, AppInfo.SemanticVersion.ToString());
++    }
++}
+diff --git a/tests/AlFariq.Domain.Tests/ChangelogTests.cs b/tests/AlFariq.Domain.Tests/ChangelogTests.cs
+new file mode 100644
+index 0000000..c15db2e
+--- /dev/null
++++ b/tests/AlFariq.Domain.Tests/ChangelogTests.cs
+@@ -0,0 +1,178 @@
++using AlFariq.Domain;
++
++namespace AlFariq.Domain.Tests;
++
++public class ChangelogTests
++{
++    private const string Valid = """
++        {
++          "entries": [
++            { "version": "0.2.0", "date": "2026-11-25",
++              "changes": [
++                { "type": "added", "text": { "fr": "Deux", "en": "Two", "ar": "اثنان" } },
++                { "type": "fixed", "text": { "fr": "Correction" } }
++              ] },
++            { "version": "0.1.0", "date": "2026-11-23",
++              "changes": [ { "type": "changed", "text": { "fr": "Un" } } ] }
++          ]
++        }
++        """;
++
++    private static string WithEntry(string entry) => "{ \"entries\": [ " + entry + " ] }";
++
++    // ---------- Analyse ----------
++
++    [Fact]
++    public void Parse_reads_entries_changes_types_and_dates()
++    {
++        var changelog = Changelog.Parse(Valid);
++
++        Assert.Equal(2, changelog.Entries.Count);
++        Assert.Equal(new AppVersion(0, 2, 0), changelog.Latest!.Version);
++        Assert.Equal(new DateOnly(2026, 11, 25), changelog.Latest.Date);
++        Assert.Equal(new[] { ChangeType.Added, ChangeType.Fixed }, changelog.Latest.Changes.Select(c => c.Type).ToArray());
++        Assert.Equal(ChangeType.Changed, changelog.Entries[1].Changes[0].Type);
++    }
++
++    [Fact]
++    public void Latest_is_null_for_an_empty_changelog()
++    {
++        Assert.Null(Changelog.Parse("""{ "entries": [] }""").Latest);
++    }
++
++    [Theory]
++    [InlineData("pas du json")]
++    [InlineData("[]")]
++    [InlineData("{}")]
++    [InlineData("""{ "entries": {} }""")]
++    public void Parse_rejects_a_malformed_document(string json)
++    {
++        Assert.Throws<FormatException>(() => Changelog.Parse(json));
++    }
++
++    [Theory]
++    [InlineData("""{ "version": "1.0", "date": "2026-01-01", "changes": [ { "type": "added", "text": { "fr": "x" } } ] }""", "1.0")]
++    [InlineData("""{ "version": "1.0.0", "date": "01/01/2026", "changes": [ { "type": "added", "text": { "fr": "x" } } ] }""", "01/01/2026")]
++    [InlineData("""{ "version": "1.0.0", "date": "2026-02-30", "changes": [ { "type": "added", "text": { "fr": "x" } } ] }""", "2026-02-30")]
++    [InlineData("""{ "version": "1.0.0", "date": "2026-01-01", "changes": [] }""", "au moins un changement")]
++    [InlineData("""{ "version": "1.0.0", "date": "2026-01-01" }""", "au moins un changement")]
++    [InlineData("""{ "version": "1.0.0", "date": "2026-01-01", "changes": [ { "type": "removed", "text": { "fr": "x" } } ] }""", "removed")]
++    [InlineData("""{ "version": "1.0.0", "date": "2026-01-01", "changes": [ { "type": "added" } ] }""", "text")]
++    [InlineData("""{ "version": "1.0.0", "date": "2026-01-01", "changes": [ { "type": "added", "text": { "en": "only english" } } ] }""", "français")]
++    [InlineData("""{ "version": "1.0.0", "date": "2026-01-01", "changes": [ { "type": "added", "text": { "fr": "x", "es": "x" } } ] }""", "es")]
++    [InlineData("""{ "version": "1.0.0", "date": "2026-01-01", "changes": [ { "type": "added", "text": { "fr": "  " } } ] }""", "vide")]
++    [InlineData("""{ "version": "1.0.0", "date": "2026-01-01", "changes": [ { "type": "added", "text": { "fr": 12 } } ] }""", "vide")]
++    public void Parse_rejects_an_invalid_entry_and_says_why(string entry, string expectedInMessage)
++    {
++        var error = Assert.Throws<FormatException>(() => Changelog.Parse(WithEntry(entry)));
++
++        Assert.Contains(expectedInMessage, error.Message);
++    }
++
++    [Fact]
++    public void Parse_rejects_duplicate_versions()
++    {
++        const string entry = """{ "version": "1.0.0", "date": "2026-01-01", "changes": [ { "type": "added", "text": { "fr": "x" } } ] }""";
++
++        Assert.Throws<FormatException>(() => Changelog.Parse(WithEntry(entry + "," + entry)));
++    }
++
++    [Fact]
++    public void Parse_rejects_entries_not_sorted_from_newest_to_oldest()
++    {
++        const string older = """{ "version": "0.1.0", "date": "2026-01-01", "changes": [ { "type": "added", "text": { "fr": "x" } } ] }""";
++        const string newer = """{ "version": "0.2.0", "date": "2026-02-01", "changes": [ { "type": "added", "text": { "fr": "x" } } ] }""";
++
++        Assert.Throws<FormatException>(() => Changelog.Parse(WithEntry(older + "," + newer)));
++    }
++
++    // ---------- Langues ----------
++
++    [Theory]
++    [InlineData("fr", "fr")]
++    [InlineData("fr-FR", "fr")]
++    [InlineData("EN-us", "en")]
++    [InlineData("ar-MA", "ar")]
++    [InlineData("es", "fr")]   // langue non prévue : français
++    [InlineData("", "fr")]
++    [InlineData(null, "fr")]
++    public void FromCulture_maps_a_culture_to_a_changelog_language(string? culture, string expected)
++    {
++        Assert.Equal(expected, ChangelogLanguages.FromCulture(culture));
++    }
++
++    [Fact]
++    public void Resolve_returns_the_text_in_the_requested_language()
++    {
++        var text = Changelog.Parse(Valid).Latest!.Changes[0].Text;
++
++        Assert.Equal(new ResolvedText("Deux", "fr"), text.Resolve("fr-FR"));
++        Assert.Equal(new ResolvedText("Two", "en"), text.Resolve("en-GB"));
++        Assert.Equal("اثنان", text.Resolve("ar").Text);
++    }
++
++    [Fact]
++    public void Resolve_falls_back_to_french_and_reports_the_language_actually_used()
++    {
++        var onlyFrench = Changelog.Parse(Valid).Latest!.Changes[1].Text;
++
++        var resolved = onlyFrench.Resolve("ar");
++
++        Assert.Equal("Correction", resolved.Text);
++        Assert.Equal("fr", resolved.Language);   // pour lang="fr"
++        Assert.Equal("ltr", resolved.Direction); // et dir="ltr", même dans une interface arabe
++    }
++
++    [Fact]
++    public void Arabic_text_is_right_to_left()
++    {
++        var resolved = Changelog.Parse(Valid).Latest!.Changes[0].Text.Resolve("ar");
++
++        Assert.Equal("ar", resolved.Language);
++        Assert.Equal("rtl", resolved.Direction);
++    }
++
++    [Fact]
++    public void LocalizedText_requires_french()
++    {
++        var values = new Dictionary<string, string> { ["en"] = "x" };
++
++        Assert.Throws<ArgumentException>(() => new LocalizedText(values));
++    }
++
++    // ---------- Annonce des nouveautés ----------
++
++    [Fact]
++    public void EntriesSince_returns_entries_after_the_last_seen_up_to_the_current_version()
++    {
++        var changelog = Changelog.Parse(Valid);
++
++        var news = changelog.EntriesSince(new AppVersion(0, 1, 0), new AppVersion(0, 2, 0));
++
++        Assert.Equal(new[] { new AppVersion(0, 2, 0) }, news.Select(e => e.Version).ToArray());
++    }
++
++    [Fact]
++    public void EntriesSince_ignores_versions_newer_than_the_installed_one()
++    {
++        var changelog = Changelog.Parse(Valid);
++
++        Assert.Empty(changelog.EntriesSince(new AppVersion(0, 0, 1), new AppVersion(0, 0, 9)));
++        Assert.Single(changelog.EntriesSince(new AppVersion(0, 0, 1), new AppVersion(0, 1, 0)));
++    }
++
++    [Theory]
++    [InlineData("0.1.0", "0.2.0", true)]    // mise à jour : annoncer
++    [InlineData("0.2.0", "0.2.0", false)]   // déjà vu
++    [InlineData("0.2.0", "0.1.0", false)]   // retour en arrière : rien
++    [InlineData("0.2.0", "0.2.1", false)]   // pas d'entrée entre les deux : rien à dire
++    [InlineData(null, "0.2.0", false)]      // premier lancement : jamais d'annonce
++    [InlineData("", "0.2.0", false)]
++    [InlineData("n'importe quoi", "0.2.0", false)] // valeur mémorisée illisible
++    public void HasNewsSince_announces_only_real_updates(string? lastSeen, string current, bool expected)
++    {
++        var changelog = Changelog.Parse(Valid);
++
++        Assert.Equal(expected, changelog.HasNewsSince(lastSeen, AppVersion.Parse(current)));
++    }
++}
+diff --git a/tests/AlFariq.Domain.Tests/ShippedChangelogTests.cs b/tests/AlFariq.Domain.Tests/ShippedChangelogTests.cs
+new file mode 100644
+index 0000000..cbb74e8
+--- /dev/null
++++ b/tests/AlFariq.Domain.Tests/ShippedChangelogTests.cs
+@@ -0,0 +1,48 @@
++using AlFariq.Domain;
++
++namespace AlFariq.Domain.Tests;
++
++/// <summary>Contrôles du journal réellement livré (src/AlFariq.Domain/Releases/changelog.json).</summary>
++public class ShippedChangelogTests
++{
++    [Fact]
++    public void The_embedded_changelog_is_valid_and_not_empty()
++    {
++        var changelog = Changelog.LoadEmbedded(); // la validation (versions, dates, français) est faite par Parse
++
++        Assert.NotEmpty(changelog.Entries);
++    }
++
++    [Fact]
++    public void The_latest_entry_is_the_version_of_the_app()
++    {
++        // Publier = changer <Version> dans Directory.Build.props ET ajouter l'entrée en tête de changelog.json.
++        var changelog = Changelog.LoadEmbedded();
++
++        Assert.Equal(AppInfo.SemanticVersion, changelog.Latest!.Version);
++    }
++
++    [Fact]
++    public void Every_change_has_a_french_text()
++    {
++        var changelog = Changelog.LoadEmbedded();
++
++        foreach (var change in changelog.Entries.SelectMany(e => e.Changes))
++        {
++            Assert.False(string.IsNullOrWhiteSpace(change.Text.Resolve("fr").Text));
++        }
++    }
++
++    [Fact]
++    public void Every_change_is_translated_in_english_and_arabic_for_now()
++    {
++        // Contrôle volontairement strict tant que le journal est petit : il pourra être assoupli (repli sur le français).
++        var changelog = Changelog.LoadEmbedded();
++
++        foreach (var change in changelog.Entries.SelectMany(e => e.Changes))
++        {
++            Assert.Contains("en", change.Text.Values.Keys);
++            Assert.Contains("ar", change.Text.Values.Keys);
++        }
++    }
++}
+diff --git a/tests/AlFariq.Web.Tests/LocalizationTests.cs b/tests/AlFariq.Web.Tests/LocalizationTests.cs
+index 856f811..99d51b7 100644
+--- a/tests/AlFariq.Web.Tests/LocalizationTests.cs
++++ b/tests/AlFariq.Web.Tests/LocalizationTests.cs
+@@ -5,7 +5,7 @@ namespace AlFariq.Web.Tests;
+ 
+ public class LocalizationTests
+ {
+-    private static readonly Regex KeyPattern = new(@"L\[""([A-Za-z0-9_]+)""\]", RegexOptions.Compiled);
++    private static readonly Regex KeyPattern = new(@"L\[""([A-Za-z0-9_]+)""\s*[\],]", RegexOptions.Compiled);
+ 
+     [Fact]
+     public void Every_key_used_in_razor_files_exists_in_the_resource_file()
+diff --git a/tests/whats-new/test_last_seen.py b/tests/whats-new/test_last_seen.py
+new file mode 100644
+index 0000000..1348980
+--- /dev/null
++++ b/tests/whats-new/test_last_seen.py
+@@ -0,0 +1,83 @@
++"""Test des fonctions « dernière version vue » de alfariq.js dans un vrai Chromium (Playwright).
++
++Vérifie : valeur absente au premier lancement (null), écriture puis relecture, et stockage indisponible
++(navigation privée, données bloquées) : aucune exception, l'appli continue de fonctionner.
++
++Usage : python3 tests/whats-new/test_last_seen.py   (dépendance : playwright ; chromium installé)
++Il charge le VRAI fichier src/AlFariq.UI/wwwroot/js/alfariq.js du dépôt.
++"""
++import http.server, pathlib, socketserver, sys, threading
++from playwright.sync_api import sync_playwright
++
++REPO = pathlib.Path(__file__).resolve().parents[2]
++JS = REPO / "src/AlFariq.UI/wwwroot/js/alfariq.js"
++
++
++class Handler(http.server.BaseHTTPRequestHandler):
++    def do_GET(self):
++        if self.path.split("?")[0] == "/alfariq.js":
++            body, kind = JS.read_bytes(), "text/javascript"
++        else:
++            body, kind = b"<!doctype html><title>t</title>", "text/html"
++        self.send_response(200)
++        self.send_header("Content-Type", kind)
++        self.end_headers()
++        self.wfile.write(body)
++
++    def log_message(self, *args):
++        pass
++
++
++failures = []
++
++
++def check(name, condition, detail=""):
++    print(("OK   " if condition else "FAIL ") + name + (f"  [{detail}]" if detail and not condition else ""))
++    if not condition:
++        failures.append(name)
++
++
++with socketserver.TCPServer(("127.0.0.1", 0), Handler) as server:
++    threading.Thread(target=server.serve_forever, daemon=True).start()
++    url = f"http://127.0.0.1:{server.server_address[1]}/"
++
++    with sync_playwright() as p:
++        browser = p.chromium.launch()
++        page = browser.new_page()
++        errors = []
++        page.on("pageerror", lambda e: errors.append(str(e)))
++        page.goto(url)
++
++        r = page.evaluate("""async () => {
++            const m = await import('/alfariq.js?a');
++            const first = m.getLastSeenVersion();
++            m.setLastSeenVersion('0.2.0');
++            const second = m.getLastSeenVersion();
++            m.setLastSeenVersion('0.3.0');
++            return { first, second, third: m.getLastSeenVersion(), raw: localStorage.getItem('alfariq.lastSeenVersion') };
++        }""")
++        check("premier lancement : aucune version vue (null)", r["first"] is None, r)
++        check("la version écrite est relue", r["second"] == "0.2.0", r)
++        check("la version est remplacée par la suivante", r["third"] == "0.3.0" and r["raw"] == "0.3.0", r)
++
++        r = page.evaluate("""async () => {
++            const m = await import('/alfariq.js?b');
++            const original = Object.getOwnPropertyDescriptor(window, 'localStorage');
++            Object.defineProperty(window, 'localStorage', { get() { throw new DOMException('blocked', 'SecurityError'); }, configurable: true });
++            try {
++              m.setLastSeenVersion('9.9.9');
++              return { read: m.getLastSeenVersion(), threw: false };
++            } catch (e) {
++              return { threw: true, message: String(e) };
++            } finally {
++              Object.defineProperty(window, 'localStorage', original);
++            }
++        }""")
++        check("stockage bloqué : aucune exception à l'écriture ni à la lecture", r.get("threw") is False, r)
++        check("stockage bloqué : la lecture renvoie null", r.get("read") is None, r)
++
++        check("aucune erreur JavaScript non gérée", not errors, errors)
++        browser.close()
++
++print("\n" + ("TOUS LES CONTRÔLES PASSENT" if not failures else f"{len(failures)} ÉCHEC(S) : {failures}"))
++sys.exit(1 if failures else 0)
