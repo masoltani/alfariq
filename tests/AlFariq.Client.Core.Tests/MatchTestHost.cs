@@ -18,6 +18,7 @@ internal static class MatchTestHost
         services.AddLocalRepository<Player>(LocalSchema.PlayersStore);
         services.AddLocalRepository<Match>(LocalSchema.MatchesStore);
         services.AddLocalRepository<MatchParticipant>(LocalSchema.MatchParticipantsStore);
+        services.AddLocalRepository<MatchSide>(LocalSchema.MatchSidesStore);
         return services.BuildServiceProvider();
     }
 }

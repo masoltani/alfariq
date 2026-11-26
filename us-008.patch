@@ -1,0 +1,1384 @@
+diff --git a/Directory.Build.props b/Directory.Build.props
+index 0ef08f5..4e732dd 100644
+--- a/Directory.Build.props
++++ b/Directory.Build.props
+@@ -6,7 +6,7 @@
+     <Nullable>enable</Nullable>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <AnalysisLevel>latest</AnalysisLevel>
+-    <Version>0.8.0</Version>
++    <Version>0.9.0</Version>
+     <Deterministic>true</Deterministic>
+   </PropertyGroup>
+ 
+diff --git a/docs/user-stories.md b/docs/user-stories.md
+index c0e65f7..d256eaf 100644
+--- a/docs/user-stories.md
++++ b/docs/user-stories.md
+@@ -154,6 +154,8 @@ Critères d'acceptation :
+ - Un joueur ne peut pas être dans deux équipes en même temps.
+ - La composition est enregistrée automatiquement.
+ 
++**Note (US-008)** : l'équipe d'un joueur est `MatchParticipant.Side` (un seul champ, donc jamais deux équipes) ; le nom et la couleur sont dans `MatchSide`, créé à la première personnalisation (`LineupService`, `/matchs/{id}/equipes`). Le déplacement se fait par boutons A / B ; le glisser-déposer n'est pas fourni. Un joueur retiré du match perd son équipe. La duplication d'un match ne reprend pas la composition. L'annulation de la dernière action (RG-COM-06) n'est pas dans cette US.
++
+ ### US-009 — Proposer des équipes équilibrées
+ En tant qu'organisateur, je veux qu'une suggestion de répartition équilibrée soit calculée à partir du niveau perçu afin de gagner du temps et d'éviter les débats.
+ Priorité : S — Taille : M — Dépend de : US-008
+diff --git a/src/AlFariq.Application/DependencyInjection.cs b/src/AlFariq.Application/DependencyInjection.cs
+index 8b923af..e00ce0e 100644
+--- a/src/AlFariq.Application/DependencyInjection.cs
++++ b/src/AlFariq.Application/DependencyInjection.cs
+@@ -14,6 +14,7 @@ public static class DependencyInjection
+         services.TryAddSingleton<ProfileService>();
+         services.TryAddSingleton<PlayerService>();
+         services.TryAddSingleton<SquadService>();
++        services.TryAddSingleton<LineupService>();
+         return services;
+     }
+ }
+diff --git a/src/AlFariq.Application/LineupService.cs b/src/AlFariq.Application/LineupService.cs
+new file mode 100644
+index 0000000..b250d27
+--- /dev/null
++++ b/src/AlFariq.Application/LineupService.cs
+@@ -0,0 +1,164 @@
++using AlFariq.Domain;
++
++namespace AlFariq.Application;
++
++/// <summary>Une équipe d'un match.</summary>
++/// <param name="Side">Côté A ou B.</param>
++/// <param name="Name">Nom choisi ; null pour le nom par défaut.</param>
++/// <param name="ColorCode">Code de <see cref="TeamColors"/>.</param>
++/// <param name="Players">Ses joueurs, triés par nom.</param>
++public sealed record TeamLineup(TeamSide Side, string? Name, string ColorCode, IReadOnlyList<Player> Players);
++
++/// <summary>La composition d'un match : chaque joueur inscrit figure dans une seule des trois listes.</summary>
++public sealed record MatchLineup(Match Match, TeamLineup TeamA, TeamLineup TeamB, IReadOnlyList<Player> Unassigned)
++{
++    public int PlayerCount => TeamA.Players.Count + TeamB.Players.Count + Unassigned.Count;
++}
++
++/// <summary>Composition manuelle des équipes (US-008).</summary>
++public sealed class LineupService
++{
++    private readonly IRepository<Match> _matches;
++    private readonly IRepository<MatchParticipant> _participants;
++    private readonly IRepository<MatchSide> _sides;
++    private readonly SquadService _squads;
++
++    // Les écritures sont lues puis réécrites : une à la fois, pour ne jamais créer deux fois les réglages d'une équipe.
++    private readonly SemaphoreSlim _writeGate = new(1, 1);
++
++    public LineupService(
++        IRepository<Match> matches,
++        IRepository<MatchParticipant> participants,
++        IRepository<MatchSide> sides,
++        SquadService squads)
++    {
++        _matches = matches;
++        _participants = participants;
++        _sides = sides;
++        _squads = squads;
++    }
++
++    /// <summary>La composition d'un match ; null si le match est introuvable.</summary>
++    public async Task<MatchLineup?> GetAsync(Guid matchId, CancellationToken cancellationToken = default)
++    {
++        var squad = await _squads.GetAsync(matchId, cancellationToken);
++        if (squad is null)
++        {
++            return null;
++        }
++
++        // Si un joueur avait plusieurs inscriptions (synchronisation future), la plus récemment modifiée l'emporte.
++        var assignments = (await _participants.ListAsync(cancellationToken: cancellationToken))
++            .Where(participant => participant.MatchId == matchId)
++            .GroupBy(participant => participant.PlayerId)
++            .ToDictionary(group => group.Key, group => group.MaxBy(participant => participant.UpdatedAt)!.Side);
++        var settings = (await _sides.ListAsync(cancellationToken: cancellationToken))
++            .Where(side => side.MatchId == matchId)
++            .ToList();
++
++        List<Player> PlayersOn(TeamSide? side) =>
++            squad.Selected.Where(player => assignments.GetValueOrDefault(player.Id) == side).ToList();
++
++        TeamLineup TeamOn(TeamSide side)
++        {
++            var custom = settings.FirstOrDefault(candidate => candidate.Side == side);
++            var color = TeamColors.IsKnown(custom?.ColorCode) ? custom!.ColorCode : TeamColors.DefaultFor(side);
++            return new TeamLineup(side, custom?.Name, color, PlayersOn(side));
++        }
++
++        return new MatchLineup(squad.Match, TeamOn(TeamSide.A), TeamOn(TeamSide.B), PlayersOn(null));
++    }
++
++    /// <summary>Place un joueur dans une équipe, ou le rend « non assigné » (<paramref name="side"/> null).</summary>
++    /// <exception cref="KeyNotFoundException">Le match est introuvable.</exception>
++    /// <exception cref="InvalidOperationException">Le joueur n'est pas inscrit à ce match.</exception>
++    public async Task AssignAsync(
++        Guid matchId, Guid playerId, TeamSide? side, CancellationToken cancellationToken = default)
++    {
++        if (side is { } value && !Enum.IsDefined(value))
++        {
++            throw new ArgumentOutOfRangeException(nameof(side));
++        }
++
++        await _writeGate.WaitAsync(cancellationToken);
++        try
++        {
++            await RequireMatchAsync(matchId, cancellationToken);
++
++            var registrations = (await _participants.ListAsync(cancellationToken: cancellationToken))
++                .Where(participant => participant.MatchId == matchId && participant.PlayerId == playerId)
++                .ToList();
++            if (registrations.Count == 0)
++            {
++                throw new InvalidOperationException("Ce joueur n'est pas inscrit à ce match.");
++            }
++
++            foreach (var participant in registrations.Where(participant => participant.Side != side))
++            {
++                participant.Side = side;
++                await _participants.UpdateAsync(participant, cancellationToken);
++            }
++        }
++        finally
++        {
++            _writeGate.Release();
++        }
++    }
++
++    /// <summary>Enregistre le nom et la couleur d'une équipe. Un nom vide revient au nom par défaut.</summary>
++    /// <exception cref="ArgumentException">Nom trop long ou couleur inconnue.</exception>
++    /// <exception cref="KeyNotFoundException">Le match est introuvable.</exception>
++    public async Task SetTeamAsync(
++        Guid matchId, TeamSide side, string? name, string colorCode, CancellationToken cancellationToken = default)
++    {
++        if (!Enum.IsDefined(side))
++        {
++            throw new ArgumentOutOfRangeException(nameof(side));
++        }
++
++        var cleaned = PlayerDirectory.CleanName(name);
++        if (cleaned.Length > MatchSide.MaxNameLength)
++        {
++            throw new ArgumentException(
++                $"Le nom d'équipe dépasse {MatchSide.MaxNameLength} caractères.", nameof(name));
++        }
++
++        if (!TeamColors.IsKnown(colorCode))
++        {
++            throw new ArgumentException($"Couleur inconnue : « {colorCode} ».", nameof(colorCode));
++        }
++
++        await _writeGate.WaitAsync(cancellationToken);
++        try
++        {
++            await RequireMatchAsync(matchId, cancellationToken);
++
++            var existing = (await _sides.ListAsync(cancellationToken: cancellationToken))
++                .FirstOrDefault(candidate => candidate.MatchId == matchId && candidate.Side == side);
++            var team = existing ?? new MatchSide { MatchId = matchId, Side = side };
++            team.Name = cleaned.Length == 0 ? null : cleaned;
++            team.ColorCode = colorCode;
++
++            if (existing is null)
++            {
++                await _sides.AddAsync(team, cancellationToken);
++            }
++            else
++            {
++                await _sides.UpdateAsync(team, cancellationToken);
++            }
++        }
++        finally
++        {
++            _writeGate.Release();
++        }
++    }
++
++    private async Task RequireMatchAsync(Guid matchId, CancellationToken cancellationToken)
++    {
++        if (await _matches.GetAsync(matchId, cancellationToken: cancellationToken) is null)
++        {
++            throw new KeyNotFoundException($"Aucun match actif avec l'identifiant {matchId}.");
++        }
++    }
++}
+diff --git a/src/AlFariq.Client.Core/Storage/LocalSchema.cs b/src/AlFariq.Client.Core/Storage/LocalSchema.cs
+index 8ff48e0..db0753b 100644
+--- a/src/AlFariq.Client.Core/Storage/LocalSchema.cs
++++ b/src/AlFariq.Client.Core/Storage/LocalSchema.cs
+@@ -40,11 +40,15 @@ public static class LocalSchema
+     /// <summary>Joueurs inscrits aux matchs (US-006, complété par US-007).</summary>
+     public const string MatchParticipantsStore = "match_participants";
+ 
++    /// <summary>Réglages des équipes d'un match : nom et couleur (US-008).</summary>
++    public const string MatchSidesStore = "match_sides";
++
+     public static IReadOnlyList<SchemaMigration> Migrations { get; } =
+     [
+         new SchemaMigration(1, [new StoreDefinition(MetaStore)]),
+         new SchemaMigration(2, [new StoreDefinition(ProfilesStore), new StoreDefinition(PlayersStore)]),
+         new SchemaMigration(3, [new StoreDefinition(MatchesStore), new StoreDefinition(MatchParticipantsStore)]),
++        new SchemaMigration(4, [new StoreDefinition(MatchSidesStore)]),
+     ];
+ 
+     public static int CurrentVersion => Migrations[Migrations.Count - 1].Version;
+diff --git a/src/AlFariq.Domain/Matches/MatchParticipant.cs b/src/AlFariq.Domain/Matches/MatchParticipant.cs
+index f8ff952..192d083 100644
+--- a/src/AlFariq.Domain/Matches/MatchParticipant.cs
++++ b/src/AlFariq.Domain/Matches/MatchParticipant.cs
+@@ -9,4 +9,7 @@ public sealed class MatchParticipant : Entity
+     public Guid MatchId { get; set; }
+ 
+     public Guid PlayerId { get; set; }
++
++    /// <summary>Équipe du joueur ; null tant qu'il n'est pas assigné. Un seul champ : jamais deux équipes.</summary>
++    public TeamSide? Side { get; set; }
+ }
+diff --git a/src/AlFariq.Domain/Matches/MatchSide.cs b/src/AlFariq.Domain/Matches/MatchSide.cs
+new file mode 100644
+index 0000000..d163f77
+--- /dev/null
++++ b/src/AlFariq.Domain/Matches/MatchSide.cs
+@@ -0,0 +1,20 @@
++namespace AlFariq.Domain;
++
++/// <summary>
++/// Réglages d'une équipe pour un match (US-008). Elle n'est enregistrée qu'une fois personnalisée :
++/// sans elle, le nom et la couleur par défaut s'appliquent.
++/// </summary>
++public sealed class MatchSide : Entity
++{
++    public const int MaxNameLength = 30;
++
++    public Guid MatchId { get; set; }
++
++    public TeamSide Side { get; set; }
++
++    /// <summary>Nom choisi ; null pour le nom par défaut.</summary>
++    public string? Name { get; set; }
++
++    /// <summary>Code de <see cref="TeamColors"/>.</summary>
++    public string ColorCode { get; set; } = "";
++}
+diff --git a/src/AlFariq.Domain/Matches/TeamColors.cs b/src/AlFariq.Domain/Matches/TeamColors.cs
+new file mode 100644
+index 0000000..e6aec09
+--- /dev/null
++++ b/src/AlFariq.Domain/Matches/TeamColors.cs
+@@ -0,0 +1,16 @@
++namespace AlFariq.Domain;
++
++/// <summary>
++/// Couleurs proposées pour les équipes. Pour en ajouter une : l'ajouter ici, puis son libellé dans les traductions
++/// et sa classe « team-color--… » dans la feuille de style (des tests signalent tout oubli).
++/// </summary>
++public static class TeamColors
++{
++    /// <summary>Codes enregistrés avec les données (ne jamais les renommer).</summary>
++    public static IReadOnlyList<string> All { get; } =
++        ["blue", "red", "green", "yellow", "orange", "purple", "white", "black"];
++
++    public static string DefaultFor(TeamSide side) => side == TeamSide.A ? "blue" : "red";
++
++    public static bool IsKnown(string? code) => code is not null && All.Contains(code);
++}
+diff --git a/src/AlFariq.Domain/Matches/TeamSide.cs b/src/AlFariq.Domain/Matches/TeamSide.cs
+new file mode 100644
+index 0000000..ce67550
+--- /dev/null
++++ b/src/AlFariq.Domain/Matches/TeamSide.cs
+@@ -0,0 +1,11 @@
++using System.Text.Json.Serialization;
++
++namespace AlFariq.Domain;
++
++/// <summary>Les deux côtés d'un match (RG-COM-01), stockés en texte.</summary>
++[JsonConverter(typeof(JsonStringEnumConverter<TeamSide>))]
++public enum TeamSide
++{
++    A,
++    B,
++}
+diff --git a/src/AlFariq.Domain/Releases/changelog.json b/src/AlFariq.Domain/Releases/changelog.json
+index db1233d..3418e9e 100644
+--- a/src/AlFariq.Domain/Releases/changelog.json
++++ b/src/AlFariq.Domain/Releases/changelog.json
+@@ -1,5 +1,27 @@
+ {
+   "entries": [
++    {
++      "version": "0.9.0",
++      "date": "2026-11-26",
++      "changes": [
++        {
++          "type": "added",
++          "text": {
++            "fr": "Compose les deux équipes d'un match : un tap pour placer un joueur, le changer de camp ou le retirer.",
++            "en": "Build both teams of a match: one tap to assign a player, switch sides or remove them.",
++            "ar": "شكّل فريقي المباراة: لمسة واحدة لإضافة لاعب إلى فريق أو نقله أو إزالته."
++          }
++        },
++        {
++          "type": "added",
++          "text": {
++            "fr": "Donne un nom et une couleur à chaque équipe ; la composition s'enregistre toute seule.",
++            "en": "Give each team a name and a colour; the line-up saves itself.",
++            "ar": "امنح كل فريق اسماً ولوناً، وتُحفظ التشكيلة تلقائياً."
++          }
++        }
++      ]
++    },
+     {
+       "version": "0.8.0",
+       "date": "2026-11-26",
+diff --git a/src/AlFariq.UI/Components/LineupRow.razor b/src/AlFariq.UI/Components/LineupRow.razor
+new file mode 100644
+index 0000000..7d8f3c1
+--- /dev/null
++++ b/src/AlFariq.UI/Components/LineupRow.razor
+@@ -0,0 +1,45 @@
++@inject IStringLocalizer<Strings> L
++
++@* Un joueur et ses deux boutons : un tap place dans l'équipe, un tap sur le bouton actif le retire. *@
++<li class="lineup__player">
++    <span class="lineup__identity">
++        <span class="player-list__name" dir="auto">@Player.Name</span>
++        @if (Player.ProfileId is not null)
++        {
++            <span class="badge">@L["Players_Me"]</span>
++        }
++        <span class="lineup__details">
++            @if (Player.PreferredPositionCode is { } position)
++            {
++                <span>@L[SportLabels.PositionKey(position)]</span>
++            }
++            @if (Player.Level is { } level)
++            {
++                <span>@L["Players_LevelShort", level]</span>
++            }
++        </span>
++    </span>
++    <span class="lineup__moves">
++        @foreach (var team in Teams)
++        {
++            <button @key="team.Side" type="button" class="team-toggle team-color--@team.ColorCode"
++                    aria-pressed="@(Side == team.Side ? "true" : "false")"
++                    aria-label="@L["Teams_ToggleLabel", Player.Name, team.Label]"
++                    @onclick="() => OnToggle.InvokeAsync(team.Side)">
++                @team.Side
++            </button>
++        }
++    </span>
++</li>
++
++@code {
++    [Parameter, EditorRequired] public Player Player { get; set; } = default!;
++
++    /// <summary>Équipe actuelle ; null si le joueur n'est pas assigné.</summary>
++    [Parameter] public TeamSide? Side { get; set; }
++
++    [Parameter, EditorRequired] public IReadOnlyList<TeamButton> Teams { get; set; } = [];
++
++    /// <summary>Le bouton d'une équipe a été touché.</summary>
++    [Parameter] public EventCallback<TeamSide> OnToggle { get; set; }
++}
+diff --git a/src/AlFariq.UI/Components/TeamButton.cs b/src/AlFariq.UI/Components/TeamButton.cs
+new file mode 100644
+index 0000000..ad7ac10
+--- /dev/null
++++ b/src/AlFariq.UI/Components/TeamButton.cs
+@@ -0,0 +1,6 @@
++using AlFariq.Domain;
++
++namespace AlFariq.UI.Components;
++
++/// <summary>Un bouton « équipe » d'une ligne de joueur.</summary>
++public sealed record TeamButton(TeamSide Side, string Label, string ColorCode);
+diff --git a/src/AlFariq.UI/Pages/MatchDetails.razor b/src/AlFariq.UI/Pages/MatchDetails.razor
+index 9479694..c7c22d2 100644
+--- a/src/AlFariq.UI/Pages/MatchDetails.razor
++++ b/src/AlFariq.UI/Pages/MatchDetails.razor
+@@ -2,7 +2,7 @@
+ @using AlFariq.Application
+ @inject IStringLocalizer<Strings> L
+ @inject MatchService Service
+-@inject SquadService Squads
++@inject LineupService Lineups
+ @inject TimeProvider Clock
+ @inject NavigationManager Navigation
+ 
+@@ -50,13 +50,17 @@
+             </dl>
+         </article>
+ 
++        var lineup = _lineup!;
++        var assigned = lineup.TeamA.Players.Count + lineup.TeamB.Players.Count;
++
+         <div class="card">
+             <h2>@L["Squad_Title"]</h2>
+-            <SquadCount Count="_players.Count" Expected="_match.ExpectedPlayers" />
+-            @if (_players.Count > 0)
++            <SquadCount Count="lineup.PlayerCount" Expected="_match.ExpectedPlayers" />
++            @* Une fois les équipes commencées, les noms figurent dans la carte « Équipes ». *@
++            @if (assigned == 0 && lineup.PlayerCount > 0)
+             {
+                 <ul class="squad-names">
+-                    @foreach (var player in _players)
++                    @foreach (var player in lineup.Unassigned)
+                     {
+                         <li @key="player.Id">
+                             <span dir="auto">@player.Name</span>
+@@ -73,10 +77,47 @@
+                 </ul>
+             }
+             <div class="actions">
+-                <a class="button" href="matchs/@_match.Id/joueurs">@L["Squad_Choose"]</a>
++                <a class="button @(lineup.PlayerCount == 0 ? "" : "button--ghost")" href="matchs/@_match.Id/joueurs">@L["Squad_Choose"]</a>
+             </div>
+         </div>
+ 
++        if (lineup.PlayerCount > 0)
++        {
++            <div class="card">
++                <h2>@L["Teams_Title"]</h2>
++                @if (assigned > 0)
++                {
++                    <div class="team-columns">
++                        @foreach (var team in new[] { lineup.TeamA, lineup.TeamB })
++                        {
++                            <div @key="team.Side">
++                                <h3 class="team-heading team-color--@team.ColorCode">
++                                    <span class="team-dot" aria-hidden="true"></span>
++                                    <span class="team-heading__name" dir="auto">@TeamLabels.Name(L, team.Side, team.Name)</span>
++                                </h3>
++                                <p class="hint">@L["Teams_Count", team.Players.Count]</p>
++                                <ul class="squad-names">
++                                    @foreach (var player in team.Players)
++                                    {
++                                        <li @key="player.Id"><span dir="auto">@player.Name</span></li>
++                                    }
++                                </ul>
++                            </div>
++                        }
++                    </div>
++                    if (lineup.Unassigned.Count > 0)
++                    {
++                        <p class="hint user-text">
++                            @L["Teams_UnassignedList", string.Join(", ", lineup.Unassigned.Select(player => player.Name))]
++                        </p>
++                    }
++                }
++                <div class="actions">
++                    <a class="button" href="matchs/@_match.Id/equipes">@L["Teams_Compose"]</a>
++                </div>
++            </div>
++        }
++
+         <div class="actions">
+             <a class="button button--ghost" href="matchs/@_match.Id/modifier">@L["Match_Edit"]</a>
+             <a class="button button--ghost" href="matchs/@_match.Id/dupliquer">@L["Match_Duplicate"]</a>
+@@ -116,7 +157,7 @@
+ 
+ @code {
+     private Match? _match;
+-    private IReadOnlyList<Player> _players = [];
++    private MatchLineup? _lineup;
+     private Guid _loadedId;
+     private bool _loadFailed;
+     private bool _notFound;
+@@ -135,15 +176,14 @@
+ 
+         _loadedId = Id;
+         _match = null;
+-        _players = [];
++        _lineup = null;
+         _loadFailed = _notFound = _confirmingDeletion = _deleteFailed = false;
+ 
+         try
+         {
+-            var squad = await Squads.GetAsync(Id);
+-            _players = squad?.Selected ?? [];
+-            _match = squad?.Match;
+-            _notFound = squad is null;
++            _lineup = await Lineups.GetAsync(Id);
++            _match = _lineup?.Match;
++            _notFound = _lineup is null;
+         }
+         catch (Exception exception)
+         {
+diff --git a/src/AlFariq.UI/Pages/MatchPlayers.razor b/src/AlFariq.UI/Pages/MatchPlayers.razor
+index 67e5273..2ea53c3 100644
+--- a/src/AlFariq.UI/Pages/MatchPlayers.razor
++++ b/src/AlFariq.UI/Pages/MatchPlayers.razor
+@@ -126,7 +126,11 @@
+ 
+         <p class="hint squad-hint">@L["Squad_AutoSave"]</p>
+         <div class="actions">
+-            <a class="button" href="matchs/@_match.Id">@L["Squad_Done"]</a>
++            @if (_selected.Count > 0)
++            {
++                <a class="button" href="matchs/@_match.Id/equipes">@L["Teams_Compose"]</a>
++            }
++            <a class="button button--ghost" href="matchs/@_match.Id">@L["Squad_Done"]</a>
+         </div>
+     }
+ </section>
+diff --git a/src/AlFariq.UI/Pages/MatchTeams.razor b/src/AlFariq.UI/Pages/MatchTeams.razor
+new file mode 100644
+index 0000000..4bf1031
+--- /dev/null
++++ b/src/AlFariq.UI/Pages/MatchTeams.razor
+@@ -0,0 +1,304 @@
++@page "/matchs/{Id:guid}/equipes"
++@using AlFariq.Application
++@inject IStringLocalizer<Strings> L
++@inject LineupService Service
++@inject IStoragePersistence StoragePersistence
++@inject TimeProvider Clock
++
++<PageTitle>@L["Teams_Title"] · @L["App_Name"]</PageTitle>
++
++<section class="page">
++    <h1>@L["Teams_Title"]</h1>
++
++    @if (_loadFailed)
++    {
++        <div class="card" role="alert">
++            <p>@L["Storage_Unavailable"]</p>
++        </div>
++    }
++    else if (_notFound)
++    {
++        <div class="card card--empty">
++            <p>@L["Match_NotFound"]</p>
++        </div>
++        <div class="actions">
++            <a class="button button--ghost" href="matchs">@L["Match_Back"]</a>
++        </div>
++    }
++    else if (_match is not null)
++    {
++        var start = MatchSchedule.ToLocal(_match.StartsAt, Clock.LocalTimeZone);
++        var buttons = _teams.Select(team => new TeamButton(team.Side, Label(team), team.ColorCode)).ToList();
++        var countA = CountOn(TeamSide.A);
++        var countB = CountOn(TeamSide.B);
++
++        <p class="lead squad-lead">
++            @L["Home_MatchDate", MatchLabels.LongDate(start), MatchLabels.Time(start)]<br />
++            @L["Home_MatchFormat", _match.PlayersPerSide]
++        </p>
++
++        if (_players.Count == 0)
++        {
++            <div class="card card--empty">
++                <p>@L["Teams_NoPlayers"]</p>
++            </div>
++            <div class="actions">
++                <a class="button" href="matchs/@_match.Id/joueurs">@L["Squad_Choose"]</a>
++            </div>
++        }
++        else
++        {
++            <div class="team-summary">
++                <div class="team-summary__counts" role="status">
++                    @foreach (var team in _teams)
++                    {
++                        <p @key="team.Side" class="team-heading team-color--@team.ColorCode">
++                            <span class="team-dot" aria-hidden="true"></span>
++                            <span class="team-heading__name" dir="auto">@team.Side · @Label(team)</span>
++                            <span>@L["Teams_Count", CountOn(team.Side)]</span>
++                        </p>
++                    }
++                </div>
++                <div role="status">
++                    @if (Math.Abs(countA - countB) > 1)
++                    {
++                        <p class="field__warning">@L["Teams_Unbalanced", Math.Abs(countA - countB)]</p>
++                    }
++                </div>
++                @if (_saveFailed)
++                {
++                    <p class="field__error" role="alert">@L["Teams_SaveFailed"]</p>
++                }
++            </div>
++
++            <p class="sr-only" role="status">@_announcement</p>
++
++            var unassigned = PlayersOn(null);
++            <h2 class="lineup__title">@L["Teams_Unassigned", unassigned.Count]</h2>
++            if (unassigned.Count == 0)
++            {
++                <p class="hint">@L["Teams_AllAssigned"]</p>
++            }
++            else
++            {
++                <ul class="card lineup">
++                    @foreach (var player in unassigned)
++                    {
++                        <LineupRow @key="player.Id" Player="player" Side="null" Teams="buttons"
++                                   OnToggle="side => ToggleAsync(player, side)" />
++                    }
++                </ul>
++            }
++
++            foreach (var team in _teams)
++            {
++                var members = PlayersOn(team.Side);
++
++                <section @key="team.Side">
++                    <h2 class="lineup__title team-heading team-color--@team.ColorCode">
++                        <span class="team-dot" aria-hidden="true"></span>
++                        <span class="team-heading__name" dir="auto">@Label(team)</span>
++                        <span>@L["Teams_Count", members.Count]</span>
++                    </h2>
++
++                    @if (members.Count == 0)
++                    {
++                        <p class="hint">@L["Teams_Empty"]</p>
++                    }
++                    else
++                    {
++                        <ul class="card lineup">
++                            @foreach (var player in members)
++                            {
++                                <LineupRow @key="player.Id" Player="player" Side="team.Side" Teams="buttons"
++                                           OnToggle="side => ToggleAsync(player, side)" />
++                            }
++                        </ul>
++                    }
++
++                    <details class="team-settings">
++                        <summary>@L["Teams_Settings"]</summary>
++                        <div class="card">
++                            <div class="field">
++                                <label for="team-name-@team.Side">@L["Teams_Name"]</label>
++                                <input id="team-name-@team.Side" type="text" dir="auto" autocomplete="off" enterkeyhint="done"
++                                       maxlength="@MatchSide.MaxNameLength"
++                                       placeholder="@TeamLabels.Name(L, team.Side, null)"
++                                       value="@team.Name"
++                                       @onchange="e => RenameAsync(team, e.Value as string)" />
++                            </div>
++                            <fieldset class="swatches">
++                                <legend>@L["Teams_Color", L[TeamLabels.ColorKey(team.ColorCode)].Value]</legend>
++                                @foreach (var color in TeamColors.All)
++                                {
++                                    <label @key="color" class="swatch team-color--@color" title="@L[TeamLabels.ColorKey(color)]">
++                                        <input type="radio" name="team-color-@team.Side"
++                                               checked="@(team.ColorCode == color)"
++                                               @onchange="() => SetColorAsync(team, color)" />
++                                        <span class="swatch__dot" aria-hidden="true"></span>
++                                        <span class="sr-only">@L[TeamLabels.ColorKey(color)]</span>
++                                    </label>
++                                }
++                            </fieldset>
++                        </div>
++                    </details>
++                </section>
++            }
++
++            <p class="hint squad-hint">@L["Teams_AutoSave"]</p>
++        }
++
++        <div class="actions">
++            <a class="button" href="matchs/@_match.Id">@L["Squad_Done"]</a>
++        </div>
++    }
++</section>
++
++@code {
++    private sealed class TeamForm
++    {
++        public required TeamSide Side { get; init; }
++
++        /// <summary>Nom choisi ; vide pour le nom par défaut.</summary>
++        public string Name { get; set; } = "";
++
++        public string ColorCode { get; set; } = "";
++    }
++
++    private Match? _match;
++    private List<Player> _players = [];
++    private Dictionary<Guid, TeamSide> _assignments = [];
++    private List<TeamForm> _teams = [];
++    private Guid _loadedId;
++    private string _announcement = "";
++    private bool _loadFailed;
++    private bool _notFound;
++    private bool _saveFailed;
++    private bool _persistenceRequested;
++
++    [Parameter] public Guid Id { get; set; }
++
++    protected override async Task OnParametersSetAsync()
++    {
++        if (_loadedId == Id)
++        {
++            return;
++        }
++
++        _loadedId = Id;
++        _match = null;
++        _announcement = "";
++        _loadFailed = _notFound = _saveFailed = false;
++
++        try
++        {
++            var lineup = await Service.GetAsync(Id);
++            if (lineup is null)
++            {
++                _notFound = true;
++                return;
++            }
++
++            TeamLineup[] teams = [lineup.TeamA, lineup.TeamB];
++            _teams = teams
++                .Select(team => new TeamForm { Side = team.Side, Name = team.Name ?? "", ColorCode = team.ColorCode })
++                .ToList();
++            _assignments = teams
++                .SelectMany(team => team.Players.Select(player => (player.Id, team.Side)))
++                .ToDictionary(pair => pair.Id, pair => pair.Side);
++            // Triés par nom une fois pour toutes ; chaque liste en est une partie.
++            _players = PlayerDirectory.Search(
++                lineup.Unassigned.Concat(teams.SelectMany(team => team.Players)), query: null).ToList();
++            _match = lineup.Match;
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _loadFailed = true;
++        }
++    }
++
++    private string Label(TeamForm team) => TeamLabels.Name(L, team.Side, team.Name);
++
++    private TeamSide? SideOf(Guid playerId) => _assignments.TryGetValue(playerId, out var side) ? side : null;
++
++    private List<Player> PlayersOn(TeamSide? side) => _players.Where(player => SideOf(player.Id) == side).ToList();
++
++    private int CountOn(TeamSide side) => _assignments.Values.Count(value => value == side);
++
++    private async Task ToggleAsync(Player player, TeamSide side)
++    {
++        var previous = SideOf(player.Id);
++        TeamSide? next = previous == side ? null : side;
++        _saveFailed = false;
++
++        // L'écran change tout de suite ; il revient en arrière si l'écriture échoue.
++        SetLocally(player.Id, next);
++        _announcement = next is { } destination
++            ? L["Teams_Moved", player.Name, Label(_teams.Single(team => team.Side == destination))]
++            : L["Teams_Removed", player.Name];
++
++        await SaveAsync(
++            () => Service.AssignAsync(Id, player.Id, next),
++            () =>
++            {
++                SetLocally(player.Id, previous);
++                _announcement = "";
++            });
++    }
++
++    private async Task RenameAsync(TeamForm team, string? name)
++    {
++        var previous = team.Name;
++        team.Name = PlayerDirectory.CleanName(name);
++        _saveFailed = false;
++
++        await SaveAsync(
++            () => Service.SetTeamAsync(Id, team.Side, team.Name, team.ColorCode),
++            () => team.Name = previous);
++    }
++
++    private async Task SetColorAsync(TeamForm team, string color)
++    {
++        var previous = team.ColorCode;
++        team.ColorCode = color;
++        _saveFailed = false;
++
++        await SaveAsync(
++            () => Service.SetTeamAsync(Id, team.Side, team.Name, color),
++            () => team.ColorCode = previous);
++    }
++
++    private void SetLocally(Guid playerId, TeamSide? side)
++    {
++        if (side is { } value)
++        {
++            _assignments[playerId] = value;
++        }
++        else
++        {
++            _assignments.Remove(playerId);
++        }
++    }
++
++    private async Task SaveAsync(Func<Task> write, Action undo)
++    {
++        try
++        {
++            await write();
++
++            // US-002 : des données ont été saisies, on demande au navigateur de les conserver (une fois par visite).
++            if (!_persistenceRequested)
++            {
++                _persistenceRequested = true;
++                await StoragePersistence.RequestAsync();
++            }
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            undo();
++            _saveFailed = true;
++        }
++    }
++}
+diff --git a/src/AlFariq.UI/Resources/Strings.resx b/src/AlFariq.UI/Resources/Strings.resx
+index e3074d1..44ae253 100644
+--- a/src/AlFariq.UI/Resources/Strings.resx
++++ b/src/AlFariq.UI/Resources/Strings.resx
+@@ -27,7 +27,7 @@
+   <data name="Home_StepPlayers" xml:space="preserve"><value>Ajoute tes joueurs.</value></data>
+   <data name="Home_StepMatch" xml:space="preserve"><value>Crée un match : date, heure et format.</value></data>
+   <data name="Home_StepTeams" xml:space="preserve"><value>Compose les équipes et partage la composition.</value></data>
+-  <data name="Home_EmptyHint" xml:space="preserve"><value>La composition des équipes arrive dans les prochaines versions.</value></data>
++  <data name="Home_EmptyHint" xml:space="preserve"><value>Le partage de la composition arrive dans les prochaines versions.</value></data>
+   <data name="Home_CreateMatch" xml:space="preserve"><value>Créer un match</value></data>
+   <data name="Home_Players" xml:space="preserve"><value>Mes joueurs</value></data>
+   <data name="Home_NextMatch" xml:space="preserve"><value>Prochain match</value></data>
+@@ -138,6 +138,34 @@
+   <data name="Squad_Done" xml:space="preserve"><value>Terminé</value></data>
+   <data name="Squad_SaveFailed" xml:space="preserve"><value>L'enregistrement a échoué. Réessaie.</value></data>
+ 
++  <data name="Teams_Title" xml:space="preserve"><value>Équipes</value></data>
++  <data name="Teams_Compose" xml:space="preserve"><value>Composer les équipes</value></data>
++  <data name="Teams_DefaultA" xml:space="preserve"><value>Équipe A</value></data>
++  <data name="Teams_DefaultB" xml:space="preserve"><value>Équipe B</value></data>
++  <data name="Teams_Count" xml:space="preserve"><value>Joueurs : {0}</value></data>
++  <data name="Teams_Unassigned" xml:space="preserve"><value>Non assignés ({0})</value></data>
++  <data name="Teams_UnassignedList" xml:space="preserve"><value>Non assignés : {0}</value></data>
++  <data name="Teams_AllAssigned" xml:space="preserve"><value>Tous les joueurs sont répartis.</value></data>
++  <data name="Teams_Empty" xml:space="preserve"><value>Aucun joueur dans cette équipe.</value></data>
++  <data name="Teams_Unbalanced" xml:space="preserve"><value>Écart de {0} joueurs entre les deux équipes.</value></data>
++  <data name="Teams_ToggleLabel" xml:space="preserve"><value>{0} : {1}</value></data>
++  <data name="Teams_Moved" xml:space="preserve"><value>{0} est dans « {1} ».</value></data>
++  <data name="Teams_Removed" xml:space="preserve"><value>{0} n'est plus assigné.</value></data>
++  <data name="Teams_Settings" xml:space="preserve"><value>Nom et couleur</value></data>
++  <data name="Teams_Name" xml:space="preserve"><value>Nom de l'équipe</value></data>
++  <data name="Teams_Color" xml:space="preserve"><value>Couleur : {0}</value></data>
++  <data name="Teams_NoPlayers" xml:space="preserve"><value>Choisis d'abord les joueurs du match.</value></data>
++  <data name="Teams_AutoSave" xml:space="preserve"><value>Touche A ou B pour placer un joueur, et de nouveau pour le retirer. Tout est enregistré automatiquement.</value></data>
++  <data name="Teams_SaveFailed" xml:space="preserve"><value>L'enregistrement a échoué. Réessaie.</value></data>
++  <data name="Color_blue" xml:space="preserve"><value>Bleu</value></data>
++  <data name="Color_red" xml:space="preserve"><value>Rouge</value></data>
++  <data name="Color_green" xml:space="preserve"><value>Vert</value></data>
++  <data name="Color_yellow" xml:space="preserve"><value>Jaune</value></data>
++  <data name="Color_orange" xml:space="preserve"><value>Orange</value></data>
++  <data name="Color_purple" xml:space="preserve"><value>Violet</value></data>
++  <data name="Color_white" xml:space="preserve"><value>Blanc</value></data>
++  <data name="Color_black" xml:space="preserve"><value>Noir</value></data>
++
+   <data name="Players_Title" xml:space="preserve"><value>Joueurs</value></data>
+   <data name="Players_Empty" xml:space="preserve"><value>Ton répertoire est vide. Un prénom ou un pseudo suffit pour ajouter un joueur.</value></data>
+   <data name="Players_Me" xml:space="preserve"><value>Moi</value></data>
+diff --git a/src/AlFariq.UI/Resources/TeamLabels.cs b/src/AlFariq.UI/Resources/TeamLabels.cs
+new file mode 100644
+index 0000000..4533db7
+--- /dev/null
++++ b/src/AlFariq.UI/Resources/TeamLabels.cs
+@@ -0,0 +1,21 @@
++using AlFariq.Domain;
++using Microsoft.Extensions.Localization;
++
++namespace AlFariq.UI.Resources;
++
++/// <summary>Noms affichés des équipes et clés de traduction des couleurs.</summary>
++public static class TeamLabels
++{
++    public static string ColorKey(string colorCode) => $"Color_{colorCode}";
++
++    /// <summary>Le nom choisi, sinon « Équipe A » ou « Équipe B ».</summary>
++    public static string Name(IStringLocalizer localizer, TeamSide side, string? customName)
++    {
++        if (!string.IsNullOrWhiteSpace(customName))
++        {
++            return customName;
++        }
++
++        return localizer[side == TeamSide.A ? "Teams_DefaultA" : "Teams_DefaultB"].Value;
++    }
++}
+diff --git a/src/AlFariq.UI/wwwroot/css/app.css b/src/AlFariq.UI/wwwroot/css/app.css
+index d4b4ef1..c93f25c 100644
+--- a/src/AlFariq.UI/wwwroot/css/app.css
++++ b/src/AlFariq.UI/wwwroot/css/app.css
+@@ -514,6 +514,257 @@ h1:focus {
+   text-align: center;
+ }
+ 
++/* ---------- Composition des équipes ---------- */
++
++.team-color--blue {
++  --team-color: #1e63c9;
++  --team-ink: #ffffff;
++}
++
++.team-color--red {
++  --team-color: #c62828;
++  --team-ink: #ffffff;
++}
++
++.team-color--green {
++  --team-color: #1b7a34;
++  --team-ink: #ffffff;
++}
++
++.team-color--yellow {
++  --team-color: #f5c800;
++  --team-ink: #1f1a00;
++}
++
++.team-color--orange {
++  --team-color: #f07c00;
++  --team-ink: #1f1000;
++}
++
++.team-color--purple {
++  --team-color: #7b3fb5;
++  --team-ink: #ffffff;
++}
++
++.team-color--white {
++  --team-color: #ffffff;
++  --team-ink: #17211c;
++}
++
++.team-color--black {
++  --team-color: #15181a;
++  --team-ink: #ffffff;
++}
++
++.team-summary {
++  position: sticky;
++  top: 0;
++  z-index: 1;
++  padding: 0.5rem 0;
++  background: var(--color-bg);
++}
++
++.team-summary p {
++  margin: 0;
++}
++
++.team-summary .field__warning {
++  margin-top: 0.25rem;
++}
++
++.team-heading {
++  display: flex;
++  align-items: center;
++  gap: 0.5rem;
++  font-weight: 600;
++}
++
++.team-heading__name {
++  flex: 1;
++  min-width: 0;
++  overflow-wrap: anywhere;
++}
++
++.team-dot {
++  flex: none;
++  width: 1rem;
++  height: 1rem;
++  border: 1px solid var(--color-muted);
++  border-radius: 50%;
++  background: var(--team-color);
++}
++
++.lineup__title {
++  margin: var(--gutter) 0 0;
++}
++
++.card.lineup {
++  margin-top: 0.5rem;
++  padding-block: 0;
++  list-style: none;
++}
++
++.lineup li + li {
++  border-top: 1px solid var(--color-border);
++}
++
++.lineup__player {
++  display: flex;
++  align-items: center;
++  gap: 0.75rem;
++  padding: 0.5rem 0;
++}
++
++.lineup__identity {
++  display: flex;
++  flex: 1;
++  flex-wrap: wrap;
++  align-items: center;
++  gap: 0 0.5rem;
++  min-width: 0;
++}
++
++.lineup__details {
++  display: flex;
++  flex-basis: 100%;
++  gap: 0.75rem;
++  color: var(--color-muted);
++  font-size: 0.875rem;
++}
++
++.lineup__moves {
++  display: flex;
++  flex: none;
++  gap: 0.5rem;
++}
++
++.team-toggle {
++  display: flex;
++  flex-direction: column;
++  align-items: center;
++  justify-content: center;
++  width: 52px;
++  height: 52px;
++  padding: 0;
++  border: 2px solid var(--color-border);
++  border-radius: 12px;
++  background: var(--color-surface);
++  color: var(--color-text);
++  font: inherit;
++  font-weight: 600;
++  cursor: pointer;
++}
++
++/* Inactif : une barre à la couleur de l'équipe, cerclée pour que le blanc et le noir restent visibles. */
++.team-toggle::after {
++  content: "";
++  width: 24px;
++  height: 8px;
++  margin-top: 2px;
++  border: 1px solid var(--color-muted);
++  border-radius: 4px;
++  background: var(--team-color);
++}
++
++/* Actif : bouton rempli, anneau et coche, pour ne pas dépendre de la seule couleur. */
++.team-toggle[aria-pressed="true"] {
++  border-color: var(--color-text);
++  background: var(--team-color);
++  box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-text);
++  color: var(--team-ink);
++  line-height: 1.1;
++}
++
++.team-toggle[aria-pressed="true"]::after {
++  content: "✓";
++  width: auto;
++  height: auto;
++  margin: 0;
++  border: 0;
++  background: none;
++  font-size: 0.875rem;
++}
++
++.team-settings summary {
++  display: flex;
++  align-items: center;
++  min-height: 44px;
++  color: var(--color-primary);
++  font-weight: 600;
++  cursor: pointer;
++}
++
++.team-settings .card {
++  margin-top: 0;
++}
++
++.swatches {
++  display: grid;
++  grid-template-columns: repeat(4, 1fr);
++  gap: 0.5rem;
++  margin: var(--gutter) 0 0;
++  padding: 0;
++  border: 0;
++}
++
++.swatches legend {
++  margin-bottom: 0.5rem;
++  padding: 0;
++  font-weight: 600;
++}
++
++.swatch {
++  position: relative;
++  display: flex;
++  justify-content: center;
++}
++
++.swatch input {
++  position: absolute;
++  inset: 0;
++  width: 100%;
++  height: 100%;
++  margin: 0;
++  opacity: 0;
++  cursor: pointer;
++}
++
++.swatch__dot {
++  width: 44px;
++  height: 44px;
++  border: 1px solid var(--color-muted);
++  border-radius: 50%;
++  background: var(--team-color);
++}
++
++.swatch input:checked + .swatch__dot {
++  box-shadow: 0 0 0 3px var(--color-surface), 0 0 0 6px var(--color-text);
++}
++
++.swatch input:focus-visible + .swatch__dot {
++  outline: 3px solid var(--color-focus);
++  outline-offset: 6px;
++}
++
++.team-columns {
++  display: grid;
++  grid-template-columns: repeat(2, minmax(0, 1fr));
++  gap: 0.75rem;
++}
++
++.team-columns h3 {
++  margin: 0;
++  font-size: 1rem;
++}
++
++.team-columns .hint {
++  margin: 0;
++}
++
++.team-columns .squad-names {
++  margin-top: 0.25rem;
++}
++
+ /* ---------- Bandeaux ---------- */
+ 
+ .banner {
+diff --git a/src/AlFariq.Web/Program.cs b/src/AlFariq.Web/Program.cs
+index 608cbc0..54920c6 100644
+--- a/src/AlFariq.Web/Program.cs
++++ b/src/AlFariq.Web/Program.cs
+@@ -24,6 +24,7 @@ builder.Services
+     .AddLocalRepository<Player>(LocalSchema.PlayersStore)
+     .AddLocalRepository<Match>(LocalSchema.MatchesStore)
+     .AddLocalRepository<MatchParticipant>(LocalSchema.MatchParticipantsStore)
++    .AddLocalRepository<MatchSide>(LocalSchema.MatchSidesStore)
+     .AddAlFariqUi();
+ 
+ await builder.Build().RunAsync();
+diff --git a/tests/AlFariq.Client.Core.Tests/LineupServiceTests.cs b/tests/AlFariq.Client.Core.Tests/LineupServiceTests.cs
+new file mode 100644
+index 0000000..a2b4c2e
+--- /dev/null
++++ b/tests/AlFariq.Client.Core.Tests/LineupServiceTests.cs
+@@ -0,0 +1,144 @@
++using AlFariq.Application;
++using AlFariq.Domain;
++using Microsoft.Extensions.DependencyInjection;
++
++namespace AlFariq.Client.Core.Tests;
++
++public sealed class LineupServiceTests : IDisposable
++{
++    private static readonly MatchInput Evening = new(new DateOnly(2026, 12, 2), new TimeOnly(20, 0), 5);
++
++    private readonly ServiceProvider _app;
++    private readonly LineupService _lineups;
++
++    public LineupServiceTests()
++    {
++        _app = MatchTestHost.Create(new FakeClock());
++        _lineups = _app.GetRequiredService<LineupService>();
++    }
++
++    public void Dispose() => _app.Dispose();
++
++    private MatchService Matches => _app.GetRequiredService<MatchService>();
++
++    private SquadService Squads => _app.GetRequiredService<SquadService>();
++
++    private async Task<Guid> NewMatchAsync() => (await Matches.CreateAsync(Evening)).Id;
++
++    private async Task<Guid> JoinAsync(Guid match, string name) => (await Squads.AddNewPlayerAsync(match, name)).Id;
++
++    private static IEnumerable<string> Names(IEnumerable<Player> players) => players.Select(player => player.Name);
++
++    [Fact]
++    public async Task Selected_players_start_unassigned_in_two_default_teams()
++    {
++        var match = await NewMatchAsync();
++        await JoinAsync(match, "Sami");
++        await JoinAsync(match, "Alice");
++
++        var lineup = (await _lineups.GetAsync(match))!;
++
++        Assert.Equal(new[] { "Alice", "Sami" }, Names(lineup.Unassigned));
++        Assert.Empty(lineup.TeamA.Players);
++        Assert.Empty(lineup.TeamB.Players);
++        Assert.Null(lineup.TeamA.Name);
++        Assert.Equal("blue", lineup.TeamA.ColorCode);
++        Assert.Equal("red", lineup.TeamB.ColorCode);
++    }
++
++    [Fact]
++    public async Task A_player_moves_between_teams_and_is_never_in_two()
++    {
++        var match = await NewMatchAsync();
++        var sami = await JoinAsync(match, "Sami");
++
++        await _lineups.AssignAsync(match, sami, TeamSide.A);
++
++        Assert.Equal(new[] { "Sami" }, Names((await _lineups.GetAsync(match))!.TeamA.Players));
++
++        await _lineups.AssignAsync(match, sami, TeamSide.B);
++        var moved = (await _lineups.GetAsync(match))!;
++
++        Assert.Empty(moved.TeamA.Players);
++        Assert.Empty(moved.Unassigned);
++        Assert.Equal(new[] { "Sami" }, Names(moved.TeamB.Players));
++        Assert.Equal(1, moved.PlayerCount);
++
++        await _lineups.AssignAsync(match, sami, side: null);
++
++        Assert.Equal(new[] { "Sami" }, Names((await _lineups.GetAsync(match))!.Unassigned));
++    }
++
++    [Fact]
++    public async Task Only_a_player_of_an_existing_match_can_be_assigned()
++    {
++        var match = await NewMatchAsync();
++        var outsider = (await _app.GetRequiredService<PlayerService>().AddAsync(new PlayerInput("Zoé"))).Id;
++
++        await Assert.ThrowsAsync<InvalidOperationException>(
++            () => _lineups.AssignAsync(match, outsider, TeamSide.A));
++        await Assert.ThrowsAsync<KeyNotFoundException>(
++            () => _lineups.AssignAsync(Guid.CreateVersion7(), outsider, TeamSide.A));
++        Assert.Null(await _lineups.GetAsync(Guid.CreateVersion7()));
++    }
++
++    [Fact]
++    public async Task A_player_removed_from_the_match_loses_his_team()
++    {
++        var match = await NewMatchAsync();
++        var sami = await JoinAsync(match, "Sami");
++        await _lineups.AssignAsync(match, sami, TeamSide.A);
++
++        await Squads.SetSelectedAsync(match, sami, selected: false);
++
++        Assert.Equal(0, (await _lineups.GetAsync(match))!.PlayerCount);
++
++        await Squads.SetSelectedAsync(match, sami, selected: true);
++
++        Assert.Equal(new[] { "Sami" }, Names((await _lineups.GetAsync(match))!.Unassigned));
++    }
++
++    [Fact]
++    public async Task A_team_can_be_named_and_coloured_and_is_stored_once()
++    {
++        var match = await NewMatchAsync();
++
++        await _lineups.SetTeamAsync(match, TeamSide.A, "  Les   Bleus ", "green");
++        await _lineups.SetTeamAsync(match, TeamSide.A, "Les Verts", "yellow");
++
++        var lineup = (await _lineups.GetAsync(match))!;
++        Assert.Equal("Les Verts", lineup.TeamA.Name);
++        Assert.Equal("yellow", lineup.TeamA.ColorCode);
++        Assert.Null(lineup.TeamB.Name);
++        Assert.Single(await _app.GetRequiredService<IRepository<MatchSide>>().ListAsync());
++
++        await _lineups.SetTeamAsync(match, TeamSide.A, "   ", "yellow");
++
++        Assert.Null((await _lineups.GetAsync(match))!.TeamA.Name);
++    }
++
++    [Theory]
++    [InlineData("1234567890123456789012345678901", "blue")]
++    [InlineData("Équipe", "fuchsia")]
++    public async Task Invalid_team_settings_are_rejected(string name, string color)
++    {
++        var match = await NewMatchAsync();
++
++        await Assert.ThrowsAsync<ArgumentException>(() => _lineups.SetTeamAsync(match, TeamSide.B, name, color));
++
++        Assert.Empty(await _app.GetRequiredService<IRepository<MatchSide>>().ListAsync());
++    }
++
++    [Fact]
++    public async Task A_duplicated_match_keeps_the_players_but_not_the_teams()
++    {
++        var source = await NewMatchAsync();
++        var sami = await JoinAsync(source, "Sami");
++        await _lineups.AssignAsync(source, sami, TeamSide.A);
++
++        var copy = await Matches.CreateAsync((await Matches.GetDuplicateInputAsync(source))!, source);
++
++        Assert.Equal(new[] { "Sami" }, Names((await _lineups.GetAsync(copy.Id))!.Unassigned));
++        Assert.Equal(new[] { "Sami" }, Names((await _lineups.GetAsync(source))!.TeamA.Players));
++    }
++}
+diff --git a/tests/AlFariq.Client.Core.Tests/MatchTestHost.cs b/tests/AlFariq.Client.Core.Tests/MatchTestHost.cs
+index c905358..c01e929 100644
+--- a/tests/AlFariq.Client.Core.Tests/MatchTestHost.cs
++++ b/tests/AlFariq.Client.Core.Tests/MatchTestHost.cs
+@@ -18,6 +18,7 @@ internal static class MatchTestHost
+         services.AddLocalRepository<Player>(LocalSchema.PlayersStore);
+         services.AddLocalRepository<Match>(LocalSchema.MatchesStore);
+         services.AddLocalRepository<MatchParticipant>(LocalSchema.MatchParticipantsStore);
++        services.AddLocalRepository<MatchSide>(LocalSchema.MatchSidesStore);
+         return services.BuildServiceProvider();
+     }
+ }
+diff --git a/tests/AlFariq.Web.Tests/TeamColorTests.cs b/tests/AlFariq.Web.Tests/TeamColorTests.cs
+new file mode 100644
+index 0000000..07a83a7
+--- /dev/null
++++ b/tests/AlFariq.Web.Tests/TeamColorTests.cs
+@@ -0,0 +1,28 @@
++using System.Xml.Linq;
++using AlFariq.Domain;
++
++namespace AlFariq.Web.Tests;
++
++public class TeamColorTests
++{
++    [Fact]
++    public void Every_team_colour_has_a_label_and_a_style()
++    {
++        var defined = XDocument
++            .Load(Path.Combine(RepoPaths.UiRoot, "Resources", "Strings.resx"))
++            .Root!
++            .Elements("data")
++            .Select(e => (string)e.Attribute("name")!)
++            .ToList();
++        var css = File.ReadAllText(Path.Combine(RepoPaths.UiRoot, "wwwroot", "css", "app.css"));
++
++        Assert.All(TeamColors.All, color =>
++        {
++            // Même convention que TeamLabels (AlFariq.UI).
++            Assert.Contains("Color_" + color, defined);
++            Assert.Contains($".team-color--{color} {{", css);
++        });
++        Assert.All(Enum.GetValues<TeamSide>(), side => Assert.Contains(TeamColors.DefaultFor(side), TeamColors.All));
++        Assert.NotEqual(TeamColors.DefaultFor(TeamSide.A), TeamColors.DefaultFor(TeamSide.B));
++    }
++}

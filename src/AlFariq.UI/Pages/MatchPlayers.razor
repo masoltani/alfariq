@@ -126,7 +126,11 @@
 
         <p class="hint squad-hint">@L["Squad_AutoSave"]</p>
         <div class="actions">
-            <a class="button" href="matchs/@_match.Id">@L["Squad_Done"]</a>
+            @if (_selected.Count > 0)
+            {
+                <a class="button" href="matchs/@_match.Id/equipes">@L["Teams_Compose"]</a>
+            }
+            <a class="button button--ghost" href="matchs/@_match.Id">@L["Squad_Done"]</a>
         </div>
     }
 </section>

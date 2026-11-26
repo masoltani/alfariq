@@ -1,6 +1,28 @@
 {
   "entries": [
     {
+      "version": "0.9.0",
+      "date": "2026-11-26",
+      "changes": [
+        {
+          "type": "added",
+          "text": {
+            "fr": "Compose les deux équipes d'un match : un tap pour placer un joueur, le changer de camp ou le retirer.",
+            "en": "Build both teams of a match: one tap to assign a player, switch sides or remove them.",
+            "ar": "شكّل فريقي المباراة: لمسة واحدة لإضافة لاعب إلى فريق أو نقله أو إزالته."
+          }
+        },
+        {
+          "type": "added",
+          "text": {
+            "fr": "Donne un nom et une couleur à chaque équipe ; la composition s'enregistre toute seule.",
+            "en": "Give each team a name and a colour; the line-up saves itself.",
+            "ar": "امنح كل فريق اسماً ولوناً، وتُحفظ التشكيلة تلقائياً."
+          }
+        }
+      ]
+    },
+    {
       "version": "0.8.0",
       "date": "2026-11-26",
       "changes": [

@@ -1,0 +1,45 @@
+@inject IStringLocalizer<Strings> L
+
+@* Un joueur et ses deux boutons : un tap place dans l'équipe, un tap sur le bouton actif le retire. *@
+<li class="lineup__player">
+    <span class="lineup__identity">
+        <span class="player-list__name" dir="auto">@Player.Name</span>
+        @if (Player.ProfileId is not null)
+        {
+            <span class="badge">@L["Players_Me"]</span>
+        }
+        <span class="lineup__details">
+            @if (Player.PreferredPositionCode is { } position)
+            {
+                <span>@L[SportLabels.PositionKey(position)]</span>
+            }
+            @if (Player.Level is { } level)
+            {
+                <span>@L["Players_LevelShort", level]</span>
+            }
+        </span>
+    </span>
+    <span class="lineup__moves">
+        @foreach (var team in Teams)
+        {
+            <button @key="team.Side" type="button" class="team-toggle team-color--@team.ColorCode"
+                    aria-pressed="@(Side == team.Side ? "true" : "false")"
+                    aria-label="@L["Teams_ToggleLabel", Player.Name, team.Label]"
+                    @onclick="() => OnToggle.InvokeAsync(team.Side)">
+                @team.Side
+            </button>
+        }
+    </span>
+</li>
+
+@code {
+    [Parameter, EditorRequired] public Player Player { get; set; } = default!;
+
+    /// <summary>Équipe actuelle ; null si le joueur n'est pas assigné.</summary>
+    [Parameter] public TeamSide? Side { get; set; }
+
+    [Parameter, EditorRequired] public IReadOnlyList<TeamButton> Teams { get; set; } = [];
+
+    /// <summary>Le bouton d'une équipe a été touché.</summary>
+    [Parameter] public EventCallback<TeamSide> OnToggle { get; set; }
+}

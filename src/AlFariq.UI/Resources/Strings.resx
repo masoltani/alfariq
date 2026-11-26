@@ -27,7 +27,7 @@
   <data name="Home_StepPlayers" xml:space="preserve"><value>Ajoute tes joueurs.</value></data>
   <data name="Home_StepMatch" xml:space="preserve"><value>Crée un match : date, heure et format.</value></data>
   <data name="Home_StepTeams" xml:space="preserve"><value>Compose les équipes et partage la composition.</value></data>
-  <data name="Home_EmptyHint" xml:space="preserve"><value>La composition des équipes arrive dans les prochaines versions.</value></data>
+  <data name="Home_EmptyHint" xml:space="preserve"><value>Le partage de la composition arrive dans les prochaines versions.</value></data>
   <data name="Home_CreateMatch" xml:space="preserve"><value>Créer un match</value></data>
   <data name="Home_Players" xml:space="preserve"><value>Mes joueurs</value></data>
   <data name="Home_NextMatch" xml:space="preserve"><value>Prochain match</value></data>
@@ -137,6 +137,34 @@
   <data name="Squad_AutoSave" xml:space="preserve"><value>La sélection est enregistrée automatiquement.</value></data>
   <data name="Squad_Done" xml:space="preserve"><value>Terminé</value></data>
   <data name="Squad_SaveFailed" xml:space="preserve"><value>L'enregistrement a échoué. Réessaie.</value></data>
+
+  <data name="Teams_Title" xml:space="preserve"><value>Équipes</value></data>
+  <data name="Teams_Compose" xml:space="preserve"><value>Composer les équipes</value></data>
+  <data name="Teams_DefaultA" xml:space="preserve"><value>Équipe A</value></data>
+  <data name="Teams_DefaultB" xml:space="preserve"><value>Équipe B</value></data>
+  <data name="Teams_Count" xml:space="preserve"><value>Joueurs : {0}</value></data>
+  <data name="Teams_Unassigned" xml:space="preserve"><value>Non assignés ({0})</value></data>
+  <data name="Teams_UnassignedList" xml:space="preserve"><value>Non assignés : {0}</value></data>
+  <data name="Teams_AllAssigned" xml:space="preserve"><value>Tous les joueurs sont répartis.</value></data>
+  <data name="Teams_Empty" xml:space="preserve"><value>Aucun joueur dans cette équipe.</value></data>
+  <data name="Teams_Unbalanced" xml:space="preserve"><value>Écart de {0} joueurs entre les deux équipes.</value></data>
+  <data name="Teams_ToggleLabel" xml:space="preserve"><value>{0} : {1}</value></data>
+  <data name="Teams_Moved" xml:space="preserve"><value>{0} est dans « {1} ».</value></data>
+  <data name="Teams_Removed" xml:space="preserve"><value>{0} n'est plus assigné.</value></data>
+  <data name="Teams_Settings" xml:space="preserve"><value>Nom et couleur</value></data>
+  <data name="Teams_Name" xml:space="preserve"><value>Nom de l'équipe</value></data>
+  <data name="Teams_Color" xml:space="preserve"><value>Couleur : {0}</value></data>
+  <data name="Teams_NoPlayers" xml:space="preserve"><value>Choisis d'abord les joueurs du match.</value></data>
+  <data name="Teams_AutoSave" xml:space="preserve"><value>Touche A ou B pour placer un joueur, et de nouveau pour le retirer. Tout est enregistré automatiquement.</value></data>
+  <data name="Teams_SaveFailed" xml:space="preserve"><value>L'enregistrement a échoué. Réessaie.</value></data>
+  <data name="Color_blue" xml:space="preserve"><value>Bleu</value></data>
+  <data name="Color_red" xml:space="preserve"><value>Rouge</value></data>
+  <data name="Color_green" xml:space="preserve"><value>Vert</value></data>
+  <data name="Color_yellow" xml:space="preserve"><value>Jaune</value></data>
+  <data name="Color_orange" xml:space="preserve"><value>Orange</value></data>
+  <data name="Color_purple" xml:space="preserve"><value>Violet</value></data>
+  <data name="Color_white" xml:space="preserve"><value>Blanc</value></data>
+  <data name="Color_black" xml:space="preserve"><value>Noir</value></data>
 
   <data name="Players_Title" xml:space="preserve"><value>Joueurs</value></data>
   <data name="Players_Empty" xml:space="preserve"><value>Ton répertoire est vide. Un prénom ou un pseudo suffit pour ajouter un joueur.</value></data>

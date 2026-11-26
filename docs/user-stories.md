@@ -154,6 +154,8 @@ Critères d'acceptation :
 - Un joueur ne peut pas être dans deux équipes en même temps.
 - La composition est enregistrée automatiquement.
 
+**Note (US-008)** : l'équipe d'un joueur est `MatchParticipant.Side` (un seul champ, donc jamais deux équipes) ; le nom et la couleur sont dans `MatchSide`, créé à la première personnalisation (`LineupService`, `/matchs/{id}/equipes`). Le déplacement se fait par boutons A / B ; le glisser-déposer n'est pas fourni. Un joueur retiré du match perd son équipe. La duplication d'un match ne reprend pas la composition. L'annulation de la dernière action (RG-COM-06) n'est pas dans cette US.
+
 ### US-009 — Proposer des équipes équilibrées
 En tant qu'organisateur, je veux qu'une suggestion de répartition équilibrée soit calculée à partir du niveau perçu afin de gagner du temps et d'éviter les débats.
 Priorité : S — Taille : M — Dépend de : US-008

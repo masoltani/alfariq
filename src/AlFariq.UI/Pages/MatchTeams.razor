@@ -1,0 +1,304 @@
+@page "/matchs/{Id:guid}/equipes"
+@using AlFariq.Application
+@inject IStringLocalizer<Strings> L
+@inject LineupService Service
+@inject IStoragePersistence StoragePersistence
+@inject TimeProvider Clock
+
+<PageTitle>@L["Teams_Title"] · @L["App_Name"]</PageTitle>
+
+<section class="page">
+    <h1>@L["Teams_Title"]</h1>
+
+    @if (_loadFailed)
+    {
+        <div class="card" role="alert">
+            <p>@L["Storage_Unavailable"]</p>
+        </div>
+    }
+    else if (_notFound)
+    {
+        <div class="card card--empty">
+            <p>@L["Match_NotFound"]</p>
+        </div>
+        <div class="actions">
+            <a class="button button--ghost" href="matchs">@L["Match_Back"]</a>
+        </div>
+    }
+    else if (_match is not null)
+    {
+        var start = MatchSchedule.ToLocal(_match.StartsAt, Clock.LocalTimeZone);
+        var buttons = _teams.Select(team => new TeamButton(team.Side, Label(team), team.ColorCode)).ToList();
+        var countA = CountOn(TeamSide.A);
+        var countB = CountOn(TeamSide.B);
+
+        <p class="lead squad-lead">
+            @L["Home_MatchDate", MatchLabels.LongDate(start), MatchLabels.Time(start)]<br />
+            @L["Home_MatchFormat", _match.PlayersPerSide]
+        </p>
+
+        if (_players.Count == 0)
+        {
+            <div class="card card--empty">
+                <p>@L["Teams_NoPlayers"]</p>
+            </div>
+            <div class="actions">
+                <a class="button" href="matchs/@_match.Id/joueurs">@L["Squad_Choose"]</a>
+            </div>
+        }
+        else
+        {
+            <div class="team-summary">
+                <div class="team-summary__counts" role="status">
+                    @foreach (var team in _teams)
+                    {
+                        <p @key="team.Side" class="team-heading team-color--@team.ColorCode">
+                            <span class="team-dot" aria-hidden="true"></span>
+                            <span class="team-heading__name" dir="auto">@team.Side · @Label(team)</span>
+                            <span>@L["Teams_Count", CountOn(team.Side)]</span>
+                        </p>
+                    }
+                </div>
+                <div role="status">
+                    @if (Math.Abs(countA - countB) > 1)
+                    {
+                        <p class="field__warning">@L["Teams_Unbalanced", Math.Abs(countA - countB)]</p>
+                    }
+                </div>
+                @if (_saveFailed)
+                {
+                    <p class="field__error" role="alert">@L["Teams_SaveFailed"]</p>
+                }
+            </div>
+
+            <p class="sr-only" role="status">@_announcement</p>
+
+            var unassigned = PlayersOn(null);
+            <h2 class="lineup__title">@L["Teams_Unassigned", unassigned.Count]</h2>
+            if (unassigned.Count == 0)
+            {
+                <p class="hint">@L["Teams_AllAssigned"]</p>
+            }
+            else
+            {
+                <ul class="card lineup">
+                    @foreach (var player in unassigned)
+                    {
+                        <LineupRow @key="player.Id" Player="player" Side="null" Teams="buttons"
+                                   OnToggle="side => ToggleAsync(player, side)" />
+                    }
+                </ul>
+            }
+
+            foreach (var team in _teams)
+            {
+                var members = PlayersOn(team.Side);
+
+                <section @key="team.Side">
+                    <h2 class="lineup__title team-heading team-color--@team.ColorCode">
+                        <span class="team-dot" aria-hidden="true"></span>
+                        <span class="team-heading__name" dir="auto">@Label(team)</span>
+                        <span>@L["Teams_Count", members.Count]</span>
+                    </h2>
+
+                    @if (members.Count == 0)
+                    {
+                        <p class="hint">@L["Teams_Empty"]</p>
+                    }
+                    else
+                    {
+                        <ul class="card lineup">
+                            @foreach (var player in members)
+                            {
+                                <LineupRow @key="player.Id" Player="player" Side="team.Side" Teams="buttons"
+                                           OnToggle="side => ToggleAsync(player, side)" />
+                            }
+                        </ul>
+                    }
+
+                    <details class="team-settings">
+                        <summary>@L["Teams_Settings"]</summary>
+                        <div class="card">
+                            <div class="field">
+                                <label for="team-name-@team.Side">@L["Teams_Name"]</label>
+                                <input id="team-name-@team.Side" type="text" dir="auto" autocomplete="off" enterkeyhint="done"
+                                       maxlength="@MatchSide.MaxNameLength"
+                                       placeholder="@TeamLabels.Name(L, team.Side, null)"
+                                       value="@team.Name"
+                                       @onchange="e => RenameAsync(team, e.Value as string)" />
+                            </div>
+                            <fieldset class="swatches">
+                                <legend>@L["Teams_Color", L[TeamLabels.ColorKey(team.ColorCode)].Value]</legend>
+                                @foreach (var color in TeamColors.All)
+                                {
+                                    <label @key="color" class="swatch team-color--@color" title="@L[TeamLabels.ColorKey(color)]">
+                                        <input type="radio" name="team-color-@team.Side"
+                                               checked="@(team.ColorCode == color)"
+                                               @onchange="() => SetColorAsync(team, color)" />
+                                        <span class="swatch__dot" aria-hidden="true"></span>
+                                        <span class="sr-only">@L[TeamLabels.ColorKey(color)]</span>
+                                    </label>
+                                }
+                            </fieldset>
+                        </div>
+                    </details>
+                </section>
+            }
+
+            <p class="hint squad-hint">@L["Teams_AutoSave"]</p>
+        }
+
+        <div class="actions">
+            <a class="button" href="matchs/@_match.Id">@L["Squad_Done"]</a>
+        </div>
+    }
+</section>
+
+@code {
+    private sealed class TeamForm
+    {
+        public required TeamSide Side { get; init; }
+
+        /// <summary>Nom choisi ; vide pour le nom par défaut.</summary>
+        public string Name { get; set; } = "";
+
+        public string ColorCode { get; set; } = "";
+    }
+
+    private Match? _match;
+    private List<Player> _players = [];
+    private Dictionary<Guid, TeamSide> _assignments = [];
+    private List<TeamForm> _teams = [];
+    private Guid _loadedId;
+    private string _announcement = "";
+    private bool _loadFailed;
+    private bool _notFound;
+    private bool _saveFailed;
+    private bool _persistenceRequested;
+
+    [Parameter] public Guid Id { get; set; }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedId == Id)
+        {
+            return;
+        }
+
+        _loadedId = Id;
+        _match = null;
+        _announcement = "";
+        _loadFailed = _notFound = _saveFailed = false;
+
+        try
+        {
+            var lineup = await Service.GetAsync(Id);
+            if (lineup is null)
+            {
+                _notFound = true;
+                return;
+            }
+
+            TeamLineup[] teams = [lineup.TeamA, lineup.TeamB];
+            _teams = teams
+                .Select(team => new TeamForm { Side = team.Side, Name = team.Name ?? "", ColorCode = team.ColorCode })
+                .ToList();
+            _assignments = teams
+                .SelectMany(team => team.Players.Select(player => (player.Id, team.Side)))
+                .ToDictionary(pair => pair.Id, pair => pair.Side);
+            // Triés par nom une fois pour toutes ; chaque liste en est une partie.
+            _players = PlayerDirectory.Search(
+                lineup.Unassigned.Concat(teams.SelectMany(team => team.Players)), query: null).ToList();
+            _match = lineup.Match;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _loadFailed = true;
+        }
+    }
+
+    private string Label(TeamForm team) => TeamLabels.Name(L, team.Side, team.Name);
+
+    private TeamSide? SideOf(Guid playerId) => _assignments.TryGetValue(playerId, out var side) ? side : null;
+
+    private List<Player> PlayersOn(TeamSide? side) => _players.Where(player => SideOf(player.Id) == side).ToList();
+
+    private int CountOn(TeamSide side) => _assignments.Values.Count(value => value == side);
+
+    private async Task ToggleAsync(Player player, TeamSide side)
+    {
+        var previous = SideOf(player.Id);
+        TeamSide? next = previous == side ? null : side;
+        _saveFailed = false;
+
+        // L'écran change tout de suite ; il revient en arrière si l'écriture échoue.
+        SetLocally(player.Id, next);
+        _announcement = next is { } destination
+            ? L["Teams_Moved", player.Name, Label(_teams.Single(team => team.Side == destination))]
+            : L["Teams_Removed", player.Name];
+
+        await SaveAsync(
+            () => Service.AssignAsync(Id, player.Id, next),
+            () =>
+            {
+                SetLocally(player.Id, previous);
+                _announcement = "";
+            });
+    }
+
+    private async Task RenameAsync(TeamForm team, string? name)
+    {
+        var previous = team.Name;
+        team.Name = PlayerDirectory.CleanName(name);
+        _saveFailed = false;
+
+        await SaveAsync(
+            () => Service.SetTeamAsync(Id, team.Side, team.Name, team.ColorCode),
+            () => team.Name = previous);
+    }
+
+    private async Task SetColorAsync(TeamForm team, string color)
+    {
+        var previous = team.ColorCode;
+        team.ColorCode = color;
+        _saveFailed = false;
+
+        await SaveAsync(
+            () => Service.SetTeamAsync(Id, team.Side, team.Name, color),
+            () => team.ColorCode = previous);
+    }
+
+    private void SetLocally(Guid playerId, TeamSide? side)
+    {
+        if (side is { } value)
+        {
+            _assignments[playerId] = value;
+        }
+        else
+        {
+            _assignments.Remove(playerId);
+        }
+    }
+
+    private async Task SaveAsync(Func<Task> write, Action undo)
+    {
+        try
+        {
+            await write();
+
+            // US-002 : des données ont été saisies, on demande au navigateur de les conserver (une fois par visite).
+            if (!_persistenceRequested)
+            {
+                _persistenceRequested = true;
+                await StoragePersistence.RequestAsync();
+            }
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            undo();
+            _saveFailed = true;
+        }
+    }
+}

@@ -514,6 +514,257 @@ h1:focus {
   text-align: center;
 }
 
+/* ---------- Composition des équipes ---------- */
+
+.team-color--blue {
+  --team-color: #1e63c9;
+  --team-ink: #ffffff;
+}
+
+.team-color--red {
+  --team-color: #c62828;
+  --team-ink: #ffffff;
+}
+
+.team-color--green {
+  --team-color: #1b7a34;
+  --team-ink: #ffffff;
+}
+
+.team-color--yellow {
+  --team-color: #f5c800;
+  --team-ink: #1f1a00;
+}
+
+.team-color--orange {
+  --team-color: #f07c00;
+  --team-ink: #1f1000;
+}
+
+.team-color--purple {
+  --team-color: #7b3fb5;
+  --team-ink: #ffffff;
+}
+
+.team-color--white {
+  --team-color: #ffffff;
+  --team-ink: #17211c;
+}
+
+.team-color--black {
+  --team-color: #15181a;
+  --team-ink: #ffffff;
+}
+
+.team-summary {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 0.5rem 0;
+  background: var(--color-bg);
+}
+
+.team-summary p {
+  margin: 0;
+}
+
+.team-summary .field__warning {
+  margin-top: 0.25rem;
+}
+
+.team-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+}
+
+.team-heading__name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.team-dot {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  border: 1px solid var(--color-muted);
+  border-radius: 50%;
+  background: var(--team-color);
+}
+
+.lineup__title {
+  margin: var(--gutter) 0 0;
+}
+
+.card.lineup {
+  margin-top: 0.5rem;
+  padding-block: 0;
+  list-style: none;
+}
+
+.lineup li + li {
+  border-top: 1px solid var(--color-border);
+}
+
+.lineup__player {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+}
+
+.lineup__identity {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 0.5rem;
+  min-width: 0;
+}
+
+.lineup__details {
+  display: flex;
+  flex-basis: 100%;
+  gap: 0.75rem;
+  color: var(--color-muted);
+  font-size: 0.875rem;
+}
+
+.lineup__moves {
+  display: flex;
+  flex: none;
+  gap: 0.5rem;
+}
+
+.team-toggle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  border: 2px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Inactif : une barre à la couleur de l'équipe, cerclée pour que le blanc et le noir restent visibles. */
+.team-toggle::after {
+  content: "";
+  width: 24px;
+  height: 8px;
+  margin-top: 2px;
+  border: 1px solid var(--color-muted);
+  border-radius: 4px;
+  background: var(--team-color);
+}
+
+/* Actif : bouton rempli, anneau et coche, pour ne pas dépendre de la seule couleur. */
+.team-toggle[aria-pressed="true"] {
+  border-color: var(--color-text);
+  background: var(--team-color);
+  box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-text);
+  color: var(--team-ink);
+  line-height: 1.1;
+}
+
+.team-toggle[aria-pressed="true"]::after {
+  content: "✓";
+  width: auto;
+  height: auto;
+  margin: 0;
+  border: 0;
+  background: none;
+  font-size: 0.875rem;
+}
+
+.team-settings summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--color-primary);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.team-settings .card {
+  margin-top: 0;
+}
+
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.5rem;
+  margin: var(--gutter) 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.swatches legend {
+  margin-bottom: 0.5rem;
+  padding: 0;
+  font-weight: 600;
+}
+
+.swatch {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+
+.swatch input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.swatch__dot {
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--color-muted);
+  border-radius: 50%;
+  background: var(--team-color);
+}
+
+.swatch input:checked + .swatch__dot {
+  box-shadow: 0 0 0 3px var(--color-surface), 0 0 0 6px var(--color-text);
+}
+
+.swatch input:focus-visible + .swatch__dot {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 6px;
+}
+
+.team-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.team-columns h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.team-columns .hint {
+  margin: 0;
+}
+
+.team-columns .squad-names {
+  margin-top: 0.25rem;
+}
+
 /* ---------- Bandeaux ---------- */
 
 .banner {

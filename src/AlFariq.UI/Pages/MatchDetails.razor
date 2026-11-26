@@ -2,7 +2,7 @@
 @using AlFariq.Application
 @inject IStringLocalizer<Strings> L
 @inject MatchService Service
-@inject SquadService Squads
+@inject LineupService Lineups
 @inject TimeProvider Clock
 @inject NavigationManager Navigation
 
@@ -50,13 +50,17 @@
             </dl>
         </article>
 
+        var lineup = _lineup!;
+        var assigned = lineup.TeamA.Players.Count + lineup.TeamB.Players.Count;
+
         <div class="card">
             <h2>@L["Squad_Title"]</h2>
-            <SquadCount Count="_players.Count" Expected="_match.ExpectedPlayers" />
-            @if (_players.Count > 0)
+            <SquadCount Count="lineup.PlayerCount" Expected="_match.ExpectedPlayers" />
+            @* Une fois les équipes commencées, les noms figurent dans la carte « Équipes ». *@
+            @if (assigned == 0 && lineup.PlayerCount > 0)
             {
                 <ul class="squad-names">
-                    @foreach (var player in _players)
+                    @foreach (var player in lineup.Unassigned)
                     {
                         <li @key="player.Id">
                             <span dir="auto">@player.Name</span>
@@ -73,9 +77,46 @@
                 </ul>
             }
             <div class="actions">
-                <a class="button" href="matchs/@_match.Id/joueurs">@L["Squad_Choose"]</a>
+                <a class="button @(lineup.PlayerCount == 0 ? "" : "button--ghost")" href="matchs/@_match.Id/joueurs">@L["Squad_Choose"]</a>
             </div>
         </div>
+
+        if (lineup.PlayerCount > 0)
+        {
+            <div class="card">
+                <h2>@L["Teams_Title"]</h2>
+                @if (assigned > 0)
+                {
+                    <div class="team-columns">
+                        @foreach (var team in new[] { lineup.TeamA, lineup.TeamB })
+                        {
+                            <div @key="team.Side">
+                                <h3 class="team-heading team-color--@team.ColorCode">
+                                    <span class="team-dot" aria-hidden="true"></span>
+                                    <span class="team-heading__name" dir="auto">@TeamLabels.Name(L, team.Side, team.Name)</span>
+                                </h3>
+                                <p class="hint">@L["Teams_Count", team.Players.Count]</p>
+                                <ul class="squad-names">
+                                    @foreach (var player in team.Players)
+                                    {
+                                        <li @key="player.Id"><span dir="auto">@player.Name</span></li>
+                                    }
+                                </ul>
+                            </div>
+                        }
+                    </div>
+                    if (lineup.Unassigned.Count > 0)
+                    {
+                        <p class="hint user-text">
+                            @L["Teams_UnassignedList", string.Join(", ", lineup.Unassigned.Select(player => player.Name))]
+                        </p>
+                    }
+                }
+                <div class="actions">
+                    <a class="button" href="matchs/@_match.Id/equipes">@L["Teams_Compose"]</a>
+                </div>
+            </div>
+        }
 
         <div class="actions">
             <a class="button button--ghost" href="matchs/@_match.Id/modifier">@L["Match_Edit"]</a>
@@ -116,7 +157,7 @@
 
 @code {
     private Match? _match;
-    private IReadOnlyList<Player> _players = [];
+    private MatchLineup? _lineup;
     private Guid _loadedId;
     private bool _loadFailed;
     private bool _notFound;
@@ -135,15 +176,14 @@
 
         _loadedId = Id;
         _match = null;
-        _players = [];
+        _lineup = null;
         _loadFailed = _notFound = _confirmingDeletion = _deleteFailed = false;
 
         try
         {
-            var squad = await Squads.GetAsync(Id);
-            _players = squad?.Selected ?? [];
-            _match = squad?.Match;
-            _notFound = squad is null;
+            _lineup = await Lineups.GetAsync(Id);
+            _match = _lineup?.Match;
+            _notFound = _lineup is null;
         }
         catch (Exception exception)
         {
