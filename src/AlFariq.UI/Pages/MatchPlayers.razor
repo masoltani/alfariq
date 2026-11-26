@@ -1,0 +1,261 @@
+@page "/matchs/{Id:guid}/joueurs"
+@using AlFariq.Application
+@inject IStringLocalizer<Strings> L
+@inject SquadService Service
+@inject IStoragePersistence StoragePersistence
+@inject TimeProvider Clock
+
+<PageTitle>@L["Squad_Title"] · @L["App_Name"]</PageTitle>
+
+<section class="page">
+    <h1>@L["Squad_Title"]</h1>
+
+    @if (_loadFailed)
+    {
+        <div class="card" role="alert">
+            <p>@L["Storage_Unavailable"]</p>
+        </div>
+    }
+    else if (_notFound)
+    {
+        <div class="card card--empty">
+            <p>@L["Match_NotFound"]</p>
+        </div>
+        <div class="actions">
+            <a class="button button--ghost" href="matchs">@L["Match_Back"]</a>
+        </div>
+    }
+    else if (_match is not null)
+    {
+        var start = MatchSchedule.ToLocal(_match.StartsAt, Clock.LocalTimeZone);
+        var newName = PlayerDirectory.CleanName(_query);
+        var visible = PlayerDirectory.Search(_candidates, _query);
+
+        <p class="lead squad-lead">
+            @L["Home_MatchDate", MatchLabels.LongDate(start), MatchLabels.Time(start)]<br />
+            @L["Home_MatchFormat", _match.PlayersPerSide]
+        </p>
+
+        <div class="squad-status">
+            <SquadCount Count="_selected.Count" Expected="_match.ExpectedPlayers" />
+            @if (_saveFailed)
+            {
+                <p class="field__error" role="alert">@L["Squad_SaveFailed"]</p>
+            }
+        </div>
+
+        <div class="field">
+            <label for="squad-search">@L["Squad_Search"]</label>
+            <input id="squad-search" type="search" dir="auto" autocomplete="off" autocapitalize="words" enterkeyhint="search"
+                   maxlength="@Player.MaxNameLength"
+                   @bind="_query" @bind:event="oninput" @bind:after="ClearConfirmation" />
+        </div>
+
+        if (newName.Length > 0)
+        {
+            <div role="status">
+                @if (PlayerDirectory.HasSameName(_candidates, newName))
+                {
+                    <p class="field__warning">@L["Squad_Duplicate"]</p>
+                }
+                else if (PlayerDirectory.HasSameName(_allPlayers, newName))
+                {
+                    <p class="field__warning">@L["Squad_DuplicateArchived"]</p>
+                }
+            </div>
+            <div class="actions">
+                <button type="button" class="button button--ghost squad-add" disabled="@_adding" @onclick="AddNewPlayerAsync">
+                    @L["Squad_QuickAdd", newName]
+                </button>
+            </div>
+        }
+
+        <div role="status">
+            @if (_addedName is not null)
+            {
+                <p class="form-success">@L["Squad_Added", _addedName]</p>
+            }
+        </div>
+
+        if (_candidates.Count == 0)
+        {
+            <div class="card card--empty">
+                <p>@L["Squad_Empty"]</p>
+            </div>
+        }
+        else if (visible.Count == 0)
+        {
+            <p class="hint list-none" role="status">@L["Players_NoMatch"]</p>
+        }
+        else
+        {
+            <ul class="card pick-list">
+                @foreach (var player in visible)
+                {
+                    <li @key="player.Id">
+                        <label class="pick-list__option">
+                            <input type="checkbox"
+                                   @bind:get="_selected.Contains(player.Id)"
+                                   @bind:set="isChecked => ToggleAsync(player.Id, isChecked)" />
+                            <span class="pick-list__text">
+                                <span class="player-list__name" dir="auto">@player.Name</span>
+                                @if (player.ProfileId is not null)
+                                {
+                                    <span class="badge">@L["Players_Me"]</span>
+                                }
+                                @if (player.IsArchived)
+                                {
+                                    <span class="badge">@L["Squad_Archived"]</span>
+                                }
+                                <span class="player-list__details">
+                                    @if (player.PreferredPositionCode is { } position)
+                                    {
+                                        <span>@L[SportLabels.PositionKey(position)]</span>
+                                    }
+                                    @if (player.Level is { } level)
+                                    {
+                                        <span>@L["Players_LevelShort", level]</span>
+                                    }
+                                </span>
+                            </span>
+                        </label>
+                    </li>
+                }
+            </ul>
+        }
+
+        <p class="hint squad-hint">@L["Squad_AutoSave"]</p>
+        <div class="actions">
+            <a class="button" href="matchs/@_match.Id">@L["Squad_Done"]</a>
+        </div>
+    }
+</section>
+
+@code {
+    private Match? _match;
+    private List<Player> _allPlayers = [];
+    private List<Player> _candidates = [];
+    private HashSet<Guid> _selected = [];
+    private Guid _loadedId;
+    private string _query = "";
+    private string? _addedName;
+    private bool _loadFailed;
+    private bool _notFound;
+    private bool _adding;
+    private bool _saveFailed;
+    private bool _persistenceRequested;
+
+    [Parameter] public Guid Id { get; set; }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedId == Id)
+        {
+            return;
+        }
+
+        _loadedId = Id;
+        _match = null;
+        _query = "";
+        _addedName = null;
+        _loadFailed = _notFound = _saveFailed = false;
+
+        try
+        {
+            var squad = await Service.GetAsync(Id);
+            if (squad is null)
+            {
+                _notFound = true;
+                return;
+            }
+
+            // Lu une seule fois : la recherche se fait en mémoire, et un joueur décoché reste affiché.
+            _allPlayers = squad.AllPlayers.ToList();
+            _candidates = squad.Candidates.ToList();
+            _selected = squad.Selected.Select(player => player.Id).ToHashSet();
+            _match = squad.Match;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _loadFailed = true;
+        }
+    }
+
+    private void ClearConfirmation() => _addedName = null;
+
+    private async Task ToggleAsync(Guid playerId, bool selected)
+    {
+        _saveFailed = false;
+        _addedName = null;
+
+        // La case et le compteur changent tout de suite ; ils reviennent en arrière si l'écriture échoue.
+        SetLocally(playerId, selected);
+        try
+        {
+            await Service.SetSelectedAsync(Id, playerId, selected);
+            await RequestPersistenceAsync();
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            SetLocally(playerId, !selected);
+            _saveFailed = true;
+        }
+    }
+
+    private async Task AddNewPlayerAsync()
+    {
+        if (_adding)
+        {
+            return;
+        }
+
+        _adding = true;
+        _saveFailed = false;
+        _addedName = null;
+        try
+        {
+            var player = await Service.AddNewPlayerAsync(Id, _query);
+
+            _allPlayers.Add(player);
+            _candidates.Add(player);
+            SetLocally(player.Id, selected: true);
+            _query = "";
+            _addedName = player.Name;
+
+            await RequestPersistenceAsync();
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _saveFailed = true;
+        }
+        finally
+        {
+            _adding = false;
+        }
+    }
+
+    private void SetLocally(Guid playerId, bool selected)
+    {
+        if (selected)
+        {
+            _selected.Add(playerId);
+        }
+        else
+        {
+            _selected.Remove(playerId);
+        }
+    }
+
+    /// <summary>US-002 : des données ont été saisies, on demande au navigateur de les conserver (une fois par visite).</summary>
+    private async Task RequestPersistenceAsync()
+    {
+        if (!_persistenceRequested)
+        {
+            _persistenceRequested = true;
+            await StoragePersistence.RequestAsync();
+        }
+    }
+}

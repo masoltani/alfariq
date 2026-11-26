@@ -39,6 +39,10 @@ public sealed class Match : Entity
 
     public MatchStatus Status { get; set; } = MatchStatus.Planned;
 
+    /// <summary>Nombre de joueurs attendus : les deux équipes au format du match.</summary>
+    [JsonIgnore]
+    public int ExpectedPlayers => 2 * PlayersPerSide;
+
     [JsonIgnore]
     public DateTimeOffset EndsAt => StartsAt.AddMinutes(DurationMinutes);
 

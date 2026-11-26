@@ -1,0 +1,929 @@
+diff --git a/Directory.Build.props b/Directory.Build.props
+index c864039..0ef08f5 100644
+--- a/Directory.Build.props
++++ b/Directory.Build.props
+@@ -6,7 +6,7 @@
+     <Nullable>enable</Nullable>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <AnalysisLevel>latest</AnalysisLevel>
+-    <Version>0.7.0</Version>
++    <Version>0.8.0</Version>
+     <Deterministic>true</Deterministic>
+   </PropertyGroup>
+ 
+diff --git a/docs/user-stories.md b/docs/user-stories.md
+index 3d09120..c0e65f7 100644
+--- a/docs/user-stories.md
++++ b/docs/user-stories.md
+@@ -142,6 +142,8 @@ Critères d'acceptation :
+ - L'ajout rapide d'un joueur depuis cet écran l'ajoute aussi au répertoire.
+ - Un avertissement apparaît si le nombre de joueurs est inférieur ou supérieur au format, sans bloquer.
+ 
++**Note (US-007)** : le nombre de joueurs attendus est le double du format (`Match.ExpectedPlayers`). La sélection (`/matchs/{id}/joueurs`, `SquadService`) est enregistrée à chaque case cochée ; retirer un joueur supprime logiquement son inscription. Un joueur archivé reste sur les matchs où il est inscrit, mais ne s'ajoute pas à un autre. Les statuts de participant (RG-PRS-01) ne sont pas dans cette US.
++
+ ### US-008 — Composer les équipes à la main
+ En tant qu'organisateur, je veux répartir les joueurs entre deux équipes (A et B) afin de définir la composition du match.
+ Priorité : M — Taille : M — Dépend de : US-007
+diff --git a/src/AlFariq.Application/DependencyInjection.cs b/src/AlFariq.Application/DependencyInjection.cs
+index 323e1e8..8b923af 100644
+--- a/src/AlFariq.Application/DependencyInjection.cs
++++ b/src/AlFariq.Application/DependencyInjection.cs
+@@ -13,6 +13,7 @@ public static class DependencyInjection
+         services.TryAddSingleton<MatchService>();
+         services.TryAddSingleton<ProfileService>();
+         services.TryAddSingleton<PlayerService>();
++        services.TryAddSingleton<SquadService>();
+         return services;
+     }
+ }
+diff --git a/src/AlFariq.Application/SquadService.cs b/src/AlFariq.Application/SquadService.cs
+new file mode 100644
+index 0000000..8792008
+--- /dev/null
++++ b/src/AlFariq.Application/SquadService.cs
+@@ -0,0 +1,135 @@
++using AlFariq.Domain;
++
++namespace AlFariq.Application;
++
++/// <summary>Les joueurs d'un match.</summary>
++/// <param name="Match">Le match.</param>
++/// <param name="AllPlayers">Tout le répertoire (hors joueurs supprimés), pour repérer les doublons.</param>
++/// <param name="Candidates">Les joueurs à cocher : les non archivés, plus ceux déjà inscrits ; triés par nom.</param>
++/// <param name="Selected">Les joueurs inscrits, triés par nom.</param>
++public sealed record Squad(
++    Match Match,
++    IReadOnlyList<Player> AllPlayers,
++    IReadOnlyList<Player> Candidates,
++    IReadOnlyList<Player> Selected);
++
++/// <summary>
++/// Choix des joueurs d'un match (US-007). Un joueur archivé ou supprimé reste sur les matchs où il est inscrit,
++/// mais ne s'ajoute pas à un nouveau match (RG-JOU-03 et 04).
++/// </summary>
++public sealed class SquadService
++{
++    private readonly IRepository<Match> _matches;
++    private readonly IRepository<MatchParticipant> _participants;
++    private readonly IRepository<Player> _players;
++    private readonly PlayerService _directory;
++
++    // Lire puis écrire les inscriptions une demande à la fois : deux taps rapides ne créent pas de doublon.
++    private readonly SemaphoreSlim _selectionGate = new(1, 1);
++
++    public SquadService(
++        IRepository<Match> matches,
++        IRepository<MatchParticipant> participants,
++        IRepository<Player> players,
++        PlayerService directory)
++    {
++        _matches = matches;
++        _participants = participants;
++        _players = players;
++        _directory = directory;
++    }
++
++    /// <summary>Les joueurs d'un match ; null si le match est introuvable.</summary>
++    public async Task<Squad?> GetAsync(Guid matchId, CancellationToken cancellationToken = default)
++    {
++        var match = await _matches.GetAsync(matchId, cancellationToken: cancellationToken);
++        if (match is null)
++        {
++            return null;
++        }
++
++        var selectedIds = (await _participants.ListAsync(cancellationToken: cancellationToken))
++            .Where(participant => participant.MatchId == matchId)
++            .Select(participant => participant.PlayerId)
++            .ToHashSet();
++        var players = await _players.ListAsync(includeDeleted: true, cancellationToken);
++
++        var candidates = PlayerDirectory.Search(
++            players.Where(player => selectedIds.Contains(player.Id) || (!player.IsDeleted && !player.IsArchived)),
++            query: null);
++
++        return new Squad(
++            match,
++            players.Where(player => !player.IsDeleted).ToList(),
++            candidates,
++            candidates.Where(player => selectedIds.Contains(player.Id)).ToList());
++    }
++
++    /// <summary>Inscrit un joueur au match, ou l'en retire. Sans effet si c'est déjà le cas.</summary>
++    /// <exception cref="KeyNotFoundException">Le match ou le joueur est introuvable.</exception>
++    /// <exception cref="InvalidOperationException">Joueur archivé ou supprimé qui n'a jamais été sur ce match.</exception>
++    public async Task SetSelectedAsync(
++        Guid matchId, Guid playerId, bool selected, CancellationToken cancellationToken = default)
++    {
++        await _selectionGate.WaitAsync(cancellationToken);
++        try
++        {
++            await RequireMatchAsync(matchId, cancellationToken);
++
++            // Les inscriptions retirées comptent : elles montrent que le joueur a déjà été sur ce match.
++            var history = (await _participants.ListAsync(includeDeleted: true, cancellationToken))
++                .Where(participant => participant.MatchId == matchId && participant.PlayerId == playerId)
++                .ToList();
++            var active = history.Where(participant => !participant.IsDeleted).ToList();
++
++            if (!selected)
++            {
++                foreach (var participant in active)
++                {
++                    await _participants.DeleteAsync(participant.Id, cancellationToken);
++                }
++
++                return;
++            }
++
++            if (active.Count > 0)
++            {
++                return;
++            }
++
++            var player = await _players.GetAsync(playerId, includeDeleted: true, cancellationToken)
++                ?? throw new KeyNotFoundException($"Aucun joueur avec l'identifiant {playerId}.");
++            if ((player.IsArchived || player.IsDeleted) && history.Count == 0)
++            {
++                throw new InvalidOperationException("Un joueur archivé ou supprimé ne s'ajoute pas à un match.");
++            }
++
++            await _participants.AddAsync(
++                new MatchParticipant { MatchId = matchId, PlayerId = playerId }, cancellationToken);
++        }
++        finally
++        {
++            _selectionGate.Release();
++        }
++    }
++
++    /// <summary>Ajout rapide : crée le joueur dans le répertoire et l'inscrit au match.</summary>
++    /// <exception cref="ArgumentException">Nom vide ou trop long.</exception>
++    /// <exception cref="KeyNotFoundException">Le match est introuvable ; aucun joueur n'est alors créé.</exception>
++    public async Task<Player> AddNewPlayerAsync(Guid matchId, string name, CancellationToken cancellationToken = default)
++    {
++        await RequireMatchAsync(matchId, cancellationToken);
++
++        var player = await _directory.AddAsync(new PlayerInput(name), cancellationToken);
++        await SetSelectedAsync(matchId, player.Id, selected: true, cancellationToken);
++        return player;
++    }
++
++    private async Task RequireMatchAsync(Guid matchId, CancellationToken cancellationToken)
++    {
++        if (await _matches.GetAsync(matchId, cancellationToken: cancellationToken) is null)
++        {
++            throw new KeyNotFoundException($"Aucun match actif avec l'identifiant {matchId}.");
++        }
++    }
++}
+diff --git a/src/AlFariq.Domain/Matches/Match.cs b/src/AlFariq.Domain/Matches/Match.cs
+index 0e92288..ffd4811 100644
+--- a/src/AlFariq.Domain/Matches/Match.cs
++++ b/src/AlFariq.Domain/Matches/Match.cs
+@@ -39,6 +39,10 @@ public sealed class Match : Entity
+ 
+     public MatchStatus Status { get; set; } = MatchStatus.Planned;
+ 
++    /// <summary>Nombre de joueurs attendus : les deux équipes au format du match.</summary>
++    [JsonIgnore]
++    public int ExpectedPlayers => 2 * PlayersPerSide;
++
+     [JsonIgnore]
+     public DateTimeOffset EndsAt => StartsAt.AddMinutes(DurationMinutes);
+ 
+diff --git a/src/AlFariq.Domain/Matches/MatchParticipant.cs b/src/AlFariq.Domain/Matches/MatchParticipant.cs
+index 46fa735..f8ff952 100644
+--- a/src/AlFariq.Domain/Matches/MatchParticipant.cs
++++ b/src/AlFariq.Domain/Matches/MatchParticipant.cs
+@@ -2,7 +2,7 @@ namespace AlFariq.Domain;
+ 
+ /// <summary>
+ /// Un joueur inscrit à un match. Entité séparée pour limiter les conflits de synchronisation.
+-/// US-007 ajoutera la sélection ; en attendant, seule la duplication d'un match recopie ces inscriptions.
++/// Retirer un joueur d'un match supprime logiquement son inscription ; le remettre en crée une nouvelle.
+ /// </summary>
+ public sealed class MatchParticipant : Entity
+ {
+diff --git a/src/AlFariq.Domain/Releases/changelog.json b/src/AlFariq.Domain/Releases/changelog.json
+index 3ed82bd..db1233d 100644
+--- a/src/AlFariq.Domain/Releases/changelog.json
++++ b/src/AlFariq.Domain/Releases/changelog.json
+@@ -1,5 +1,27 @@
+ {
+   "entries": [
++    {
++      "version": "0.8.0",
++      "date": "2026-11-26",
++      "changes": [
++        {
++          "type": "added",
++          "text": {
++            "fr": "Choisis les joueurs d'un match en les cochant, avec un compteur et un avertissement si l'effectif ne correspond pas au format.",
++            "en": "Pick the players of a match with checkboxes, with a counter and a warning when the squad does not fit the format.",
++            "ar": "اختر لاعبي المباراة بتحديدهم، مع عدّاد وتنبيه عندما لا يتوافق العدد مع صيغة اللعب."
++          }
++        },
++        {
++          "type": "added",
++          "text": {
++            "fr": "Ajoute un nouveau joueur directement depuis le match : il rejoint aussi ton répertoire.",
++            "en": "Add a new player straight from the match: they join your directory too.",
++            "ar": "أضف لاعباً جديداً من صفحة المباراة مباشرةً، وسيُضاف أيضاً إلى دليل لاعبيك."
++          }
++        }
++      ]
++    },
+     {
+       "version": "0.7.0",
+       "date": "2026-11-26",
+diff --git a/src/AlFariq.UI/Components/SquadCount.razor b/src/AlFariq.UI/Components/SquadCount.razor
+new file mode 100644
+index 0000000..994ba11
+--- /dev/null
++++ b/src/AlFariq.UI/Components/SquadCount.razor
+@@ -0,0 +1,26 @@
++@inject IStringLocalizer<Strings> L
++
++@* Compteur « X joueurs sur Y attendus » et avertissement non bloquant (US-007). *@
++<div class="squad-count" role="status">
++    <p class="squad-count__total">@(Count > 1 ? L["Squad_Count", Count, Expected] : L["Squad_CountOne", Count, Expected])</p>
++    @if (Count < Expected)
++    {
++        var missing = Expected - Count;
++        <p class="field__warning">@(missing > 1 ? L["Squad_Missing", missing] : L["Squad_MissingOne"])</p>
++    }
++    else if (Count > Expected)
++    {
++        var extra = Count - Expected;
++        <p class="field__warning">@(extra > 1 ? L["Squad_Extra", extra] : L["Squad_ExtraOne"])</p>
++    }
++    else
++    {
++        <p class="hint">@L["Squad_Complete"]</p>
++    }
++</div>
++
++@code {
++    [Parameter, EditorRequired] public int Count { get; set; }
++
++    [Parameter, EditorRequired] public int Expected { get; set; }
++}
+diff --git a/src/AlFariq.UI/Pages/MatchDetails.razor b/src/AlFariq.UI/Pages/MatchDetails.razor
+index f3d68f7..9479694 100644
+--- a/src/AlFariq.UI/Pages/MatchDetails.razor
++++ b/src/AlFariq.UI/Pages/MatchDetails.razor
+@@ -2,6 +2,7 @@
+ @using AlFariq.Application
+ @inject IStringLocalizer<Strings> L
+ @inject MatchService Service
++@inject SquadService Squads
+ @inject TimeProvider Clock
+ @inject NavigationManager Navigation
+ 
+@@ -49,8 +50,35 @@
+             </dl>
+         </article>
+ 
++        <div class="card">
++            <h2>@L["Squad_Title"]</h2>
++            <SquadCount Count="_players.Count" Expected="_match.ExpectedPlayers" />
++            @if (_players.Count > 0)
++            {
++                <ul class="squad-names">
++                    @foreach (var player in _players)
++                    {
++                        <li @key="player.Id">
++                            <span dir="auto">@player.Name</span>
++                            @if (player.ProfileId is not null)
++                            {
++                                <span class="badge">@L["Players_Me"]</span>
++                            }
++                            @if (player.IsArchived)
++                            {
++                                <span class="badge">@L["Squad_Archived"]</span>
++                            }
++                        </li>
++                    }
++                </ul>
++            }
++            <div class="actions">
++                <a class="button" href="matchs/@_match.Id/joueurs">@L["Squad_Choose"]</a>
++            </div>
++        </div>
++
+         <div class="actions">
+-            <a class="button" href="matchs/@_match.Id/modifier">@L["Match_Edit"]</a>
++            <a class="button button--ghost" href="matchs/@_match.Id/modifier">@L["Match_Edit"]</a>
+             <a class="button button--ghost" href="matchs/@_match.Id/dupliquer">@L["Match_Duplicate"]</a>
+             @if (!_confirmingDeletion)
+             {
+@@ -88,6 +116,7 @@
+ 
+ @code {
+     private Match? _match;
++    private IReadOnlyList<Player> _players = [];
+     private Guid _loadedId;
+     private bool _loadFailed;
+     private bool _notFound;
+@@ -106,12 +135,15 @@
+ 
+         _loadedId = Id;
+         _match = null;
++        _players = [];
+         _loadFailed = _notFound = _confirmingDeletion = _deleteFailed = false;
+ 
+         try
+         {
+-            _match = await Service.FindAsync(Id);
+-            _notFound = _match is null;
++            var squad = await Squads.GetAsync(Id);
++            _players = squad?.Selected ?? [];
++            _match = squad?.Match;
++            _notFound = squad is null;
+         }
+         catch (Exception exception)
+         {
+diff --git a/src/AlFariq.UI/Pages/MatchPlayers.razor b/src/AlFariq.UI/Pages/MatchPlayers.razor
+new file mode 100644
+index 0000000..67e5273
+--- /dev/null
++++ b/src/AlFariq.UI/Pages/MatchPlayers.razor
+@@ -0,0 +1,261 @@
++@page "/matchs/{Id:guid}/joueurs"
++@using AlFariq.Application
++@inject IStringLocalizer<Strings> L
++@inject SquadService Service
++@inject IStoragePersistence StoragePersistence
++@inject TimeProvider Clock
++
++<PageTitle>@L["Squad_Title"] · @L["App_Name"]</PageTitle>
++
++<section class="page">
++    <h1>@L["Squad_Title"]</h1>
++
++    @if (_loadFailed)
++    {
++        <div class="card" role="alert">
++            <p>@L["Storage_Unavailable"]</p>
++        </div>
++    }
++    else if (_notFound)
++    {
++        <div class="card card--empty">
++            <p>@L["Match_NotFound"]</p>
++        </div>
++        <div class="actions">
++            <a class="button button--ghost" href="matchs">@L["Match_Back"]</a>
++        </div>
++    }
++    else if (_match is not null)
++    {
++        var start = MatchSchedule.ToLocal(_match.StartsAt, Clock.LocalTimeZone);
++        var newName = PlayerDirectory.CleanName(_query);
++        var visible = PlayerDirectory.Search(_candidates, _query);
++
++        <p class="lead squad-lead">
++            @L["Home_MatchDate", MatchLabels.LongDate(start), MatchLabels.Time(start)]<br />
++            @L["Home_MatchFormat", _match.PlayersPerSide]
++        </p>
++
++        <div class="squad-status">
++            <SquadCount Count="_selected.Count" Expected="_match.ExpectedPlayers" />
++            @if (_saveFailed)
++            {
++                <p class="field__error" role="alert">@L["Squad_SaveFailed"]</p>
++            }
++        </div>
++
++        <div class="field">
++            <label for="squad-search">@L["Squad_Search"]</label>
++            <input id="squad-search" type="search" dir="auto" autocomplete="off" autocapitalize="words" enterkeyhint="search"
++                   maxlength="@Player.MaxNameLength"
++                   @bind="_query" @bind:event="oninput" @bind:after="ClearConfirmation" />
++        </div>
++
++        if (newName.Length > 0)
++        {
++            <div role="status">
++                @if (PlayerDirectory.HasSameName(_candidates, newName))
++                {
++                    <p class="field__warning">@L["Squad_Duplicate"]</p>
++                }
++                else if (PlayerDirectory.HasSameName(_allPlayers, newName))
++                {
++                    <p class="field__warning">@L["Squad_DuplicateArchived"]</p>
++                }
++            </div>
++            <div class="actions">
++                <button type="button" class="button button--ghost squad-add" disabled="@_adding" @onclick="AddNewPlayerAsync">
++                    @L["Squad_QuickAdd", newName]
++                </button>
++            </div>
++        }
++
++        <div role="status">
++            @if (_addedName is not null)
++            {
++                <p class="form-success">@L["Squad_Added", _addedName]</p>
++            }
++        </div>
++
++        if (_candidates.Count == 0)
++        {
++            <div class="card card--empty">
++                <p>@L["Squad_Empty"]</p>
++            </div>
++        }
++        else if (visible.Count == 0)
++        {
++            <p class="hint list-none" role="status">@L["Players_NoMatch"]</p>
++        }
++        else
++        {
++            <ul class="card pick-list">
++                @foreach (var player in visible)
++                {
++                    <li @key="player.Id">
++                        <label class="pick-list__option">
++                            <input type="checkbox"
++                                   @bind:get="_selected.Contains(player.Id)"
++                                   @bind:set="isChecked => ToggleAsync(player.Id, isChecked)" />
++                            <span class="pick-list__text">
++                                <span class="player-list__name" dir="auto">@player.Name</span>
++                                @if (player.ProfileId is not null)
++                                {
++                                    <span class="badge">@L["Players_Me"]</span>
++                                }
++                                @if (player.IsArchived)
++                                {
++                                    <span class="badge">@L["Squad_Archived"]</span>
++                                }
++                                <span class="player-list__details">
++                                    @if (player.PreferredPositionCode is { } position)
++                                    {
++                                        <span>@L[SportLabels.PositionKey(position)]</span>
++                                    }
++                                    @if (player.Level is { } level)
++                                    {
++                                        <span>@L["Players_LevelShort", level]</span>
++                                    }
++                                </span>
++                            </span>
++                        </label>
++                    </li>
++                }
++            </ul>
++        }
++
++        <p class="hint squad-hint">@L["Squad_AutoSave"]</p>
++        <div class="actions">
++            <a class="button" href="matchs/@_match.Id">@L["Squad_Done"]</a>
++        </div>
++    }
++</section>
++
++@code {
++    private Match? _match;
++    private List<Player> _allPlayers = [];
++    private List<Player> _candidates = [];
++    private HashSet<Guid> _selected = [];
++    private Guid _loadedId;
++    private string _query = "";
++    private string? _addedName;
++    private bool _loadFailed;
++    private bool _notFound;
++    private bool _adding;
++    private bool _saveFailed;
++    private bool _persistenceRequested;
++
++    [Parameter] public Guid Id { get; set; }
++
++    protected override async Task OnParametersSetAsync()
++    {
++        if (_loadedId == Id)
++        {
++            return;
++        }
++
++        _loadedId = Id;
++        _match = null;
++        _query = "";
++        _addedName = null;
++        _loadFailed = _notFound = _saveFailed = false;
++
++        try
++        {
++            var squad = await Service.GetAsync(Id);
++            if (squad is null)
++            {
++                _notFound = true;
++                return;
++            }
++
++            // Lu une seule fois : la recherche se fait en mémoire, et un joueur décoché reste affiché.
++            _allPlayers = squad.AllPlayers.ToList();
++            _candidates = squad.Candidates.ToList();
++            _selected = squad.Selected.Select(player => player.Id).ToHashSet();
++            _match = squad.Match;
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _loadFailed = true;
++        }
++    }
++
++    private void ClearConfirmation() => _addedName = null;
++
++    private async Task ToggleAsync(Guid playerId, bool selected)
++    {
++        _saveFailed = false;
++        _addedName = null;
++
++        // La case et le compteur changent tout de suite ; ils reviennent en arrière si l'écriture échoue.
++        SetLocally(playerId, selected);
++        try
++        {
++            await Service.SetSelectedAsync(Id, playerId, selected);
++            await RequestPersistenceAsync();
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            SetLocally(playerId, !selected);
++            _saveFailed = true;
++        }
++    }
++
++    private async Task AddNewPlayerAsync()
++    {
++        if (_adding)
++        {
++            return;
++        }
++
++        _adding = true;
++        _saveFailed = false;
++        _addedName = null;
++        try
++        {
++            var player = await Service.AddNewPlayerAsync(Id, _query);
++
++            _allPlayers.Add(player);
++            _candidates.Add(player);
++            SetLocally(player.Id, selected: true);
++            _query = "";
++            _addedName = player.Name;
++
++            await RequestPersistenceAsync();
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _saveFailed = true;
++        }
++        finally
++        {
++            _adding = false;
++        }
++    }
++
++    private void SetLocally(Guid playerId, bool selected)
++    {
++        if (selected)
++        {
++            _selected.Add(playerId);
++        }
++        else
++        {
++            _selected.Remove(playerId);
++        }
++    }
++
++    /// <summary>US-002 : des données ont été saisies, on demande au navigateur de les conserver (une fois par visite).</summary>
++    private async Task RequestPersistenceAsync()
++    {
++        if (!_persistenceRequested)
++        {
++            _persistenceRequested = true;
++            await StoragePersistence.RequestAsync();
++        }
++    }
++}
+diff --git a/src/AlFariq.UI/Resources/Strings.resx b/src/AlFariq.UI/Resources/Strings.resx
+index fa80cf6..e3074d1 100644
+--- a/src/AlFariq.UI/Resources/Strings.resx
++++ b/src/AlFariq.UI/Resources/Strings.resx
+@@ -118,6 +118,26 @@
+   <data name="Matches_Empty" xml:space="preserve"><value>Aucun match pour l'instant.</value></data>
+   <data name="Matches_NoUpcoming" xml:space="preserve"><value>Aucun match à venir.</value></data>
+   <data name="Matches_NoPast" xml:space="preserve"><value>Aucun match passé.</value></data>
++  <data name="Squad_Title" xml:space="preserve"><value>Joueurs du match</value></data>
++  <data name="Squad_Choose" xml:space="preserve"><value>Choisir les joueurs</value></data>
++  <data name="Squad_Count" xml:space="preserve"><value>{0} joueurs sur {1} attendus</value></data>
++  <data name="Squad_CountOne" xml:space="preserve"><value>{0} joueur sur {1} attendus</value></data>
++  <data name="Squad_Missing" xml:space="preserve"><value>Il manque {0} joueurs.</value></data>
++  <data name="Squad_MissingOne" xml:space="preserve"><value>Il manque 1 joueur.</value></data>
++  <data name="Squad_Extra" xml:space="preserve"><value>{0} joueurs de plus que prévu.</value></data>
++  <data name="Squad_ExtraOne" xml:space="preserve"><value>1 joueur de plus que prévu.</value></data>
++  <data name="Squad_Complete" xml:space="preserve"><value>L'effectif est complet.</value></data>
++  <data name="Squad_Search" xml:space="preserve"><value>Rechercher ou ajouter un joueur</value></data>
++  <data name="Squad_QuickAdd" xml:space="preserve"><value>Ajouter « {0} »</value></data>
++  <data name="Squad_Added" xml:space="preserve"><value>{0} est ajouté au match et au répertoire.</value></data>
++  <data name="Squad_Duplicate" xml:space="preserve"><value>Un joueur porte déjà ce nom. Tu peux quand même en ajouter un autre.</value></data>
++  <data name="Squad_DuplicateArchived" xml:space="preserve"><value>Un joueur archivé porte ce nom. Tu peux le réactiver dans « Joueurs » ou en ajouter un autre.</value></data>
++  <data name="Squad_Archived" xml:space="preserve"><value>Archivé</value></data>
++  <data name="Squad_Empty" xml:space="preserve"><value>Ton répertoire est vide. Saisis un prénom ci-dessus pour ajouter le premier joueur.</value></data>
++  <data name="Squad_AutoSave" xml:space="preserve"><value>La sélection est enregistrée automatiquement.</value></data>
++  <data name="Squad_Done" xml:space="preserve"><value>Terminé</value></data>
++  <data name="Squad_SaveFailed" xml:space="preserve"><value>L'enregistrement a échoué. Réessaie.</value></data>
++
+   <data name="Players_Title" xml:space="preserve"><value>Joueurs</value></data>
+   <data name="Players_Empty" xml:space="preserve"><value>Ton répertoire est vide. Un prénom ou un pseudo suffit pour ajouter un joueur.</value></data>
+   <data name="Players_Me" xml:space="preserve"><value>Moi</value></data>
+diff --git a/src/AlFariq.UI/wwwroot/css/app.css b/src/AlFariq.UI/wwwroot/css/app.css
+index 94d05a3..d4b4ef1 100644
+--- a/src/AlFariq.UI/wwwroot/css/app.css
++++ b/src/AlFariq.UI/wwwroot/css/app.css
+@@ -425,6 +425,95 @@ h1:focus {
+   overflow-wrap: anywhere;
+ }
+ 
++/* ---------- Joueurs d'un match ---------- */
++
++.squad-status {
++  position: sticky;
++  top: 0;
++  z-index: 1;
++  padding: 0.5rem 0;
++  background: var(--color-bg);
++}
++
++.squad-count p {
++  margin: 0;
++}
++
++.squad-count .squad-count__total {
++  font-size: 1.125rem;
++  font-weight: 600;
++}
++
++.squad-count .field__warning,
++.squad-count .hint {
++  margin-top: 0.25rem;
++}
++
++.button.squad-add {
++  max-width: 100%;
++  padding-block: 0.5rem;
++  overflow-wrap: anywhere;
++}
++
++.pick-list {
++  padding-block: 0;
++  list-style: none;
++}
++
++.pick-list li + li {
++  border-top: 1px solid var(--color-border);
++}
++
++.pick-list__option {
++  display: flex;
++  align-items: center;
++  gap: 0.75rem;
++  min-height: 44px;
++  padding: 0.75rem 0;
++  cursor: pointer;
++}
++
++.pick-list__option input {
++  flex: none;
++  width: 1.375rem;
++  height: 1.375rem;
++  margin: 0;
++  accent-color: var(--color-primary);
++}
++
++.pick-list__text {
++  display: flex;
++  flex: 1;
++  flex-wrap: wrap;
++  align-items: center;
++  gap: 0.25rem 0.5rem;
++  min-width: 0;
++}
++
++.squad-lead::first-letter {
++  text-transform: uppercase;
++}
++
++.squad-names {
++  margin: 0.75rem 0 0;
++  padding: 0;
++  list-style: none;
++}
++
++.squad-names li {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  gap: 0.5rem;
++  padding: 0.25rem 0;
++  overflow-wrap: anywhere;
++}
++
++.squad-hint {
++  margin: var(--gutter) 0 0;
++  text-align: center;
++}
++
+ /* ---------- Bandeaux ---------- */
+ 
+ .banner {
+diff --git a/tests/AlFariq.Client.Core.Tests/SquadServiceTests.cs b/tests/AlFariq.Client.Core.Tests/SquadServiceTests.cs
+new file mode 100644
+index 0000000..af7fae8
+--- /dev/null
++++ b/tests/AlFariq.Client.Core.Tests/SquadServiceTests.cs
+@@ -0,0 +1,160 @@
++using AlFariq.Application;
++using AlFariq.Domain;
++using Microsoft.Extensions.DependencyInjection;
++
++namespace AlFariq.Client.Core.Tests;
++
++public sealed class SquadServiceTests : IDisposable
++{
++    private static readonly MatchInput Evening = new(new DateOnly(2026, 12, 2), new TimeOnly(20, 0), 5);
++
++    private readonly ServiceProvider _app;
++    private readonly SquadService _squads;
++
++    public SquadServiceTests()
++    {
++        _app = MatchTestHost.Create(new FakeClock());
++        _squads = _app.GetRequiredService<SquadService>();
++    }
++
++    public void Dispose() => _app.Dispose();
++
++    private MatchService Matches => _app.GetRequiredService<MatchService>();
++
++    private PlayerService Players => _app.GetRequiredService<PlayerService>();
++
++    private IRepository<MatchParticipant> Participants =>
++        _app.GetRequiredService<IRepository<MatchParticipant>>();
++
++    private async Task<Guid> NewMatchAsync() => (await Matches.CreateAsync(Evening)).Id;
++
++    private async Task<Guid> NewPlayerAsync(string name) => (await Players.AddAsync(new PlayerInput(name))).Id;
++
++    private static IEnumerable<string> Names(IEnumerable<Player> players) => players.Select(player => player.Name);
++
++    [Fact]
++    public async Task A_new_match_proposes_the_active_players_by_name_and_has_none_selected()
++    {
++        var match = await NewMatchAsync();
++        await NewPlayerAsync("Sami");
++        await NewPlayerAsync("Alice");
++        await Players.SetArchivedAsync(await NewPlayerAsync("Zoé"), archived: true);
++
++        var squad = (await _squads.GetAsync(match))!;
++
++        Assert.Equal(new[] { "Alice", "Sami" }, Names(squad.Candidates));
++        Assert.Empty(squad.Selected);
++        Assert.Equal(3, squad.AllPlayers.Count);
++        Assert.Equal(10, squad.Match.ExpectedPlayers);
++    }
++
++    [Fact]
++    public async Task A_player_can_be_selected_removed_and_selected_again()
++    {
++        var match = await NewMatchAsync();
++        var sami = await NewPlayerAsync("Sami");
++
++        await _squads.SetSelectedAsync(match, sami, selected: true);
++        await _squads.SetSelectedAsync(match, sami, selected: true);
++
++        Assert.Equal(new[] { "Sami" }, Names((await _squads.GetAsync(match))!.Selected));
++        Assert.Single(await Participants.ListAsync());
++
++        await _squads.SetSelectedAsync(match, sami, selected: false);
++
++        Assert.Empty((await _squads.GetAsync(match))!.Selected);
++        Assert.True(Assert.Single(await Participants.ListAsync(includeDeleted: true)).IsDeleted);
++
++        await _squads.SetSelectedAsync(match, sami, selected: true);
++
++        Assert.Single((await _squads.GetAsync(match))!.Selected);
++    }
++
++    [Fact]
++    public async Task Quick_add_puts_the_player_in_the_directory_and_in_the_match()
++    {
++        var match = await NewMatchAsync();
++
++        var added = await _squads.AddNewPlayerAsync(match, "  Karim ");
++
++        Assert.Equal("Karim", added.Name);
++        Assert.Equal(new[] { "Karim" }, Names(await Players.ListAsync()));
++        Assert.Equal(new[] { "Karim" }, Names((await _squads.GetAsync(match))!.Selected));
++    }
++
++    [Fact]
++    public async Task Quick_add_writes_nothing_when_the_name_or_the_match_is_invalid()
++    {
++        var match = await NewMatchAsync();
++
++        await Assert.ThrowsAsync<ArgumentException>(() => _squads.AddNewPlayerAsync(match, "   "));
++        await Assert.ThrowsAsync<KeyNotFoundException>(() => _squads.AddNewPlayerAsync(Guid.CreateVersion7(), "Karim"));
++
++        Assert.Empty(await Players.ListAsync());
++        Assert.Empty(await Participants.ListAsync());
++    }
++
++    [Fact]
++    public async Task An_archived_player_stays_on_his_match_but_joins_no_other()
++    {
++        var match = await NewMatchAsync();
++        var other = await NewMatchAsync();
++        var sami = await NewPlayerAsync("Sami");
++        await _squads.SetSelectedAsync(match, sami, selected: true);
++
++        await Players.SetArchivedAsync(sami, archived: true);
++
++        Assert.Equal(new[] { "Sami" }, Names((await _squads.GetAsync(match))!.Selected));
++        Assert.Empty((await _squads.GetAsync(other))!.Candidates);
++        await Assert.ThrowsAsync<InvalidOperationException>(
++            () => _squads.SetSelectedAsync(other, sami, selected: true));
++
++        // Décoché par erreur, il peut être remis sur le match où il était.
++        await _squads.SetSelectedAsync(match, sami, selected: false);
++        await _squads.SetSelectedAsync(match, sami, selected: true);
++
++        Assert.Single((await _squads.GetAsync(match))!.Selected);
++    }
++
++    [Fact]
++    public async Task A_deleted_player_remains_visible_on_his_match()
++    {
++        var match = await NewMatchAsync();
++        var sami = await NewPlayerAsync("Sami");
++        await _squads.SetSelectedAsync(match, sami, selected: true);
++
++        await _app.GetRequiredService<IRepository<Player>>().DeleteAsync(sami);
++
++        var squad = (await _squads.GetAsync(match))!;
++        Assert.Equal(new[] { "Sami" }, Names(squad.Selected));
++        Assert.Empty(squad.AllPlayers);
++    }
++
++    [Fact]
++    public async Task An_unknown_player_or_match_is_rejected()
++    {
++        var match = await NewMatchAsync();
++        var sami = await NewPlayerAsync("Sami");
++
++        await Assert.ThrowsAsync<KeyNotFoundException>(
++            () => _squads.SetSelectedAsync(match, Guid.CreateVersion7(), selected: true));
++        await Matches.DeleteAsync(match);
++
++        await Assert.ThrowsAsync<KeyNotFoundException>(
++            () => _squads.SetSelectedAsync(match, sami, selected: true));
++        Assert.Null(await _squads.GetAsync(match));
++        Assert.Empty(await Participants.ListAsync());
++    }
++
++    [Fact]
++    public async Task A_duplicated_match_starts_with_the_same_players()
++    {
++        var source = await NewMatchAsync();
++        await _squads.AddNewPlayerAsync(source, "Sami");
++        await _squads.AddNewPlayerAsync(source, "Alice");
++
++        var copy = await Matches.CreateAsync((await Matches.GetDuplicateInputAsync(source))!, source);
++
++        Assert.Equal(new[] { "Alice", "Sami" }, Names((await _squads.GetAsync(copy.Id))!.Selected));
++    }
++}
+diff --git a/tests/AlFariq.Domain.Tests/MatchScheduleTests.cs b/tests/AlFariq.Domain.Tests/MatchScheduleTests.cs
+index ca0af9d..ab68866 100644
+--- a/tests/AlFariq.Domain.Tests/MatchScheduleTests.cs
++++ b/tests/AlFariq.Domain.Tests/MatchScheduleTests.cs
+@@ -33,6 +33,14 @@ public class MatchScheduleTests
+         Assert.Equal(new[] { recent, old }, past);
+     }
+ 
++    [Theory]
++    [InlineData(5, 10)]
++    [InlineData(11, 22)]
++    public void Expected_players_are_two_teams_of_the_format(int format, int expected)
++    {
++        Assert.Equal(expected, new Match { PlayersPerSide = format }.ExpectedPlayers);
++    }
++
+     [Fact]
+     public void A_date_and_time_keep_their_value_in_their_time_zone()
+     {

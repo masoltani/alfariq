@@ -13,6 +13,7 @@ public static class DependencyInjection
         services.TryAddSingleton<MatchService>();
         services.TryAddSingleton<ProfileService>();
         services.TryAddSingleton<PlayerService>();
+        services.TryAddSingleton<SquadService>();
         return services;
     }
 }

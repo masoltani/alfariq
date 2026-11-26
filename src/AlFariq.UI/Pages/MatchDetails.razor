@@ -2,6 +2,7 @@
 @using AlFariq.Application
 @inject IStringLocalizer<Strings> L
 @inject MatchService Service
+@inject SquadService Squads
 @inject TimeProvider Clock
 @inject NavigationManager Navigation
 
@@ -49,8 +50,35 @@
             </dl>
         </article>
 
+        <div class="card">
+            <h2>@L["Squad_Title"]</h2>
+            <SquadCount Count="_players.Count" Expected="_match.ExpectedPlayers" />
+            @if (_players.Count > 0)
+            {
+                <ul class="squad-names">
+                    @foreach (var player in _players)
+                    {
+                        <li @key="player.Id">
+                            <span dir="auto">@player.Name</span>
+                            @if (player.ProfileId is not null)
+                            {
+                                <span class="badge">@L["Players_Me"]</span>
+                            }
+                            @if (player.IsArchived)
+                            {
+                                <span class="badge">@L["Squad_Archived"]</span>
+                            }
+                        </li>
+                    }
+                </ul>
+            }
+            <div class="actions">
+                <a class="button" href="matchs/@_match.Id/joueurs">@L["Squad_Choose"]</a>
+            </div>
+        </div>
+
         <div class="actions">
-            <a class="button" href="matchs/@_match.Id/modifier">@L["Match_Edit"]</a>
+            <a class="button button--ghost" href="matchs/@_match.Id/modifier">@L["Match_Edit"]</a>
             <a class="button button--ghost" href="matchs/@_match.Id/dupliquer">@L["Match_Duplicate"]</a>
             @if (!_confirmingDeletion)
             {
@@ -88,6 +116,7 @@
 
 @code {
     private Match? _match;
+    private IReadOnlyList<Player> _players = [];
     private Guid _loadedId;
     private bool _loadFailed;
     private bool _notFound;
@@ -106,12 +135,15 @@
 
         _loadedId = Id;
         _match = null;
+        _players = [];
         _loadFailed = _notFound = _confirmingDeletion = _deleteFailed = false;
 
         try
         {
-            _match = await Service.FindAsync(Id);
-            _notFound = _match is null;
+            var squad = await Squads.GetAsync(Id);
+            _players = squad?.Selected ?? [];
+            _match = squad?.Match;
+            _notFound = squad is null;
         }
         catch (Exception exception)
         {

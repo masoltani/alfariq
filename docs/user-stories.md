@@ -142,6 +142,8 @@ Critères d'acceptation :
 - L'ajout rapide d'un joueur depuis cet écran l'ajoute aussi au répertoire.
 - Un avertissement apparaît si le nombre de joueurs est inférieur ou supérieur au format, sans bloquer.
 
+**Note (US-007)** : le nombre de joueurs attendus est le double du format (`Match.ExpectedPlayers`). La sélection (`/matchs/{id}/joueurs`, `SquadService`) est enregistrée à chaque case cochée ; retirer un joueur supprime logiquement son inscription. Un joueur archivé reste sur les matchs où il est inscrit, mais ne s'ajoute pas à un autre. Les statuts de participant (RG-PRS-01) ne sont pas dans cette US.
+
 ### US-008 — Composer les équipes à la main
 En tant qu'organisateur, je veux répartir les joueurs entre deux équipes (A et B) afin de définir la composition du match.
 Priorité : M — Taille : M — Dépend de : US-007

@@ -1,6 +1,28 @@
 {
   "entries": [
     {
+      "version": "0.8.0",
+      "date": "2026-11-26",
+      "changes": [
+        {
+          "type": "added",
+          "text": {
+            "fr": "Choisis les joueurs d'un match en les cochant, avec un compteur et un avertissement si l'effectif ne correspond pas au format.",
+            "en": "Pick the players of a match with checkboxes, with a counter and a warning when the squad does not fit the format.",
+            "ar": "اختر لاعبي المباراة بتحديدهم، مع عدّاد وتنبيه عندما لا يتوافق العدد مع صيغة اللعب."
+          }
+        },
+        {
+          "type": "added",
+          "text": {
+            "fr": "Ajoute un nouveau joueur directement depuis le match : il rejoint aussi ton répertoire.",
+            "en": "Add a new player straight from the match: they join your directory too.",
+            "ar": "أضف لاعباً جديداً من صفحة المباراة مباشرةً، وسيُضاف أيضاً إلى دليل لاعبيك."
+          }
+        }
+      ]
+    },
+    {
       "version": "0.7.0",
       "date": "2026-11-26",
       "changes": [

@@ -118,6 +118,26 @@
   <data name="Matches_Empty" xml:space="preserve"><value>Aucun match pour l'instant.</value></data>
   <data name="Matches_NoUpcoming" xml:space="preserve"><value>Aucun match à venir.</value></data>
   <data name="Matches_NoPast" xml:space="preserve"><value>Aucun match passé.</value></data>
+  <data name="Squad_Title" xml:space="preserve"><value>Joueurs du match</value></data>
+  <data name="Squad_Choose" xml:space="preserve"><value>Choisir les joueurs</value></data>
+  <data name="Squad_Count" xml:space="preserve"><value>{0} joueurs sur {1} attendus</value></data>
+  <data name="Squad_CountOne" xml:space="preserve"><value>{0} joueur sur {1} attendus</value></data>
+  <data name="Squad_Missing" xml:space="preserve"><value>Il manque {0} joueurs.</value></data>
+  <data name="Squad_MissingOne" xml:space="preserve"><value>Il manque 1 joueur.</value></data>
+  <data name="Squad_Extra" xml:space="preserve"><value>{0} joueurs de plus que prévu.</value></data>
+  <data name="Squad_ExtraOne" xml:space="preserve"><value>1 joueur de plus que prévu.</value></data>
+  <data name="Squad_Complete" xml:space="preserve"><value>L'effectif est complet.</value></data>
+  <data name="Squad_Search" xml:space="preserve"><value>Rechercher ou ajouter un joueur</value></data>
+  <data name="Squad_QuickAdd" xml:space="preserve"><value>Ajouter « {0} »</value></data>
+  <data name="Squad_Added" xml:space="preserve"><value>{0} est ajouté au match et au répertoire.</value></data>
+  <data name="Squad_Duplicate" xml:space="preserve"><value>Un joueur porte déjà ce nom. Tu peux quand même en ajouter un autre.</value></data>
+  <data name="Squad_DuplicateArchived" xml:space="preserve"><value>Un joueur archivé porte ce nom. Tu peux le réactiver dans « Joueurs » ou en ajouter un autre.</value></data>
+  <data name="Squad_Archived" xml:space="preserve"><value>Archivé</value></data>
+  <data name="Squad_Empty" xml:space="preserve"><value>Ton répertoire est vide. Saisis un prénom ci-dessus pour ajouter le premier joueur.</value></data>
+  <data name="Squad_AutoSave" xml:space="preserve"><value>La sélection est enregistrée automatiquement.</value></data>
+  <data name="Squad_Done" xml:space="preserve"><value>Terminé</value></data>
+  <data name="Squad_SaveFailed" xml:space="preserve"><value>L'enregistrement a échoué. Réessaie.</value></data>
+
   <data name="Players_Title" xml:space="preserve"><value>Joueurs</value></data>
   <data name="Players_Empty" xml:space="preserve"><value>Ton répertoire est vide. Un prénom ou un pseudo suffit pour ajouter un joueur.</value></data>
   <data name="Players_Me" xml:space="preserve"><value>Moi</value></data>

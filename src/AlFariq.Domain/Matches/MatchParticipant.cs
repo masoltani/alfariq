@@ -2,7 +2,7 @@ namespace AlFariq.Domain;
 
 /// <summary>
 /// Un joueur inscrit à un match. Entité séparée pour limiter les conflits de synchronisation.
-/// US-007 ajoutera la sélection ; en attendant, seule la duplication d'un match recopie ces inscriptions.
+/// Retirer un joueur d'un match supprime logiquement son inscription ; le remettre en crée une nouvelle.
 /// </summary>
 public sealed class MatchParticipant : Entity
 {

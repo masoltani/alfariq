@@ -1,0 +1,26 @@
+@inject IStringLocalizer<Strings> L
+
+@* Compteur « X joueurs sur Y attendus » et avertissement non bloquant (US-007). *@
+<div class="squad-count" role="status">
+    <p class="squad-count__total">@(Count > 1 ? L["Squad_Count", Count, Expected] : L["Squad_CountOne", Count, Expected])</p>
+    @if (Count < Expected)
+    {
+        var missing = Expected - Count;
+        <p class="field__warning">@(missing > 1 ? L["Squad_Missing", missing] : L["Squad_MissingOne"])</p>
+    }
+    else if (Count > Expected)
+    {
+        var extra = Count - Expected;
+        <p class="field__warning">@(extra > 1 ? L["Squad_Extra", extra] : L["Squad_ExtraOne"])</p>
+    }
+    else
+    {
+        <p class="hint">@L["Squad_Complete"]</p>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public int Count { get; set; }
+
+    [Parameter, EditorRequired] public int Expected { get; set; }
+}

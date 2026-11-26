@@ -33,6 +33,14 @@ public class MatchScheduleTests
         Assert.Equal(new[] { recent, old }, past);
     }
 
+    [Theory]
+    [InlineData(5, 10)]
+    [InlineData(11, 22)]
+    public void Expected_players_are_two_teams_of_the_format(int format, int expected)
+    {
+        Assert.Equal(expected, new Match { PlayersPerSide = format }.ExpectedPlayers);
+    }
+
     [Fact]
     public void A_date_and_time_keep_their_value_in_their_time_zone()
     {
