@@ -1,11 +1,93 @@
 @page "/matchs"
+@using AlFariq.Application
 @inject IStringLocalizer<Strings> L
+@inject MatchService Service
+@inject TimeProvider Clock
 
 <PageTitle>@L["Matches_Title"] · @L["App_Name"]</PageTitle>
 
 <section class="page">
     <h1>@L["Matches_Title"]</h1>
-    <div class="card card--empty">
-        <p>@L["Section_ComingSoon"]</p>
-    </div>
+
+    @if (_loadFailed)
+    {
+        <div class="card" role="alert">
+            <p>@L["Storage_Unavailable"]</p>
+        </div>
+    }
+    else if (_matches is not null)
+    {
+        <div class="actions">
+            <a class="button" href="matchs/nouveau">@L["Home_CreateMatch"]</a>
+        </div>
+
+        if (_matches.Count == 0)
+        {
+            <div class="card card--empty">
+                <p>@L["Matches_Empty"]</p>
+            </div>
+        }
+        else
+        {
+            var now = Clock.GetUtcNow();
+            var upcoming = MatchSchedule.Upcoming(_matches, now);
+            var past = MatchSchedule.Past(_matches, now);
+            var visible = _showPast ? past : upcoming;
+
+            <fieldset class="segmented list-filter">
+                <legend class="sr-only">@L["Matches_Filter"]</legend>
+                <label class="segmented__option">
+                    <input type="radio" name="matches-period" checked="@(!_showPast)" @onchange="() => _showPast = false" />
+                    <span>@L["Matches_Upcoming", upcoming.Count]</span>
+                </label>
+                <label class="segmented__option">
+                    <input type="radio" name="matches-period" checked="@_showPast" @onchange="() => _showPast = true" />
+                    <span>@L["Matches_Past", past.Count]</span>
+                </label>
+            </fieldset>
+
+            if (visible.Count == 0)
+            {
+                <p class="hint list-none" role="status">@(_showPast ? L["Matches_NoPast"] : L["Matches_NoUpcoming"])</p>
+            }
+            else
+            {
+                <ul class="card match-list">
+                    @foreach (var match in visible)
+                    {
+                        var start = MatchSchedule.ToLocal(match.StartsAt, Clock.LocalTimeZone);
+                        <li @key="match.Id">
+                            <a class="match-list__link" href="matchs/@match.Id">
+                                <span class="match-list__date">@L["Home_MatchDate", MatchLabels.LongDate(start), MatchLabels.Time(start)]</span>
+                                <span class="match-list__details">@L[SportLabels.SportKey(match.SportCode)] · @L["Home_MatchFormat", match.PlayersPerSide]</span>
+                                @if (match.Location is not null)
+                                {
+                                    <span class="match-list__details" dir="auto">@match.Location</span>
+                                }
+                            </a>
+                        </li>
+                    }
+                </ul>
+            }
+        }
+    }
 </section>
+
+@code {
+    private IReadOnlyList<Match>? _matches;
+    private bool _showPast;
+    private bool _loadFailed;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _matches = await Service.ListAsync();
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _loadFailed = true;
+        }
+    }
+}

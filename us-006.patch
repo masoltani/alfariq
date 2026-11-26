@@ -1,0 +1,1714 @@
+diff --git a/Directory.Build.props b/Directory.Build.props
+index 99c9d95..c864039 100644
+--- a/Directory.Build.props
++++ b/Directory.Build.props
+@@ -6,7 +6,7 @@
+     <Nullable>enable</Nullable>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <AnalysisLevel>latest</AnalysisLevel>
+-    <Version>0.6.0</Version>
++    <Version>0.7.0</Version>
+     <Deterministic>true</Deterministic>
+   </PropertyGroup>
+ 
+diff --git a/docs/user-stories.md b/docs/user-stories.md
+index 48fbc01..3d09120 100644
+--- a/docs/user-stories.md
++++ b/docs/user-stories.md
+@@ -96,7 +96,7 @@ Critères d'acceptation :
+ - L'accueil affiche le prochain match (s'il existe), un bouton « Créer un match » et l'accès aux joueurs.
+ - Un état vide explicite guide le premier lancement.
+ 
+-**Note (US-003)** : tant que les matchs n'existent pas, l'accueil lit `IUpcomingMatchQuery` (implémentation vide, `NoUpcomingMatchQuery`) et « Créer un match » ouvre une page d'attente (`/matchs/nouveau`). US-006 fournira la lecture réelle (prochain match planifié à venir) et le formulaire.
++**Note (US-003)** : tant que les matchs n'existent pas, l'accueil lit `IUpcomingMatchQuery` (implémentation vide à l'époque) et « Créer un match » ouvrait une page d'attente (`/matchs/nouveau`). US-006 a fourni la lecture réelle (`UpcomingMatchQuery`) et le formulaire.
+ 
+ ### US-004 — Créer mon profil local
+ En tant qu'utilisateur, je veux saisir mon nom ou pseudo, mon sport par défaut et mon poste préféré afin de personnaliser l'appli sans créer de compte.
+@@ -131,6 +131,8 @@ Critères d'acceptation :
+ - On peut modifier, dupliquer et supprimer (suppression logique) un match.
+ - « Dupliquer » préremplit un nouveau match (même lieu, même format, mêmes joueurs, date + 7 jours).
+ 
++**Note (US-006)** : les joueurs d'un match sont des entités `MatchParticipant` ; US-007 ajoutera leur sélection. La duplication reprend le sport, le format, la durée, l'heure et le lieu à J+7, ainsi que les joueurs non archivés (inscrits à l'enregistrement de la copie) ; les notes ne sont pas reprises. Un match reste « à venir » tant qu'il n'est pas terminé (début + durée).
++
+ ### US-007 — Choisir les joueurs d'un match
+ En tant qu'organisateur, je veux sélectionner les joueurs présents depuis mon répertoire (et en ajouter un à la volée) afin de savoir qui joue.
+ Priorité : M — Taille : S — Dépend de : US-006
+diff --git a/src/AlFariq.Application/DependencyInjection.cs b/src/AlFariq.Application/DependencyInjection.cs
+index d8a01ae..323e1e8 100644
+--- a/src/AlFariq.Application/DependencyInjection.cs
++++ b/src/AlFariq.Application/DependencyInjection.cs
+@@ -9,8 +9,8 @@ public static class DependencyInjection
+     /// <remarks>Les dépôts qu'ils utilisent sont enregistrés par l'hôte.</remarks>
+     public static IServiceCollection AddAlFariqApplication(this IServiceCollection services)
+     {
+-        // US-003 : sans matchs pour l'instant. Un enregistrement ultérieur (US-006) prend le dessus.
+-        services.TryAddSingleton<IUpcomingMatchQuery, NoUpcomingMatchQuery>();
++        services.TryAddSingleton<IUpcomingMatchQuery, UpcomingMatchQuery>();
++        services.TryAddSingleton<MatchService>();
+         services.TryAddSingleton<ProfileService>();
+         services.TryAddSingleton<PlayerService>();
+         return services;
+diff --git a/src/AlFariq.Application/MatchService.cs b/src/AlFariq.Application/MatchService.cs
+new file mode 100644
+index 0000000..3cbc3a4
+--- /dev/null
++++ b/src/AlFariq.Application/MatchService.cs
+@@ -0,0 +1,175 @@
++using AlFariq.Domain;
++
++namespace AlFariq.Application;
++
++/// <summary>Saisie d'un match. La date, l'heure et le format sont obligatoires.</summary>
++public sealed record MatchInput(
++    DateOnly Date,
++    TimeOnly Time,
++    int PlayersPerSide,
++    string SportCode = SportCatalog.FootballCode,
++    int DurationMinutes = Match.DefaultDurationMinutes,
++    string? Location = null,
++    string? Notes = null);
++
++/// <summary>Création, modification, duplication et suppression des matchs (US-006).</summary>
++public sealed class MatchService
++{
++    private readonly IRepository<Match> _matches;
++    private readonly IRepository<MatchParticipant> _participants;
++    private readonly IRepository<Player> _players;
++    private readonly TimeProvider _clock;
++
++    public MatchService(
++        IRepository<Match> matches,
++        IRepository<MatchParticipant> participants,
++        IRepository<Player> players,
++        TimeProvider clock)
++    {
++        _matches = matches;
++        _participants = participants;
++        _players = players;
++        _clock = clock;
++    }
++
++    /// <summary>Tous les matchs non supprimés.</summary>
++    public Task<IReadOnlyList<Match>> ListAsync(CancellationToken cancellationToken = default) =>
++        _matches.ListAsync(cancellationToken: cancellationToken);
++
++    public Task<Match?> FindAsync(Guid id, CancellationToken cancellationToken = default) =>
++        _matches.GetAsync(id, cancellationToken: cancellationToken);
++
++    /// <summary>La saisie correspondant à un match existant, pour le modifier ; null s'il est introuvable.</summary>
++    public async Task<MatchInput?> GetInputAsync(Guid id, CancellationToken cancellationToken = default)
++    {
++        var match = await FindAsync(id, cancellationToken);
++        return match is null ? null : ToInput(match);
++    }
++
++    /// <summary>
++    /// La saisie préremplie pour dupliquer un match : mêmes sport, format, durée, heure et lieu, sept jours plus tard.
++    /// Les notes ne sont pas reprises. Rien n'est enregistré ; null si le match est introuvable.
++    /// </summary>
++    public async Task<MatchInput?> GetDuplicateInputAsync(Guid sourceId, CancellationToken cancellationToken = default)
++    {
++        var input = await GetInputAsync(sourceId, cancellationToken);
++        return input is null ? null : input with { Date = input.Date.AddDays(7), Notes = null };
++    }
++
++    /// <summary>Crée un match à l'état « Planifié ».</summary>
++    /// <param name="input">La saisie.</param>
++    /// <param name="duplicatedFrom">Match d'origine d'une duplication : ses joueurs non archivés sont repris.</param>
++    /// <param name="cancellationToken">Annulation.</param>
++    /// <exception cref="ArgumentException">Saisie invalide.</exception>
++    public async Task<Match> CreateAsync(
++        MatchInput input, Guid? duplicatedFrom = null, CancellationToken cancellationToken = default)
++    {
++        ArgumentNullException.ThrowIfNull(input);
++
++        var match = new Match();
++        Apply(match, input);
++        match = await _matches.AddAsync(match, cancellationToken);
++
++        if (duplicatedFrom is { } sourceId)
++        {
++            await CopyPlayersAsync(sourceId, match.Id, cancellationToken);
++        }
++
++        return match;
++    }
++
++    /// <exception cref="ArgumentException">Saisie invalide.</exception>
++    /// <exception cref="KeyNotFoundException">Le match n'existe pas ou est supprimé.</exception>
++    public async Task<Match> UpdateAsync(Guid id, MatchInput input, CancellationToken cancellationToken = default)
++    {
++        ArgumentNullException.ThrowIfNull(input);
++
++        var match = await FindAsync(id, cancellationToken)
++            ?? throw new KeyNotFoundException($"Aucun match actif avec l'identifiant {id}.");
++        Apply(match, input);
++        return await _matches.UpdateAsync(match, cancellationToken);
++    }
++
++    /// <summary>Suppression logique. Renvoie false si le match n'existe pas ou est déjà supprimé.</summary>
++    public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
++        _matches.DeleteAsync(id, cancellationToken);
++
++    private MatchInput ToInput(Match match)
++    {
++        var local = MatchSchedule.ToLocal(match.StartsAt, _clock.LocalTimeZone);
++        return new MatchInput(
++            DateOnly.FromDateTime(local),
++            TimeOnly.FromDateTime(local),
++            match.PlayersPerSide,
++            match.SportCode,
++            match.DurationMinutes,
++            match.Location,
++            match.Notes);
++    }
++
++    private async Task CopyPlayersAsync(Guid sourceId, Guid targetId, CancellationToken cancellationToken)
++    {
++        var available = (await _players.ListAsync(cancellationToken: cancellationToken))
++            .Where(player => !player.IsArchived)
++            .Select(player => player.Id)
++            .ToHashSet();
++        var participants = await _participants.ListAsync(cancellationToken: cancellationToken);
++
++        foreach (var playerId in participants
++            .Where(participant => participant.MatchId == sourceId && available.Contains(participant.PlayerId))
++            .Select(participant => participant.PlayerId)
++            .Distinct())
++        {
++            await _participants.AddAsync(
++                new MatchParticipant { MatchId = targetId, PlayerId = playerId }, cancellationToken);
++        }
++    }
++
++    private void Apply(Match match, MatchInput input)
++    {
++        if (input.Date.Year is < Match.MinYear or > Match.MaxYear)
++        {
++            throw new ArgumentException("La date est hors des limites.", nameof(input));
++        }
++
++        var sport = SportCatalog.Find(input.SportCode)
++            ?? throw new ArgumentException($"Sport inconnu : « {input.SportCode} ».", nameof(input));
++
++        if (input.PlayersPerSide is < Match.MinPlayersPerSide or > Match.MaxPlayersPerSide)
++        {
++            throw new ArgumentException(
++                $"Le format va de {Match.MinPlayersPerSide} à {Match.MaxPlayersPerSide} joueurs par équipe.",
++                nameof(input));
++        }
++
++        if (input.DurationMinutes is < Match.MinDurationMinutes or > Match.MaxDurationMinutes)
++        {
++            throw new ArgumentException(
++                $"La durée va de {Match.MinDurationMinutes} à {Match.MaxDurationMinutes} minutes.", nameof(input));
++        }
++
++        var location = Optional(input.Location, Match.MaxLocationLength, "Le lieu");
++        var notes = Optional(input.Notes, Match.MaxNotesLength, "La note");
++
++        match.StartsAt = MatchSchedule.At(input.Date, input.Time, _clock.LocalTimeZone);
++        match.SportCode = sport.Code;
++        match.PlayersPerSide = input.PlayersPerSide;
++        match.DurationMinutes = input.DurationMinutes;
++        match.Location = location;
++        match.Notes = notes;
++    }
++
++    /// <summary>Texte facultatif : null s'il est vide.</summary>
++    private static string? Optional(string? text, int maxLength, string label)
++    {
++        var trimmed = text?.Trim();
++        if (string.IsNullOrEmpty(trimmed))
++        {
++            return null;
++        }
++
++        return trimmed.Length <= maxLength
++            ? trimmed
++            : throw new ArgumentException($"{label} dépasse {maxLength} caractères.", nameof(text));
++    }
++}
+diff --git a/src/AlFariq.Application/NoUpcomingMatchQuery.cs b/src/AlFariq.Application/NoUpcomingMatchQuery.cs
+deleted file mode 100644
+index 27878bd..0000000
+--- a/src/AlFariq.Application/NoUpcomingMatchQuery.cs
++++ /dev/null
+@@ -1,11 +0,0 @@
+-namespace AlFariq.Application;
+-
+-/// <summary>
+-/// Implémentation utilisée tant que les matchs n'existent pas : il n'y a jamais de prochain match.
+-/// US-006 enregistrera à sa place une implémentation qui lit le dépôt des matchs.
+-/// </summary>
+-public sealed class NoUpcomingMatchQuery : IUpcomingMatchQuery
+-{
+-    public Task<UpcomingMatch?> GetNextAsync(CancellationToken cancellationToken = default) =>
+-        Task.FromResult<UpcomingMatch?>(null);
+-}
+diff --git a/src/AlFariq.Application/UpcomingMatchQuery.cs b/src/AlFariq.Application/UpcomingMatchQuery.cs
+new file mode 100644
+index 0000000..8d7803b
+--- /dev/null
++++ b/src/AlFariq.Application/UpcomingMatchQuery.cs
+@@ -0,0 +1,29 @@
++using AlFariq.Domain;
++
++namespace AlFariq.Application;
++
++/// <summary>Lit le prochain match (en cours ou à venir) dans le dépôt des matchs.</summary>
++public sealed class UpcomingMatchQuery : IUpcomingMatchQuery
++{
++    private readonly IRepository<Match> _matches;
++    private readonly TimeProvider _clock;
++
++    public UpcomingMatchQuery(IRepository<Match> matches, TimeProvider clock)
++    {
++        _matches = matches;
++        _clock = clock;
++    }
++
++    public async Task<UpcomingMatch?> GetNextAsync(CancellationToken cancellationToken = default)
++    {
++        var matches = await _matches.ListAsync(cancellationToken: cancellationToken);
++        var upcoming = MatchSchedule.Upcoming(matches, _clock.GetUtcNow());
++        if (upcoming.Count == 0)
++        {
++            return null;
++        }
++
++        var next = upcoming[0];
++        return new UpcomingMatch(next.Id, next.StartsAt, next.Location, next.PlayersPerSide);
++    }
++}
+diff --git a/src/AlFariq.Client.Core/Storage/LocalSchema.cs b/src/AlFariq.Client.Core/Storage/LocalSchema.cs
+index 2211489..8ff48e0 100644
+--- a/src/AlFariq.Client.Core/Storage/LocalSchema.cs
++++ b/src/AlFariq.Client.Core/Storage/LocalSchema.cs
+@@ -34,10 +34,17 @@ public static class LocalSchema
+     /// <summary>Répertoire de joueurs (US-004, complété par US-005).</summary>
+     public const string PlayersStore = "players";
+ 
++    /// <summary>Matchs (US-006).</summary>
++    public const string MatchesStore = "matches";
++
++    /// <summary>Joueurs inscrits aux matchs (US-006, complété par US-007).</summary>
++    public const string MatchParticipantsStore = "match_participants";
++
+     public static IReadOnlyList<SchemaMigration> Migrations { get; } =
+     [
+         new SchemaMigration(1, [new StoreDefinition(MetaStore)]),
+         new SchemaMigration(2, [new StoreDefinition(ProfilesStore), new StoreDefinition(PlayersStore)]),
++        new SchemaMigration(3, [new StoreDefinition(MatchesStore), new StoreDefinition(MatchParticipantsStore)]),
+     ];
+ 
+     public static int CurrentVersion => Migrations[Migrations.Count - 1].Version;
+diff --git a/src/AlFariq.Domain/Matches/Match.cs b/src/AlFariq.Domain/Matches/Match.cs
+new file mode 100644
+index 0000000..0e92288
+--- /dev/null
++++ b/src/AlFariq.Domain/Matches/Match.cs
+@@ -0,0 +1,47 @@
++using System.Text.Json.Serialization;
++
++namespace AlFariq.Domain;
++
++/// <summary>État enregistré d'un match, stocké en texte. US-012 ajoutera « Terminé » et « Annulé ».</summary>
++[JsonConverter(typeof(JsonStringEnumConverter<MatchStatus>))]
++public enum MatchStatus
++{
++    Planned,
++}
++
++/// <summary>Rencontre planifiée (US-006).</summary>
++public sealed class Match : Entity
++{
++    public const int MinPlayersPerSide = 1;
++    public const int MaxPlayersPerSide = 30;
++    public const int MinDurationMinutes = 10;
++    public const int MaxDurationMinutes = 300;
++    public const int DefaultDurationMinutes = 60;
++    public const int MaxLocationLength = 100;
++    public const int MaxNotesLength = 500;
++    public const int MinYear = 2000;
++    public const int MaxYear = 2100;
++
++    /// <summary>Début, avec le décalage UTC du lieu de saisie.</summary>
++    public DateTimeOffset StartsAt { get; set; }
++
++    public int DurationMinutes { get; set; } = DefaultDurationMinutes;
++
++    /// <summary>Code de <see cref="SportCatalog"/>.</summary>
++    public string SportCode { get; set; } = SportCatalog.FootballCode;
++
++    /// <summary>Format : nombre de joueurs par équipe.</summary>
++    public int PlayersPerSide { get; set; }
++
++    public string? Location { get; set; }
++
++    public string? Notes { get; set; }
++
++    public MatchStatus Status { get; set; } = MatchStatus.Planned;
++
++    [JsonIgnore]
++    public DateTimeOffset EndsAt => StartsAt.AddMinutes(DurationMinutes);
++
++    /// <summary>Un match en cours n'est pas encore passé.</summary>
++    public bool IsOver(DateTimeOffset now) => EndsAt <= now;
++}
+diff --git a/src/AlFariq.Domain/Matches/MatchParticipant.cs b/src/AlFariq.Domain/Matches/MatchParticipant.cs
+new file mode 100644
+index 0000000..46fa735
+--- /dev/null
++++ b/src/AlFariq.Domain/Matches/MatchParticipant.cs
+@@ -0,0 +1,12 @@
++namespace AlFariq.Domain;
++
++/// <summary>
++/// Un joueur inscrit à un match. Entité séparée pour limiter les conflits de synchronisation.
++/// US-007 ajoutera la sélection ; en attendant, seule la duplication d'un match recopie ces inscriptions.
++/// </summary>
++public sealed class MatchParticipant : Entity
++{
++    public Guid MatchId { get; set; }
++
++    public Guid PlayerId { get; set; }
++}
+diff --git a/src/AlFariq.Domain/Matches/MatchSchedule.cs b/src/AlFariq.Domain/Matches/MatchSchedule.cs
+new file mode 100644
+index 0000000..aa2c6be
+--- /dev/null
++++ b/src/AlFariq.Domain/Matches/MatchSchedule.cs
+@@ -0,0 +1,30 @@
++namespace AlFariq.Domain;
++
++/// <summary>Règles sur les dates des matchs.</summary>
++public static class MatchSchedule
++{
++    /// <summary>L'instant correspondant à une date et une heure saisies dans un fuseau horaire.</summary>
++    public static DateTimeOffset At(DateOnly date, TimeOnly time, TimeZoneInfo zone)
++    {
++        var local = date.ToDateTime(time);
++        return new DateTimeOffset(local, zone.GetUtcOffset(local));
++    }
++
++    /// <summary>La date et l'heure d'un instant, vues d'un fuseau horaire.</summary>
++    public static DateTime ToLocal(DateTimeOffset instant, TimeZoneInfo zone) =>
++        TimeZoneInfo.ConvertTime(instant, zone).DateTime;
++
++    /// <summary>Les matchs en cours ou à venir, le plus proche d'abord.</summary>
++    public static IReadOnlyList<Match> Upcoming(IEnumerable<Match> matches, DateTimeOffset now) =>
++        matches.Where(match => !match.IsOver(now))
++            .OrderBy(match => match.StartsAt)
++            .ThenBy(match => match.CreatedAt)
++            .ToList();
++
++    /// <summary>Les matchs passés, le plus récent d'abord.</summary>
++    public static IReadOnlyList<Match> Past(IEnumerable<Match> matches, DateTimeOffset now) =>
++        matches.Where(match => match.IsOver(now))
++            .OrderByDescending(match => match.StartsAt)
++            .ThenByDescending(match => match.CreatedAt)
++            .ToList();
++}
+diff --git a/src/AlFariq.Domain/Releases/changelog.json b/src/AlFariq.Domain/Releases/changelog.json
+index 2319a7f..3ed82bd 100644
+--- a/src/AlFariq.Domain/Releases/changelog.json
++++ b/src/AlFariq.Domain/Releases/changelog.json
+@@ -1,5 +1,27 @@
+ {
+   "entries": [
++    {
++      "version": "0.7.0",
++      "date": "2026-11-26",
++      "changes": [
++        {
++          "type": "added",
++          "text": {
++            "fr": "Crée un match : date, heure, sport, format et durée, avec un lieu et des notes facultatifs.",
++            "en": "Create a match: date, time, sport, format and duration, with an optional location and notes.",
++            "ar": "أنشئ مباراة: التاريخ والوقت والرياضة وعدد اللاعبين والمدة، مع مكان وملاحظات اختياريين."
++          }
++        },
++        {
++          "type": "added",
++          "text": {
++            "fr": "Modifie, duplique ou supprime un match ; le prochain s'affiche à l'accueil.",
++            "en": "Edit, duplicate or delete a match; the next one appears on the home screen.",
++            "ar": "عدّل مباراة أو انسخها أو احذفها، وتظهر المباراة القادمة في الصفحة الرئيسية."
++          }
++        }
++      ]
++    },
+     {
+       "version": "0.6.0",
+       "date": "2026-11-25",
+diff --git a/src/AlFariq.Domain/Sports/Sport.cs b/src/AlFariq.Domain/Sports/Sport.cs
+index d9675c9..9ff5238 100644
+--- a/src/AlFariq.Domain/Sports/Sport.cs
++++ b/src/AlFariq.Domain/Sports/Sport.cs
+@@ -1,9 +1,12 @@
+ namespace AlFariq.Domain;
+ 
+-/// <summary>Un sport du catalogue : son code et les postes qu'on peut y préférer.</summary>
++/// <summary>Un sport du catalogue : son code, les postes qu'on peut y préférer et ses formats courants.</summary>
+ /// <param name="Code">Identifiant stable, enregistré avec les données (ne jamais le renommer).</param>
+ /// <param name="PositionCodes">Codes de postes, préfixés par le sport (« football.goalkeeper »).</param>
+-public sealed record Sport(string Code, IReadOnlyList<string> PositionCodes)
++/// <param name="Formats">Nombres de joueurs par équipe proposés ; le premier est le format par défaut.</param>
++public sealed record Sport(string Code, IReadOnlyList<string> PositionCodes, IReadOnlyList<int> Formats)
+ {
++    public int DefaultPlayersPerSide => Formats[0];
++
+     public bool HasPosition(string? positionCode) => positionCode is not null && PositionCodes.Contains(positionCode);
+ }
+diff --git a/src/AlFariq.Domain/Sports/SportCatalog.cs b/src/AlFariq.Domain/Sports/SportCatalog.cs
+index 8b7fa6f..8e24d77 100644
+--- a/src/AlFariq.Domain/Sports/SportCatalog.cs
++++ b/src/AlFariq.Domain/Sports/SportCatalog.cs
+@@ -11,11 +11,11 @@ public static class SportCatalog
+     /// <summary>Les sports proposés ; le premier est le sport par défaut.</summary>
+     public static IReadOnlyList<Sport> All { get; } =
+     [
+-        Create(FootballCode, "goalkeeper", "defender", "midfielder", "forward"),
+-        Create("futsal", "goalkeeper", "defender", "winger", "pivot"),
+-        Create("basketball", "guard", "forward", "center"),
+-        Create("handball", "goalkeeper", "winger", "back", "pivot"),
+-        Create("volleyball", "setter", "outside", "opposite", "middle", "libero"),
++        Create(FootballCode, [5, 7, 11], "goalkeeper", "defender", "midfielder", "forward"),
++        Create("futsal", [5], "goalkeeper", "defender", "winger", "pivot"),
++        Create("basketball", [5, 3], "guard", "forward", "center"),
++        Create("handball", [7], "goalkeeper", "winger", "back", "pivot"),
++        Create("volleyball", [6, 4, 2], "setter", "outside", "opposite", "middle", "libero"),
+     ];
+ 
+     public static Sport Default => All[0];
+@@ -26,6 +26,6 @@ public static class SportCatalog
+     /// <summary>Vrai si ce poste existe dans l'un des sports du catalogue.</summary>
+     public static bool IsKnownPosition(string? positionCode) => All.Any(sport => sport.HasPosition(positionCode));
+ 
+-    private static Sport Create(string code, params string[] positions) =>
+-        new(code, positions.Select(position => $"{code}.{position}").ToArray());
++    private static Sport Create(string code, int[] formats, params string[] positions) =>
++        new(code, positions.Select(position => $"{code}.{position}").ToArray(), formats);
+ }
+diff --git a/src/AlFariq.UI/Components/NextMatchCard.razor b/src/AlFariq.UI/Components/NextMatchCard.razor
+index bfb874b..4426d8e 100644
+--- a/src/AlFariq.UI/Components/NextMatchCard.razor
++++ b/src/AlFariq.UI/Components/NextMatchCard.razor
+@@ -14,7 +14,7 @@
+     {
+         <p class="next-match__location" dir="auto">@Match.Location</p>
+     }
+-    <a class="button button--small button--ghost" href="matchs">@L["Home_SeeMatches"]</a>
++    <a class="button button--small button--ghost" href="matchs/@Match.Id">@L["Home_SeeMatch"]</a>
+ </article>
+ 
+ @code {
+diff --git a/src/AlFariq.UI/Pages/Home.razor b/src/AlFariq.UI/Pages/Home.razor
+index c11576b..6715b9e 100644
+--- a/src/AlFariq.UI/Pages/Home.razor
++++ b/src/AlFariq.UI/Pages/Home.razor
+@@ -55,10 +55,23 @@
+     protected override async Task OnInitializedAsync()
+     {
+         await LoadProfileAsync();
+-        _nextMatch = await UpcomingMatches.GetNextAsync();
++        await LoadNextMatchAsync();
+         _loaded = true;
+     }
+ 
++    private async Task LoadNextMatchAsync()
++    {
++        try
++        {
++            _nextMatch = await UpcomingMatches.GetNextAsync();
++        }
++        catch (Exception exception)
++        {
++            // L'accueil reste utilisable ; l'écran des matchs explique le problème.
++            Console.Error.WriteLine(exception);
++        }
++    }
++
+     private async Task LoadProfileAsync()
+     {
+         try
+diff --git a/src/AlFariq.UI/Pages/MatchDetails.razor b/src/AlFariq.UI/Pages/MatchDetails.razor
+new file mode 100644
+index 0000000..f3d68f7
+--- /dev/null
++++ b/src/AlFariq.UI/Pages/MatchDetails.razor
+@@ -0,0 +1,147 @@
++@page "/matchs/{Id:guid}"
++@using AlFariq.Application
++@inject IStringLocalizer<Strings> L
++@inject MatchService Service
++@inject TimeProvider Clock
++@inject NavigationManager Navigation
++
++<PageTitle>@L["Match_Title"] · @L["App_Name"]</PageTitle>
++
++<section class="page">
++    <h1>@L["Match_Title"]</h1>
++
++    @if (_loadFailed)
++    {
++        <div class="card" role="alert">
++            <p>@L["Storage_Unavailable"]</p>
++        </div>
++    }
++    else if (_notFound)
++    {
++        <div class="card card--empty">
++            <p>@L["Match_NotFound"]</p>
++        </div>
++    }
++    else if (_match is not null)
++    {
++        var start = MatchSchedule.ToLocal(_match.StartsAt, Clock.LocalTimeZone);
++
++        <article class="card">
++            <p class="next-match__date">@L["Home_MatchDate", MatchLabels.LongDate(start), MatchLabels.Time(start)]</p>
++            <p><span class="badge">@L["Match_StatusPlanned"]</span></p>
++            <dl class="facts">
++                <dt>@L["Match_Sport"]</dt>
++                <dd>@L[SportLabels.SportKey(_match.SportCode)]</dd>
++                <dt>@L["Match_Format"]</dt>
++                <dd>@L["Home_MatchFormat", _match.PlayersPerSide]</dd>
++                <dt>@L["Match_Duration"]</dt>
++                <dd>@L["Match_DurationValue", _match.DurationMinutes]</dd>
++                @if (_match.Location is not null)
++                {
++                    <dt>@L["Match_LocationLabel"]</dt>
++                    <dd class="user-text" dir="auto">@_match.Location</dd>
++                }
++                @if (_match.Notes is not null)
++                {
++                    <dt>@L["Match_NotesLabel"]</dt>
++                    <dd class="user-text" dir="auto">@_match.Notes</dd>
++                }
++            </dl>
++        </article>
++
++        <div class="actions">
++            <a class="button" href="matchs/@_match.Id/modifier">@L["Match_Edit"]</a>
++            <a class="button button--ghost" href="matchs/@_match.Id/dupliquer">@L["Match_Duplicate"]</a>
++            @if (!_confirmingDeletion)
++            {
++                <button type="button" class="button button--ghost button--danger" @onclick="() => _confirmingDeletion = true">
++                    @L["Match_Delete"]
++                </button>
++            }
++        </div>
++
++        if (_confirmingDeletion)
++        {
++            <div class="card" role="alert">
++                <p>@L["Match_DeleteConfirm"]</p>
++                <div class="actions">
++                    <button type="button" class="button button--ghost button--danger" disabled="@_deleting" @onclick="DeleteAsync">
++                        @L["Match_DeleteYes"]
++                    </button>
++                    <button type="button" class="button button--ghost" disabled="@_deleting" @onclick="() => _confirmingDeletion = false">
++                        @L["Match_Cancel"]
++                    </button>
++                </div>
++            </div>
++        }
++
++        if (_deleteFailed)
++        {
++            <p class="field__error" role="alert">@L["Match_DeleteFailed"]</p>
++        }
++    }
++
++    <div class="actions">
++        <a class="button button--ghost" href="matchs">@L["Match_Back"]</a>
++    </div>
++</section>
++
++@code {
++    private Match? _match;
++    private Guid _loadedId;
++    private bool _loadFailed;
++    private bool _notFound;
++    private bool _confirmingDeletion;
++    private bool _deleting;
++    private bool _deleteFailed;
++
++    [Parameter] public Guid Id { get; set; }
++
++    protected override async Task OnParametersSetAsync()
++    {
++        if (_loadedId == Id)
++        {
++            return;
++        }
++
++        _loadedId = Id;
++        _match = null;
++        _loadFailed = _notFound = _confirmingDeletion = _deleteFailed = false;
++
++        try
++        {
++            _match = await Service.FindAsync(Id);
++            _notFound = _match is null;
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _loadFailed = true;
++        }
++    }
++
++    private async Task DeleteAsync()
++    {
++        if (_deleting)
++        {
++            return;
++        }
++
++        _deleting = true;
++        _deleteFailed = false;
++        try
++        {
++            await Service.DeleteAsync(Id);
++            Navigation.NavigateTo("matchs", replace: true);
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _deleteFailed = true;
++        }
++        finally
++        {
++            _deleting = false;
++        }
++    }
++}
+diff --git a/src/AlFariq.UI/Pages/MatchEdit.razor b/src/AlFariq.UI/Pages/MatchEdit.razor
+new file mode 100644
+index 0000000..a9ca34b
+--- /dev/null
++++ b/src/AlFariq.UI/Pages/MatchEdit.razor
+@@ -0,0 +1,294 @@
++@page "/matchs/nouveau"
++@page "/matchs/{Id:guid}/modifier"
++@page "/matchs/{SourceId:guid}/dupliquer"
++@using System.Globalization
++@using AlFariq.Application
++@inject IStringLocalizer<Strings> L
++@inject MatchService Service
++@inject ProfileService Profiles
++@inject IStoragePersistence StoragePersistence
++@inject TimeProvider Clock
++@inject NavigationManager Navigation
++
++<PageTitle>@Title · @L["App_Name"]</PageTitle>
++
++<section class="page">
++    <h1>@Title</h1>
++
++    @if (_loadFailed)
++    {
++        <div class="card" role="alert">
++            <p>@L["Storage_Unavailable"]</p>
++        </div>
++    }
++    else if (_notFound)
++    {
++        <div class="card card--empty">
++            <p>@L["Match_NotFound"]</p>
++        </div>
++    }
++    else if (_loaded)
++    {
++        <form class="card" novalidate @onsubmit="SaveAsync" @onsubmit:preventDefault>
++            <div class="field">
++                <label for="match-date">@L["Match_Date"]</label>
++                <input id="match-date" type="date" aria-required="true"
++                       aria-invalid="@(_dateError ? "true" : "false")"
++                       value="@_date" @onchange="e => _date = e.Value as string ?? string.Empty" />
++                @if (_dateError)
++                {
++                    <p class="field__error" role="alert">@L["Match_DateRequired"]</p>
++                }
++                else if (IsPast)
++                {
++                    <p class="field__warning" role="status">@L["Match_PastDate"]</p>
++                }
++            </div>
++
++            <div class="field">
++                <label for="match-time">@L["Match_Time"]</label>
++                <input id="match-time" type="time" aria-required="true"
++                       aria-invalid="@(_timeError ? "true" : "false")"
++                       value="@_time" @onchange="e => _time = e.Value as string ?? string.Empty" />
++                @if (_timeError)
++                {
++                    <p class="field__error" role="alert">@L["Match_TimeRequired"]</p>
++                }
++            </div>
++
++            <div class="field">
++                <label for="match-sport">@L["Match_Sport"]</label>
++                <select id="match-sport" @bind="_sportCode" @bind:after="ApplySportFormat">
++                    @foreach (var sport in SportCatalog.All)
++                    {
++                        <option @key="sport.Code" value="@sport.Code">@L[SportLabels.SportKey(sport.Code)]</option>
++                    }
++                </select>
++            </div>
++
++            <div class="field">
++                <label for="match-format">@L["Match_Format"]</label>
++                <div class="chips">
++                    @foreach (var format in CurrentSport.Formats)
++                    {
++                        var value = format.ToString(CultureInfo.InvariantCulture);
++                        <button @key="format" type="button" class="chip" aria-pressed="@(_playersPerSide == value ? "true" : "false")"
++                                @onclick="() => _playersPerSide = value">
++                            @L["Home_MatchFormat", format]
++                        </button>
++                    }
++                </div>
++                <input id="match-format" type="number" inputmode="numeric" aria-required="true"
++                       min="@Match.MinPlayersPerSide" max="@Match.MaxPlayersPerSide"
++                       aria-invalid="@(_formatError ? "true" : "false")"
++                       value="@_playersPerSide" @oninput="e => _playersPerSide = e.Value as string ?? string.Empty" />
++                @if (_formatError)
++                {
++                    <p class="field__error" role="alert">@L["Match_FormatInvalid", Match.MinPlayersPerSide, Match.MaxPlayersPerSide]</p>
++                }
++            </div>
++
++            <div class="field">
++                <label for="match-duration">@L["Match_Duration"]</label>
++                <input id="match-duration" type="number" inputmode="numeric" step="5"
++                       min="@Match.MinDurationMinutes" max="@Match.MaxDurationMinutes"
++                       aria-invalid="@(_durationError ? "true" : "false")"
++                       value="@_duration" @oninput="e => _duration = e.Value as string ?? string.Empty" />
++                @if (_durationError)
++                {
++                    <p class="field__error" role="alert">@L["Match_DurationInvalid", Match.MinDurationMinutes, Match.MaxDurationMinutes]</p>
++                }
++            </div>
++
++            <div class="field">
++                <label for="match-location">@L["Match_Location"]</label>
++                <input id="match-location" type="text" dir="auto" autocomplete="off" maxlength="@Match.MaxLocationLength"
++                       @bind="_location" @bind:event="oninput" />
++            </div>
++
++            <div class="field">
++                <label for="match-notes">@L["Match_Notes"]</label>
++                <textarea id="match-notes" dir="auto" rows="3" maxlength="@Match.MaxNotesLength"
++                          @bind="_notes" @bind:event="oninput"></textarea>
++            </div>
++
++            <div class="actions">
++                <button type="submit" class="button" disabled="@_saving">
++                    @(Id is null ? L["Match_Create"] : L["Profile_Save"])
++                </button>
++            </div>
++
++            @if (_saveFailed)
++            {
++                <p class="field__error" role="alert">@L["Match_SaveFailed"]</p>
++            }
++        </form>
++    }
++
++    <div class="actions">
++        <a class="button button--ghost" href="@BackLink">@L["Match_Cancel"]</a>
++    </div>
++</section>
++
++@code {
++    private static readonly string[] TimeFormats = ["HH:mm", "HH:mm:ss", "HH:mm:ss.fff"];
++
++    private (Guid? Id, Guid? SourceId)? _loadedFor;
++    private string _date = "";
++    private string _time = "";
++    private string _sportCode = SportCatalog.FootballCode;
++    private string _playersPerSide = "";
++    private string _duration = "";
++    private string _location = "";
++    private string _notes = "";
++    private bool _loaded;
++    private bool _loadFailed;
++    private bool _notFound;
++    private bool _saving;
++    private bool _saveFailed;
++    private bool _dateError;
++    private bool _timeError;
++    private bool _formatError;
++    private bool _durationError;
++
++    /// <summary>Match à modifier ; null pour une création ou une duplication.</summary>
++    [Parameter] public Guid? Id { get; set; }
++
++    /// <summary>Match à dupliquer.</summary>
++    [Parameter] public Guid? SourceId { get; set; }
++
++    private string Title =>
++        Id is not null ? L["Match_EditTitle"] : SourceId is not null ? L["Match_DuplicateTitle"] : L["Match_NewTitle"];
++
++    private string BackLink => (Id ?? SourceId) is { } origin ? $"matchs/{origin}" : "matchs";
++
++    private Sport CurrentSport => SportCatalog.Find(_sportCode) ?? SportCatalog.Default;
++
++    private bool IsPast =>
++        TryGetDate(out var date)
++        && TryGetTime(out var time)
++        && MatchSchedule.At(date, time, Clock.LocalTimeZone) < Clock.GetUtcNow();
++
++    protected override async Task OnParametersSetAsync()
++    {
++        // Ne pas recharger (et écraser la saisie) si la page n'a pas changé de match.
++        if (_loadedFor == (Id, SourceId))
++        {
++            return;
++        }
++
++        _loadedFor = (Id, SourceId);
++        _loaded = _loadFailed = _notFound = _saveFailed = false;
++        _dateError = _timeError = _formatError = _durationError = false;
++
++        try
++        {
++            if ((Id ?? SourceId) is not null)
++            {
++                var input = Id is { } id
++                    ? await Service.GetInputAsync(id)
++                    : await Service.GetDuplicateInputAsync(SourceId!.Value);
++                if (input is null)
++                {
++                    _notFound = true;
++                    return;
++                }
++
++                Fill(input);
++            }
++            else
++            {
++                var profile = await Profiles.GetAsync();
++                var sport = SportCatalog.Find(profile?.SportCode) ?? SportCatalog.Default;
++                _sportCode = sport.Code;
++                _playersPerSide = sport.DefaultPlayersPerSide.ToString(CultureInfo.InvariantCulture);
++                _duration = Match.DefaultDurationMinutes.ToString(CultureInfo.InvariantCulture);
++                _date = _time = _location = _notes = "";
++            }
++
++            _loaded = true;
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _loadFailed = true;
++        }
++    }
++
++    private void Fill(MatchInput input)
++    {
++        _date = input.Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
++        _time = input.Time.ToString("HH:mm", CultureInfo.InvariantCulture);
++        _sportCode = input.SportCode;
++        _playersPerSide = input.PlayersPerSide.ToString(CultureInfo.InvariantCulture);
++        _duration = input.DurationMinutes.ToString(CultureInfo.InvariantCulture);
++        _location = input.Location ?? "";
++        _notes = input.Notes ?? "";
++    }
++
++    /// <summary>Au changement de sport, un format qui n'y est pas courant revient au format par défaut.</summary>
++    private void ApplySportFormat()
++    {
++        if (!TryGetNumber(_playersPerSide, out var format) || !CurrentSport.Formats.Contains(format))
++        {
++            _playersPerSide = CurrentSport.DefaultPlayersPerSide.ToString(CultureInfo.InvariantCulture);
++        }
++    }
++
++    private bool TryGetDate(out DateOnly date) =>
++        DateOnly.TryParseExact(_date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out date)
++        && date.Year is >= Match.MinYear and <= Match.MaxYear;
++
++    private bool TryGetTime(out TimeOnly time) =>
++        TimeOnly.TryParseExact(_time, TimeFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out time);
++
++    private static bool TryGetNumber(string text, out int number) =>
++        int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out number);
++
++    private async Task SaveAsync()
++    {
++        if (_saving)
++        {
++            return;
++        }
++
++        _saveFailed = false;
++        _dateError = !TryGetDate(out var date);
++        _timeError = !TryGetTime(out var time);
++        _formatError = !TryGetNumber(_playersPerSide, out var format)
++            || format is < Match.MinPlayersPerSide or > Match.MaxPlayersPerSide;
++
++        // Durée laissée vide : durée par défaut.
++        var duration = Match.DefaultDurationMinutes;
++        _durationError = !string.IsNullOrWhiteSpace(_duration)
++            && (!TryGetNumber(_duration, out duration)
++                || duration is < Match.MinDurationMinutes or > Match.MaxDurationMinutes);
++
++        if (_dateError || _timeError || _formatError || _durationError)
++        {
++            return;
++        }
++
++        _saving = true;
++        try
++        {
++            var input = new MatchInput(date, time, format, _sportCode, duration, _location, _notes);
++            var saved = Id is { } id
++                ? await Service.UpdateAsync(id, input)
++                : await Service.CreateAsync(input, duplicatedFrom: SourceId);
++
++            // US-002 : des données viennent d'être saisies, on redemande au navigateur de les conserver.
++            await StoragePersistence.RequestAsync();
++            Navigation.NavigateTo($"matchs/{saved.Id}", replace: true);
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _saveFailed = true;
++        }
++        finally
++        {
++            _saving = false;
++        }
++    }
++}
+diff --git a/src/AlFariq.UI/Pages/Matches.razor b/src/AlFariq.UI/Pages/Matches.razor
+index f7f4dad..ad33b84 100644
+--- a/src/AlFariq.UI/Pages/Matches.razor
++++ b/src/AlFariq.UI/Pages/Matches.razor
+@@ -1,11 +1,93 @@
+ @page "/matchs"
++@using AlFariq.Application
+ @inject IStringLocalizer<Strings> L
++@inject MatchService Service
++@inject TimeProvider Clock
+ 
+ <PageTitle>@L["Matches_Title"] · @L["App_Name"]</PageTitle>
+ 
+ <section class="page">
+     <h1>@L["Matches_Title"]</h1>
+-    <div class="card card--empty">
+-        <p>@L["Section_ComingSoon"]</p>
+-    </div>
++
++    @if (_loadFailed)
++    {
++        <div class="card" role="alert">
++            <p>@L["Storage_Unavailable"]</p>
++        </div>
++    }
++    else if (_matches is not null)
++    {
++        <div class="actions">
++            <a class="button" href="matchs/nouveau">@L["Home_CreateMatch"]</a>
++        </div>
++
++        if (_matches.Count == 0)
++        {
++            <div class="card card--empty">
++                <p>@L["Matches_Empty"]</p>
++            </div>
++        }
++        else
++        {
++            var now = Clock.GetUtcNow();
++            var upcoming = MatchSchedule.Upcoming(_matches, now);
++            var past = MatchSchedule.Past(_matches, now);
++            var visible = _showPast ? past : upcoming;
++
++            <fieldset class="segmented list-filter">
++                <legend class="sr-only">@L["Matches_Filter"]</legend>
++                <label class="segmented__option">
++                    <input type="radio" name="matches-period" checked="@(!_showPast)" @onchange="() => _showPast = false" />
++                    <span>@L["Matches_Upcoming", upcoming.Count]</span>
++                </label>
++                <label class="segmented__option">
++                    <input type="radio" name="matches-period" checked="@_showPast" @onchange="() => _showPast = true" />
++                    <span>@L["Matches_Past", past.Count]</span>
++                </label>
++            </fieldset>
++
++            if (visible.Count == 0)
++            {
++                <p class="hint list-none" role="status">@(_showPast ? L["Matches_NoPast"] : L["Matches_NoUpcoming"])</p>
++            }
++            else
++            {
++                <ul class="card match-list">
++                    @foreach (var match in visible)
++                    {
++                        var start = MatchSchedule.ToLocal(match.StartsAt, Clock.LocalTimeZone);
++                        <li @key="match.Id">
++                            <a class="match-list__link" href="matchs/@match.Id">
++                                <span class="match-list__date">@L["Home_MatchDate", MatchLabels.LongDate(start), MatchLabels.Time(start)]</span>
++                                <span class="match-list__details">@L[SportLabels.SportKey(match.SportCode)] · @L["Home_MatchFormat", match.PlayersPerSide]</span>
++                                @if (match.Location is not null)
++                                {
++                                    <span class="match-list__details" dir="auto">@match.Location</span>
++                                }
++                            </a>
++                        </li>
++                    }
++                </ul>
++            }
++        }
++    }
+ </section>
++
++@code {
++    private IReadOnlyList<Match>? _matches;
++    private bool _showPast;
++    private bool _loadFailed;
++
++    protected override async Task OnInitializedAsync()
++    {
++        try
++        {
++            _matches = await Service.ListAsync();
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _loadFailed = true;
++        }
++    }
++}
+diff --git a/src/AlFariq.UI/Pages/NewMatch.razor b/src/AlFariq.UI/Pages/NewMatch.razor
+deleted file mode 100644
+index 6e744cc..0000000
+--- a/src/AlFariq.UI/Pages/NewMatch.razor
++++ /dev/null
+@@ -1,15 +0,0 @@
+-@page "/matchs/nouveau"
+-@inject IStringLocalizer<Strings> L
+-
+-<PageTitle>@L["NewMatch_Title"] · @L["App_Name"]</PageTitle>
+-
+-@* Page d'attente : le formulaire de création arrive avec US-006. *@
+-<section class="page">
+-    <h1>@L["NewMatch_Title"]</h1>
+-    <div class="card card--empty">
+-        <p>@L["Section_ComingSoon"]</p>
+-    </div>
+-    <div class="actions">
+-        <a class="button button--ghost" href="">@L["NotFound_Back"]</a>
+-    </div>
+-</section>
+diff --git a/src/AlFariq.UI/Resources/MatchLabels.cs b/src/AlFariq.UI/Resources/MatchLabels.cs
+new file mode 100644
+index 0000000..4d4b50c
+--- /dev/null
++++ b/src/AlFariq.UI/Resources/MatchLabels.cs
+@@ -0,0 +1,11 @@
++using System.Globalization;
++
++namespace AlFariq.UI.Resources;
++
++/// <summary>Mise en forme des dates de match dans la langue d'affichage.</summary>
++public static class MatchLabels
++{
++    public static string LongDate(DateTime local) => local.ToString("dddd d MMMM yyyy", CultureInfo.CurrentUICulture);
++
++    public static string Time(DateTime local) => local.ToString("HH:mm", CultureInfo.CurrentUICulture);
++}
+diff --git a/src/AlFariq.UI/Resources/Strings.resx b/src/AlFariq.UI/Resources/Strings.resx
+index 1b2f9ff..fa80cf6 100644
+--- a/src/AlFariq.UI/Resources/Strings.resx
++++ b/src/AlFariq.UI/Resources/Strings.resx
+@@ -27,13 +27,13 @@
+   <data name="Home_StepPlayers" xml:space="preserve"><value>Ajoute tes joueurs.</value></data>
+   <data name="Home_StepMatch" xml:space="preserve"><value>Crée un match : date, heure et format.</value></data>
+   <data name="Home_StepTeams" xml:space="preserve"><value>Compose les équipes et partage la composition.</value></data>
+-  <data name="Home_EmptyHint" xml:space="preserve"><value>La création de match et les équipes arrivent dans les prochaines versions.</value></data>
++  <data name="Home_EmptyHint" xml:space="preserve"><value>La composition des équipes arrive dans les prochaines versions.</value></data>
+   <data name="Home_CreateMatch" xml:space="preserve"><value>Créer un match</value></data>
+   <data name="Home_Players" xml:space="preserve"><value>Mes joueurs</value></data>
+   <data name="Home_NextMatch" xml:space="preserve"><value>Prochain match</value></data>
+   <data name="Home_MatchDate" xml:space="preserve"><value>{0} à {1}</value></data>
+   <data name="Home_MatchFormat" xml:space="preserve"><value>{0} contre {0}</value></data>
+-  <data name="Home_SeeMatches" xml:space="preserve"><value>Voir les matchs</value></data>
++  <data name="Home_SeeMatch" xml:space="preserve"><value>Voir le match</value></data>
+   <data name="Home_Greeting" xml:space="preserve"><value>Bonjour {0}</value></data>
+   <data name="Home_ProfileTitle" xml:space="preserve"><value>Crée ton profil</value></data>
+   <data name="Home_ProfileHint" xml:space="preserve"><value>Un pseudo suffit, sans compte.</value></data>
+@@ -79,9 +79,45 @@
+   <data name="Position_volleyball_middle" xml:space="preserve"><value>Central</value></data>
+   <data name="Position_volleyball_libero" xml:space="preserve"><value>Libéro</value></data>
+ 
+-  <data name="NewMatch_Title" xml:space="preserve"><value>Nouveau match</value></data>
++  <data name="Match_Title" xml:space="preserve"><value>Match</value></data>
++  <data name="Match_NewTitle" xml:space="preserve"><value>Nouveau match</value></data>
++  <data name="Match_EditTitle" xml:space="preserve"><value>Modifier le match</value></data>
++  <data name="Match_DuplicateTitle" xml:space="preserve"><value>Dupliquer le match</value></data>
++  <data name="Match_Date" xml:space="preserve"><value>Date</value></data>
++  <data name="Match_Time" xml:space="preserve"><value>Heure</value></data>
++  <data name="Match_Sport" xml:space="preserve"><value>Sport</value></data>
++  <data name="Match_Format" xml:space="preserve"><value>Joueurs par équipe</value></data>
++  <data name="Match_Duration" xml:space="preserve"><value>Durée (minutes)</value></data>
++  <data name="Match_Location" xml:space="preserve"><value>Lieu (facultatif)</value></data>
++  <data name="Match_Notes" xml:space="preserve"><value>Notes (facultatif)</value></data>
++  <data name="Match_LocationLabel" xml:space="preserve"><value>Lieu</value></data>
++  <data name="Match_NotesLabel" xml:space="preserve"><value>Notes</value></data>
++  <data name="Match_DateRequired" xml:space="preserve"><value>Indique une date valide.</value></data>
++  <data name="Match_TimeRequired" xml:space="preserve"><value>Indique l'heure.</value></data>
++  <data name="Match_FormatInvalid" xml:space="preserve"><value>Indique un nombre de joueurs de {0} à {1}.</value></data>
++  <data name="Match_DurationInvalid" xml:space="preserve"><value>Indique une durée de {0} à {1} minutes.</value></data>
++  <data name="Match_PastDate" xml:space="preserve"><value>Cette date est déjà passée.</value></data>
++  <data name="Match_Create" xml:space="preserve"><value>Créer le match</value></data>
++  <data name="Match_SaveFailed" xml:space="preserve"><value>L'enregistrement a échoué. Réessaie.</value></data>
++  <data name="Match_StatusPlanned" xml:space="preserve"><value>Planifié</value></data>
++  <data name="Match_DurationValue" xml:space="preserve"><value>{0} min</value></data>
++  <data name="Match_Edit" xml:space="preserve"><value>Modifier</value></data>
++  <data name="Match_Duplicate" xml:space="preserve"><value>Dupliquer</value></data>
++  <data name="Match_Delete" xml:space="preserve"><value>Supprimer</value></data>
++  <data name="Match_DeleteConfirm" xml:space="preserve"><value>Supprimer ce match ? Il disparaîtra de tes listes.</value></data>
++  <data name="Match_DeleteYes" xml:space="preserve"><value>Oui, supprimer</value></data>
++  <data name="Match_Cancel" xml:space="preserve"><value>Annuler</value></data>
++  <data name="Match_DeleteFailed" xml:space="preserve"><value>La suppression a échoué. Réessaie.</value></data>
++  <data name="Match_NotFound" xml:space="preserve"><value>Ce match est introuvable.</value></data>
++  <data name="Match_Back" xml:space="preserve"><value>Retour aux matchs</value></data>
+ 
+   <data name="Matches_Title" xml:space="preserve"><value>Matchs</value></data>
++  <data name="Matches_Upcoming" xml:space="preserve"><value>À venir ({0})</value></data>
++  <data name="Matches_Past" xml:space="preserve"><value>Passés ({0})</value></data>
++  <data name="Matches_Filter" xml:space="preserve"><value>Matchs affichés</value></data>
++  <data name="Matches_Empty" xml:space="preserve"><value>Aucun match pour l'instant.</value></data>
++  <data name="Matches_NoUpcoming" xml:space="preserve"><value>Aucun match à venir.</value></data>
++  <data name="Matches_NoPast" xml:space="preserve"><value>Aucun match passé.</value></data>
+   <data name="Players_Title" xml:space="preserve"><value>Joueurs</value></data>
+   <data name="Players_Empty" xml:space="preserve"><value>Ton répertoire est vide. Un prénom ou un pseudo suffit pour ajouter un joueur.</value></data>
+   <data name="Players_Me" xml:space="preserve"><value>Moi</value></data>
+@@ -114,7 +150,6 @@
+   <data name="Player_NotFound" xml:space="preserve"><value>Ce joueur est introuvable.</value></data>
+   <data name="Player_Back" xml:space="preserve"><value>Retour aux joueurs</value></data>
+   <data name="More_Title" xml:space="preserve"><value>Plus</value></data>
+-  <data name="Section_ComingSoon" xml:space="preserve"><value>Cette section arrive bientôt.</value></data>
+ 
+   <data name="Theme_Label" xml:space="preserve"><value>Thème</value></data>
+   <data name="Theme_Auto" xml:space="preserve"><value>Automatique</value></data>
+diff --git a/src/AlFariq.UI/wwwroot/css/app.css b/src/AlFariq.UI/wwwroot/css/app.css
+index a801b5c..94d05a3 100644
+--- a/src/AlFariq.UI/wwwroot/css/app.css
++++ b/src/AlFariq.UI/wwwroot/css/app.css
+@@ -173,6 +173,10 @@ h1:focus {
+   border-color: currentColor;
+ }
+ 
++.button--danger {
++  color: var(--color-error);
++}
++
+ .facts {
+   margin: 0 0 0.75rem;
+ }
+@@ -242,7 +246,8 @@ h1:focus {
+ }
+ 
+ .field input,
+-.field select {
++.field select,
++.field textarea {
+   width: 100%;
+   min-height: 44px;
+   padding: 0 0.75rem;
+@@ -253,6 +258,11 @@ h1:focus {
+   font: inherit; /* 1rem au moins : évite le zoom automatique d'iOS à la saisie */
+ }
+ 
++.field textarea {
++  padding-block: 0.5rem;
++  resize: vertical;
++}
++
+ .field input[aria-invalid="true"] {
+   border-color: var(--color-error);
+ }
+@@ -275,7 +285,8 @@ h1:focus {
+ }
+ 
+ .field input:disabled,
+-.field select:disabled {
++.field select:disabled,
++.field textarea:disabled {
+   opacity: 0.7;
+ }
+ 
+@@ -342,6 +353,78 @@ h1:focus {
+   font-weight: 600;
+ }
+ 
++/* ---------- Matchs ---------- */
++
++.segmented.list-filter {
++  margin-top: var(--gutter);
++}
++
++.list-none {
++  margin: var(--gutter) 0 0;
++  text-align: center;
++}
++
++.match-list {
++  padding-block: 0;
++  list-style: none;
++}
++
++.match-list li + li {
++  border-top: 1px solid var(--color-border);
++}
++
++.match-list__link {
++  display: flex;
++  flex-direction: column;
++  min-height: 44px;
++  padding: 0.75rem 0;
++  color: inherit;
++  text-decoration: none;
++}
++
++.match-list__date {
++  font-weight: 600;
++}
++
++.match-list__date::first-letter {
++  text-transform: uppercase;
++}
++
++.match-list__details {
++  color: var(--color-muted);
++  overflow-wrap: anywhere;
++}
++
++.chips {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 0.5rem;
++  margin-bottom: 0.25rem;
++}
++
++.chip {
++  min-height: 44px;
++  padding: 0 1rem;
++  border: 1px solid var(--color-border);
++  border-radius: 999px;
++  background: var(--color-surface);
++  color: var(--color-text);
++  font: inherit;
++  cursor: pointer;
++}
++
++.chip[aria-pressed="true"] {
++  background: var(--color-primary);
++  border-color: var(--color-primary);
++  color: var(--color-primary-contrast);
++  font-weight: 600;
++}
++
++.user-text {
++  white-space: pre-wrap;
++  overflow-wrap: anywhere;
++}
++
+ /* ---------- Bandeaux ---------- */
+ 
+ .banner {
+diff --git a/src/AlFariq.Web/Program.cs b/src/AlFariq.Web/Program.cs
+index ee767bc..608cbc0 100644
+--- a/src/AlFariq.Web/Program.cs
++++ b/src/AlFariq.Web/Program.cs
+@@ -22,6 +22,8 @@ builder.Services
+     .AddAlFariqClientCore()
+     .AddLocalRepository<Profile>(LocalSchema.ProfilesStore)
+     .AddLocalRepository<Player>(LocalSchema.PlayersStore)
++    .AddLocalRepository<Match>(LocalSchema.MatchesStore)
++    .AddLocalRepository<MatchParticipant>(LocalSchema.MatchParticipantsStore)
+     .AddAlFariqUi();
+ 
+ await builder.Build().RunAsync();
+diff --git a/tests/AlFariq.Client.Core.Tests/InMemoryDocumentStore.cs b/tests/AlFariq.Client.Core.Tests/InMemoryDocumentStore.cs
+index 97df7fa..05fa00d 100644
+--- a/tests/AlFariq.Client.Core.Tests/InMemoryDocumentStore.cs
++++ b/tests/AlFariq.Client.Core.Tests/InMemoryDocumentStore.cs
+@@ -31,6 +31,11 @@ internal sealed class FakeClock : TimeProvider
+ {
+     private DateTimeOffset _now = new(2026, 11, 25, 10, 0, 0, TimeSpan.Zero);
+ 
++    /// <summary>Fuseau horaire « de l'appareil » ; UTC par défaut.</summary>
++    public TimeZoneInfo Zone { get; set; } = TimeZoneInfo.Utc;
++
++    public override TimeZoneInfo LocalTimeZone => Zone;
++
+     public override DateTimeOffset GetUtcNow() => _now;
+ 
+     public void Advance(TimeSpan duration) => _now += duration;
+diff --git a/tests/AlFariq.Client.Core.Tests/MatchServiceTests.cs b/tests/AlFariq.Client.Core.Tests/MatchServiceTests.cs
+new file mode 100644
+index 0000000..e2dd2d2
+--- /dev/null
++++ b/tests/AlFariq.Client.Core.Tests/MatchServiceTests.cs
+@@ -0,0 +1,157 @@
++using AlFariq.Application;
++using AlFariq.Domain;
++using Microsoft.Extensions.DependencyInjection;
++
++namespace AlFariq.Client.Core.Tests;
++
++public sealed class MatchServiceTests : IDisposable
++{
++    private static readonly DateOnly Day = new(2026, 12, 2);
++    private static readonly TimeOnly Evening = new(20, 0);
++
++    private readonly FakeClock _clock = new();
++    private readonly ServiceProvider _app;
++    private readonly MatchService _matches;
++
++    public MatchServiceTests()
++    {
++        _app = MatchTestHost.Create(_clock);
++        _matches = _app.GetRequiredService<MatchService>();
++    }
++
++    public void Dispose() => _app.Dispose();
++
++    private PlayerService Players => _app.GetRequiredService<PlayerService>();
++
++    private IRepository<MatchParticipant> Participants =>
++        _app.GetRequiredService<IRepository<MatchParticipant>>();
++
++    [Fact]
++    public async Task Date_time_and_format_are_enough_and_the_match_is_planned()
++    {
++        var created = await _matches.CreateAsync(new MatchInput(Day, Evening, 5, Location: "  ", Notes: ""));
++
++        var stored = Assert.Single(await _matches.ListAsync());
++        Assert.Equal(created.Id, stored.Id);
++        Assert.Equal(new DateTimeOffset(2026, 12, 2, 20, 0, 0, TimeSpan.Zero), stored.StartsAt);
++        Assert.Equal(5, stored.PlayersPerSide);
++        Assert.Equal(SportCatalog.FootballCode, stored.SportCode);
++        Assert.Equal(60, stored.DurationMinutes);
++        Assert.Null(stored.Location);
++        Assert.Null(stored.Notes);
++        Assert.Equal(MatchStatus.Planned, stored.Status);
++    }
++
++    [Theory]
++    [InlineData(1999, "football", 5, 60)]
++    [InlineData(2101, "football", 5, 60)]
++    [InlineData(2026, "inconnu", 5, 60)]
++    [InlineData(2026, "football", 0, 60)]
++    [InlineData(2026, "football", 31, 60)]
++    [InlineData(2026, "football", 5, 9)]
++    [InlineData(2026, "football", 5, 301)]
++    public async Task Invalid_input_is_rejected_and_nothing_is_written(int year, string sport, int format, int duration)
++    {
++        var input = new MatchInput(new DateOnly(year, 12, 2), Evening, format, sport, duration);
++
++        await Assert.ThrowsAsync<ArgumentException>(() => _matches.CreateAsync(input));
++
++        Assert.Empty(await _matches.ListAsync());
++    }
++
++    [Fact]
++    public async Task Too_long_texts_are_rejected()
++    {
++        var location = new string('a', Match.MaxLocationLength + 1);
++        var notes = new string('a', Match.MaxNotesLength + 1);
++
++        await Assert.ThrowsAsync<ArgumentException>(
++            () => _matches.CreateAsync(new MatchInput(Day, Evening, 5, Location: location)));
++        await Assert.ThrowsAsync<ArgumentException>(
++            () => _matches.CreateAsync(new MatchInput(Day, Evening, 5, Notes: notes)));
++
++        Assert.Empty(await _matches.ListAsync());
++    }
++
++    [Fact]
++    public async Task A_match_can_be_edited_including_its_format()
++    {
++        var created = await _matches.CreateAsync(new MatchInput(Day, Evening, 5, Location: "Stade"));
++        var input = (await _matches.GetInputAsync(created.Id))!;
++
++        await _matches.UpdateAsync(created.Id, input with { PlayersPerSide = 8, Location = null, Notes = "Chasubles" });
++
++        var stored = Assert.Single(await _matches.ListAsync());
++        Assert.Equal(created.Id, stored.Id);
++        Assert.Equal(created.StartsAt, stored.StartsAt);
++        Assert.Equal(8, stored.PlayersPerSide);
++        Assert.Null(stored.Location);
++        Assert.Equal("Chasubles", stored.Notes);
++        Assert.Equal(MatchStatus.Planned, stored.Status);
++    }
++
++    [Fact]
++    public async Task A_deleted_match_is_hidden_but_kept()
++    {
++        var created = await _matches.CreateAsync(new MatchInput(Day, Evening, 5));
++
++        Assert.True(await _matches.DeleteAsync(created.Id));
++
++        Assert.Empty(await _matches.ListAsync());
++        Assert.Null(await _matches.FindAsync(created.Id));
++        var repository = _app.GetRequiredService<IRepository<Match>>();
++        Assert.True((await repository.GetAsync(created.Id, includeDeleted: true))!.IsDeleted);
++        await Assert.ThrowsAsync<KeyNotFoundException>(
++            () => _matches.UpdateAsync(created.Id, new MatchInput(Day, Evening, 5)));
++    }
++
++    [Fact]
++    public async Task Duplicating_prefills_the_same_match_seven_days_later_without_saving_anything()
++    {
++        var source = await _matches.CreateAsync(
++            new MatchInput(Day, Evening, 7, "football", 90, "Stade", "Apporter le ballon"));
++
++        var copy = await _matches.GetDuplicateInputAsync(source.Id);
++
++        Assert.Equal(new MatchInput(Day.AddDays(7), Evening, 7, "football", 90, "Stade"), copy);
++        Assert.Single(await _matches.ListAsync());
++    }
++
++    [Fact]
++    public async Task Duplicating_keeps_the_local_time_across_a_daylight_saving_change()
++    {
++        _clock.Zone = TimeZoneInfo.FindSystemTimeZoneById("Europe/Paris");
++        var source = await _matches.CreateAsync(new MatchInput(new DateOnly(2027, 3, 24), Evening, 5));
++
++        var copy = await _matches.CreateAsync((await _matches.GetDuplicateInputAsync(source.Id))!, source.Id);
++
++        Assert.Equal(new DateTimeOffset(2027, 3, 24, 20, 0, 0, TimeSpan.FromHours(1)), source.StartsAt);
++        Assert.Equal(new DateTimeOffset(2027, 3, 31, 20, 0, 0, TimeSpan.FromHours(2)), copy.StartsAt);
++    }
++
++    [Fact]
++    public async Task Saving_a_duplicate_copies_the_players_except_archived_ones()
++    {
++        var alice = await Players.AddAsync(new PlayerInput("Alice"));
++        var sami = await Players.AddAsync(new PlayerInput("Sami"));
++        var source = await _matches.CreateAsync(new MatchInput(Day, Evening, 5));
++        await Participants.AddAsync(new MatchParticipant { MatchId = source.Id, PlayerId = alice.Id });
++        await Participants.AddAsync(new MatchParticipant { MatchId = source.Id, PlayerId = sami.Id });
++        await Players.SetArchivedAsync(sami.Id, archived: true);
++
++        var copy = await _matches.CreateAsync((await _matches.GetDuplicateInputAsync(source.Id))!, source.Id);
++
++        var all = await Participants.ListAsync();
++        Assert.Equal(new[] { alice.Id }, all.Where(p => p.MatchId == copy.Id).Select(p => p.PlayerId));
++        Assert.Equal(2, all.Count(p => p.MatchId == source.Id));
++    }
++
++    [Fact]
++    public async Task A_missing_match_cannot_be_duplicated()
++    {
++        var source = await _matches.CreateAsync(new MatchInput(Day, Evening, 5));
++        await _matches.DeleteAsync(source.Id);
++
++        Assert.Null(await _matches.GetDuplicateInputAsync(source.Id));
++    }
++}
+diff --git a/tests/AlFariq.Client.Core.Tests/MatchTestHost.cs b/tests/AlFariq.Client.Core.Tests/MatchTestHost.cs
+new file mode 100644
+index 0000000..c905358
+--- /dev/null
++++ b/tests/AlFariq.Client.Core.Tests/MatchTestHost.cs
+@@ -0,0 +1,23 @@
++using AlFariq.Application;
++using AlFariq.Client.Core.Storage;
++using AlFariq.Domain;
++using Microsoft.Extensions.DependencyInjection;
++
++namespace AlFariq.Client.Core.Tests;
++
++/// <summary>L'application branchée sur un stockage en mémoire, avec les dépôts des matchs.</summary>
++internal static class MatchTestHost
++{
++    public static ServiceProvider Create(FakeClock clock)
++    {
++        var services = new ServiceCollection();
++        services.AddSingleton<IDocumentStore>(new InMemoryDocumentStore());
++        services.AddSingleton<TimeProvider>(clock);
++        services.AddAlFariqApplication();
++        services.AddLocalRepository<Profile>(LocalSchema.ProfilesStore);
++        services.AddLocalRepository<Player>(LocalSchema.PlayersStore);
++        services.AddLocalRepository<Match>(LocalSchema.MatchesStore);
++        services.AddLocalRepository<MatchParticipant>(LocalSchema.MatchParticipantsStore);
++        return services.BuildServiceProvider();
++    }
++}
+diff --git a/tests/AlFariq.Client.Core.Tests/UpcomingMatchQueryTests.cs b/tests/AlFariq.Client.Core.Tests/UpcomingMatchQueryTests.cs
+index ae7f28b..3f75eb5 100644
+--- a/tests/AlFariq.Client.Core.Tests/UpcomingMatchQueryTests.cs
++++ b/tests/AlFariq.Client.Core.Tests/UpcomingMatchQueryTests.cs
+@@ -3,30 +3,60 @@ using Microsoft.Extensions.DependencyInjection;
+ 
+ namespace AlFariq.Client.Core.Tests;
+ 
+-public class UpcomingMatchQueryTests
++public sealed class UpcomingMatchQueryTests : IDisposable
+ {
+-    private sealed class OneMatch : IUpcomingMatchQuery
++    // Il est 10 h (UTC) le 25 novembre 2026.
++    private static readonly DateOnly Today = new(2026, 11, 25);
++
++    private readonly FakeClock _clock = new();
++    private readonly ServiceProvider _app;
++
++    public UpcomingMatchQueryTests() => _app = MatchTestHost.Create(_clock);
++
++    public void Dispose() => _app.Dispose();
++
++    private MatchService Matches => _app.GetRequiredService<MatchService>();
++
++    private Task<UpcomingMatch?> NextAsync() => _app.GetRequiredService<IUpcomingMatchQuery>().GetNextAsync();
++
++    [Fact]
++    public async Task Without_any_match_there_is_no_upcoming_match()
+     {
+-        public Task<UpcomingMatch?> GetNextAsync(CancellationToken cancellationToken = default) =>
+-            Task.FromResult<UpcomingMatch?>(new UpcomingMatch(Guid.CreateVersion7(), DateTimeOffset.UtcNow, null, 5));
++        Assert.Null(await NextAsync());
+     }
+ 
+     [Fact]
+-    public async Task By_default_there_is_no_upcoming_match()
++    public async Task The_closest_match_still_to_be_played_is_returned()
+     {
+-        using var provider = new ServiceCollection().AddAlFariqApplication().BuildServiceProvider();
++        await Matches.CreateAsync(new MatchInput(Today.AddDays(-1), new TimeOnly(20, 0), 5));
++        await Matches.CreateAsync(new MatchInput(Today.AddDays(9), new TimeOnly(20, 0), 11));
++        var closest = await Matches.CreateAsync(
++            new MatchInput(Today.AddDays(2), new TimeOnly(20, 0), 7, Location: "Stade"));
++
++        var next = await NextAsync();
++
++        Assert.Equal(new UpcomingMatch(closest.Id, closest.StartsAt, "Stade", 7), next);
++    }
++
++    [Fact]
++    public async Task A_match_stays_upcoming_until_it_is_over()
++    {
++        await Matches.CreateAsync(new MatchInput(Today, new TimeOnly(9, 30), 5));
++
++        Assert.NotNull(await NextAsync());
++
++        _clock.Advance(TimeSpan.FromMinutes(30));
+ 
+-        Assert.Null(await provider.GetRequiredService<IUpcomingMatchQuery>().GetNextAsync());
++        Assert.Null(await NextAsync());
+     }
+ 
+     [Fact]
+-    public void A_later_registration_replaces_the_default_query()
++    public async Task A_deleted_match_is_not_upcoming()
+     {
+-        var services = new ServiceCollection().AddAlFariqApplication();
+-        services.AddSingleton<IUpcomingMatchQuery, OneMatch>();
++        var match = await Matches.CreateAsync(new MatchInput(Today.AddDays(1), new TimeOnly(20, 0), 5));
+ 
+-        using var provider = services.BuildServiceProvider();
++        await Matches.DeleteAsync(match.Id);
+ 
+-        Assert.IsType<OneMatch>(provider.GetRequiredService<IUpcomingMatchQuery>());
++        Assert.Null(await NextAsync());
+     }
+ }
+diff --git a/tests/AlFariq.Domain.Tests/MatchScheduleTests.cs b/tests/AlFariq.Domain.Tests/MatchScheduleTests.cs
+new file mode 100644
+index 0000000..ca0af9d
+--- /dev/null
++++ b/tests/AlFariq.Domain.Tests/MatchScheduleTests.cs
+@@ -0,0 +1,46 @@
++using AlFariq.Domain;
++
++namespace AlFariq.Domain.Tests;
++
++public class MatchScheduleTests
++{
++    private static readonly DateTimeOffset Now = new(2026, 11, 25, 10, 0, 0, TimeSpan.Zero);
++
++    private static Match At(double hoursFromNow) => new() { StartsAt = Now.AddHours(hoursFromNow), PlayersPerSide = 5 };
++
++    [Fact]
++    public void Upcoming_matches_include_the_one_in_progress_and_come_closest_first()
++    {
++        var later = At(48);
++        var inProgress = At(-0.5);
++        var soon = At(2);
++        var over = At(-1); // une heure de jeu : tout juste terminé
++
++        var upcoming = MatchSchedule.Upcoming([later, over, soon, inProgress], Now);
++
++        Assert.Equal(new[] { inProgress, soon, later }, upcoming);
++    }
++
++    [Fact]
++    public void Past_matches_come_most_recent_first()
++    {
++        var old = At(-72);
++        var recent = At(-2);
++        var future = At(2);
++
++        var past = MatchSchedule.Past([old, future, recent], Now);
++
++        Assert.Equal(new[] { recent, old }, past);
++    }
++
++    [Fact]
++    public void A_date_and_time_keep_their_value_in_their_time_zone()
++    {
++        var zone = TimeZoneInfo.FindSystemTimeZoneById("Europe/Paris");
++
++        var instant = MatchSchedule.At(new DateOnly(2027, 7, 1), new TimeOnly(20, 30), zone);
++
++        Assert.Equal(TimeSpan.FromHours(2), instant.Offset);
++        Assert.Equal(new DateTime(2027, 7, 1, 20, 30, 0), MatchSchedule.ToLocal(instant.ToUniversalTime(), zone));
++    }
++}
+diff --git a/tests/AlFariq.Domain.Tests/SportCatalogTests.cs b/tests/AlFariq.Domain.Tests/SportCatalogTests.cs
+index 81315e6..45d68b9 100644
+--- a/tests/AlFariq.Domain.Tests/SportCatalogTests.cs
++++ b/tests/AlFariq.Domain.Tests/SportCatalogTests.cs
+@@ -23,6 +23,18 @@ public class SportCatalogTests
+             position => Assert.StartsWith(sport.Code + ".", position)));
+     }
+ 
++    [Fact]
++    public void Every_sport_proposes_valid_formats()
++    {
++        Assert.All(SportCatalog.All, sport =>
++        {
++            Assert.NotEmpty(sport.Formats);
++            Assert.All(sport.Formats, format => Assert.InRange(format, Match.MinPlayersPerSide, Match.MaxPlayersPerSide));
++            Assert.Equal(sport.Formats[0], sport.DefaultPlayersPerSide);
++        });
++        Assert.Equal(new[] { 5, 7, 11 }, SportCatalog.Default.Formats);
++    }
++
+     [Fact]
+     public void Find_returns_null_for_an_unknown_code()
+     {
+diff --git a/tests/AlFariq.Web.Tests/HomePageTests.cs b/tests/AlFariq.Web.Tests/HomePageTests.cs
+index cc49496..04d9f6f 100644
+--- a/tests/AlFariq.Web.Tests/HomePageTests.cs
++++ b/tests/AlFariq.Web.Tests/HomePageTests.cs
+@@ -6,7 +6,7 @@ public class HomePageTests
+         File.ReadAllText(Path.Combine(RepoPaths.UiRoot, "Pages", name));
+ 
+     [Theory]
+-    [InlineData("matchs/nouveau", "NewMatch.razor")]
++    [InlineData("matchs/nouveau", "MatchEdit.razor")]
+     [InlineData("joueurs", "Players.razor")]
+     [InlineData("profil", "MyProfile.razor")]
+     public void Home_links_to_a_page_that_exists(string link, string pageFile)

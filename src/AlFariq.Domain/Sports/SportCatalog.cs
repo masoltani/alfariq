@@ -11,11 +11,11 @@ public static class SportCatalog
     /// <summary>Les sports proposés ; le premier est le sport par défaut.</summary>
     public static IReadOnlyList<Sport> All { get; } =
     [
-        Create(FootballCode, "goalkeeper", "defender", "midfielder", "forward"),
-        Create("futsal", "goalkeeper", "defender", "winger", "pivot"),
-        Create("basketball", "guard", "forward", "center"),
-        Create("handball", "goalkeeper", "winger", "back", "pivot"),
-        Create("volleyball", "setter", "outside", "opposite", "middle", "libero"),
+        Create(FootballCode, [5, 7, 11], "goalkeeper", "defender", "midfielder", "forward"),
+        Create("futsal", [5], "goalkeeper", "defender", "winger", "pivot"),
+        Create("basketball", [5, 3], "guard", "forward", "center"),
+        Create("handball", [7], "goalkeeper", "winger", "back", "pivot"),
+        Create("volleyball", [6, 4, 2], "setter", "outside", "opposite", "middle", "libero"),
     ];
 
     public static Sport Default => All[0];
@@ -26,6 +26,6 @@ public static class SportCatalog
     /// <summary>Vrai si ce poste existe dans l'un des sports du catalogue.</summary>
     public static bool IsKnownPosition(string? positionCode) => All.Any(sport => sport.HasPosition(positionCode));
 
-    private static Sport Create(string code, params string[] positions) =>
-        new(code, positions.Select(position => $"{code}.{position}").ToArray());
+    private static Sport Create(string code, int[] formats, params string[] positions) =>
+        new(code, positions.Select(position => $"{code}.{position}").ToArray(), formats);
 }

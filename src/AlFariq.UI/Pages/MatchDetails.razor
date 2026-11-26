@@ -1,0 +1,147 @@
+@page "/matchs/{Id:guid}"
+@using AlFariq.Application
+@inject IStringLocalizer<Strings> L
+@inject MatchService Service
+@inject TimeProvider Clock
+@inject NavigationManager Navigation
+
+<PageTitle>@L["Match_Title"] · @L["App_Name"]</PageTitle>
+
+<section class="page">
+    <h1>@L["Match_Title"]</h1>
+
+    @if (_loadFailed)
+    {
+        <div class="card" role="alert">
+            <p>@L["Storage_Unavailable"]</p>
+        </div>
+    }
+    else if (_notFound)
+    {
+        <div class="card card--empty">
+            <p>@L["Match_NotFound"]</p>
+        </div>
+    }
+    else if (_match is not null)
+    {
+        var start = MatchSchedule.ToLocal(_match.StartsAt, Clock.LocalTimeZone);
+
+        <article class="card">
+            <p class="next-match__date">@L["Home_MatchDate", MatchLabels.LongDate(start), MatchLabels.Time(start)]</p>
+            <p><span class="badge">@L["Match_StatusPlanned"]</span></p>
+            <dl class="facts">
+                <dt>@L["Match_Sport"]</dt>
+                <dd>@L[SportLabels.SportKey(_match.SportCode)]</dd>
+                <dt>@L["Match_Format"]</dt>
+                <dd>@L["Home_MatchFormat", _match.PlayersPerSide]</dd>
+                <dt>@L["Match_Duration"]</dt>
+                <dd>@L["Match_DurationValue", _match.DurationMinutes]</dd>
+                @if (_match.Location is not null)
+                {
+                    <dt>@L["Match_LocationLabel"]</dt>
+                    <dd class="user-text" dir="auto">@_match.Location</dd>
+                }
+                @if (_match.Notes is not null)
+                {
+                    <dt>@L["Match_NotesLabel"]</dt>
+                    <dd class="user-text" dir="auto">@_match.Notes</dd>
+                }
+            </dl>
+        </article>
+
+        <div class="actions">
+            <a class="button" href="matchs/@_match.Id/modifier">@L["Match_Edit"]</a>
+            <a class="button button--ghost" href="matchs/@_match.Id/dupliquer">@L["Match_Duplicate"]</a>
+            @if (!_confirmingDeletion)
+            {
+                <button type="button" class="button button--ghost button--danger" @onclick="() => _confirmingDeletion = true">
+                    @L["Match_Delete"]
+                </button>
+            }
+        </div>
+
+        if (_confirmingDeletion)
+        {
+            <div class="card" role="alert">
+                <p>@L["Match_DeleteConfirm"]</p>
+                <div class="actions">
+                    <button type="button" class="button button--ghost button--danger" disabled="@_deleting" @onclick="DeleteAsync">
+                        @L["Match_DeleteYes"]
+                    </button>
+                    <button type="button" class="button button--ghost" disabled="@_deleting" @onclick="() => _confirmingDeletion = false">
+                        @L["Match_Cancel"]
+                    </button>
+                </div>
+            </div>
+        }
+
+        if (_deleteFailed)
+        {
+            <p class="field__error" role="alert">@L["Match_DeleteFailed"]</p>
+        }
+    }
+
+    <div class="actions">
+        <a class="button button--ghost" href="matchs">@L["Match_Back"]</a>
+    </div>
+</section>
+
+@code {
+    private Match? _match;
+    private Guid _loadedId;
+    private bool _loadFailed;
+    private bool _notFound;
+    private bool _confirmingDeletion;
+    private bool _deleting;
+    private bool _deleteFailed;
+
+    [Parameter] public Guid Id { get; set; }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedId == Id)
+        {
+            return;
+        }
+
+        _loadedId = Id;
+        _match = null;
+        _loadFailed = _notFound = _confirmingDeletion = _deleteFailed = false;
+
+        try
+        {
+            _match = await Service.FindAsync(Id);
+            _notFound = _match is null;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _loadFailed = true;
+        }
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (_deleting)
+        {
+            return;
+        }
+
+        _deleting = true;
+        _deleteFailed = false;
+        try
+        {
+            await Service.DeleteAsync(Id);
+            Navigation.NavigateTo("matchs", replace: true);
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _deleteFailed = true;
+        }
+        finally
+        {
+            _deleting = false;
+        }
+    }
+}

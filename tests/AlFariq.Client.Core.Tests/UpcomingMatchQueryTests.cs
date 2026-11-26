@@ -3,30 +3,60 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace AlFariq.Client.Core.Tests;
 
-public class UpcomingMatchQueryTests
+public sealed class UpcomingMatchQueryTests : IDisposable
 {
-    private sealed class OneMatch : IUpcomingMatchQuery
+    // Il est 10 h (UTC) le 25 novembre 2026.
+    private static readonly DateOnly Today = new(2026, 11, 25);
+
+    private readonly FakeClock _clock = new();
+    private readonly ServiceProvider _app;
+
+    public UpcomingMatchQueryTests() => _app = MatchTestHost.Create(_clock);
+
+    public void Dispose() => _app.Dispose();
+
+    private MatchService Matches => _app.GetRequiredService<MatchService>();
+
+    private Task<UpcomingMatch?> NextAsync() => _app.GetRequiredService<IUpcomingMatchQuery>().GetNextAsync();
+
+    [Fact]
+    public async Task Without_any_match_there_is_no_upcoming_match()
     {
-        public Task<UpcomingMatch?> GetNextAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult<UpcomingMatch?>(new UpcomingMatch(Guid.CreateVersion7(), DateTimeOffset.UtcNow, null, 5));
+        Assert.Null(await NextAsync());
     }
 
     [Fact]
-    public async Task By_default_there_is_no_upcoming_match()
+    public async Task The_closest_match_still_to_be_played_is_returned()
     {
-        using var provider = new ServiceCollection().AddAlFariqApplication().BuildServiceProvider();
+        await Matches.CreateAsync(new MatchInput(Today.AddDays(-1), new TimeOnly(20, 0), 5));
+        await Matches.CreateAsync(new MatchInput(Today.AddDays(9), new TimeOnly(20, 0), 11));
+        var closest = await Matches.CreateAsync(
+            new MatchInput(Today.AddDays(2), new TimeOnly(20, 0), 7, Location: "Stade"));
 
-        Assert.Null(await provider.GetRequiredService<IUpcomingMatchQuery>().GetNextAsync());
+        var next = await NextAsync();
+
+        Assert.Equal(new UpcomingMatch(closest.Id, closest.StartsAt, "Stade", 7), next);
     }
 
     [Fact]
-    public void A_later_registration_replaces_the_default_query()
+    public async Task A_match_stays_upcoming_until_it_is_over()
     {
-        var services = new ServiceCollection().AddAlFariqApplication();
-        services.AddSingleton<IUpcomingMatchQuery, OneMatch>();
+        await Matches.CreateAsync(new MatchInput(Today, new TimeOnly(9, 30), 5));
 
-        using var provider = services.BuildServiceProvider();
+        Assert.NotNull(await NextAsync());
 
-        Assert.IsType<OneMatch>(provider.GetRequiredService<IUpcomingMatchQuery>());
+        _clock.Advance(TimeSpan.FromMinutes(30));
+
+        Assert.Null(await NextAsync());
+    }
+
+    [Fact]
+    public async Task A_deleted_match_is_not_upcoming()
+    {
+        var match = await Matches.CreateAsync(new MatchInput(Today.AddDays(1), new TimeOnly(20, 0), 5));
+
+        await Matches.DeleteAsync(match.Id);
+
+        Assert.Null(await NextAsync());
     }
 }

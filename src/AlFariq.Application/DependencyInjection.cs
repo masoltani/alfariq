@@ -9,8 +9,8 @@ public static class DependencyInjection
     /// <remarks>Les dépôts qu'ils utilisent sont enregistrés par l'hôte.</remarks>
     public static IServiceCollection AddAlFariqApplication(this IServiceCollection services)
     {
-        // US-003 : sans matchs pour l'instant. Un enregistrement ultérieur (US-006) prend le dessus.
-        services.TryAddSingleton<IUpcomingMatchQuery, NoUpcomingMatchQuery>();
+        services.TryAddSingleton<IUpcomingMatchQuery, UpcomingMatchQuery>();
+        services.TryAddSingleton<MatchService>();
         services.TryAddSingleton<ProfileService>();
         services.TryAddSingleton<PlayerService>();
         return services;

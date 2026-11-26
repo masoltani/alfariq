@@ -27,13 +27,13 @@
   <data name="Home_StepPlayers" xml:space="preserve"><value>Ajoute tes joueurs.</value></data>
   <data name="Home_StepMatch" xml:space="preserve"><value>Crée un match : date, heure et format.</value></data>
   <data name="Home_StepTeams" xml:space="preserve"><value>Compose les équipes et partage la composition.</value></data>
-  <data name="Home_EmptyHint" xml:space="preserve"><value>La création de match et les équipes arrivent dans les prochaines versions.</value></data>
+  <data name="Home_EmptyHint" xml:space="preserve"><value>La composition des équipes arrive dans les prochaines versions.</value></data>
   <data name="Home_CreateMatch" xml:space="preserve"><value>Créer un match</value></data>
   <data name="Home_Players" xml:space="preserve"><value>Mes joueurs</value></data>
   <data name="Home_NextMatch" xml:space="preserve"><value>Prochain match</value></data>
   <data name="Home_MatchDate" xml:space="preserve"><value>{0} à {1}</value></data>
   <data name="Home_MatchFormat" xml:space="preserve"><value>{0} contre {0}</value></data>
-  <data name="Home_SeeMatches" xml:space="preserve"><value>Voir les matchs</value></data>
+  <data name="Home_SeeMatch" xml:space="preserve"><value>Voir le match</value></data>
   <data name="Home_Greeting" xml:space="preserve"><value>Bonjour {0}</value></data>
   <data name="Home_ProfileTitle" xml:space="preserve"><value>Crée ton profil</value></data>
   <data name="Home_ProfileHint" xml:space="preserve"><value>Un pseudo suffit, sans compte.</value></data>
@@ -79,9 +79,45 @@
   <data name="Position_volleyball_middle" xml:space="preserve"><value>Central</value></data>
   <data name="Position_volleyball_libero" xml:space="preserve"><value>Libéro</value></data>
 
-  <data name="NewMatch_Title" xml:space="preserve"><value>Nouveau match</value></data>
+  <data name="Match_Title" xml:space="preserve"><value>Match</value></data>
+  <data name="Match_NewTitle" xml:space="preserve"><value>Nouveau match</value></data>
+  <data name="Match_EditTitle" xml:space="preserve"><value>Modifier le match</value></data>
+  <data name="Match_DuplicateTitle" xml:space="preserve"><value>Dupliquer le match</value></data>
+  <data name="Match_Date" xml:space="preserve"><value>Date</value></data>
+  <data name="Match_Time" xml:space="preserve"><value>Heure</value></data>
+  <data name="Match_Sport" xml:space="preserve"><value>Sport</value></data>
+  <data name="Match_Format" xml:space="preserve"><value>Joueurs par équipe</value></data>
+  <data name="Match_Duration" xml:space="preserve"><value>Durée (minutes)</value></data>
+  <data name="Match_Location" xml:space="preserve"><value>Lieu (facultatif)</value></data>
+  <data name="Match_Notes" xml:space="preserve"><value>Notes (facultatif)</value></data>
+  <data name="Match_LocationLabel" xml:space="preserve"><value>Lieu</value></data>
+  <data name="Match_NotesLabel" xml:space="preserve"><value>Notes</value></data>
+  <data name="Match_DateRequired" xml:space="preserve"><value>Indique une date valide.</value></data>
+  <data name="Match_TimeRequired" xml:space="preserve"><value>Indique l'heure.</value></data>
+  <data name="Match_FormatInvalid" xml:space="preserve"><value>Indique un nombre de joueurs de {0} à {1}.</value></data>
+  <data name="Match_DurationInvalid" xml:space="preserve"><value>Indique une durée de {0} à {1} minutes.</value></data>
+  <data name="Match_PastDate" xml:space="preserve"><value>Cette date est déjà passée.</value></data>
+  <data name="Match_Create" xml:space="preserve"><value>Créer le match</value></data>
+  <data name="Match_SaveFailed" xml:space="preserve"><value>L'enregistrement a échoué. Réessaie.</value></data>
+  <data name="Match_StatusPlanned" xml:space="preserve"><value>Planifié</value></data>
+  <data name="Match_DurationValue" xml:space="preserve"><value>{0} min</value></data>
+  <data name="Match_Edit" xml:space="preserve"><value>Modifier</value></data>
+  <data name="Match_Duplicate" xml:space="preserve"><value>Dupliquer</value></data>
+  <data name="Match_Delete" xml:space="preserve"><value>Supprimer</value></data>
+  <data name="Match_DeleteConfirm" xml:space="preserve"><value>Supprimer ce match ? Il disparaîtra de tes listes.</value></data>
+  <data name="Match_DeleteYes" xml:space="preserve"><value>Oui, supprimer</value></data>
+  <data name="Match_Cancel" xml:space="preserve"><value>Annuler</value></data>
+  <data name="Match_DeleteFailed" xml:space="preserve"><value>La suppression a échoué. Réessaie.</value></data>
+  <data name="Match_NotFound" xml:space="preserve"><value>Ce match est introuvable.</value></data>
+  <data name="Match_Back" xml:space="preserve"><value>Retour aux matchs</value></data>
 
   <data name="Matches_Title" xml:space="preserve"><value>Matchs</value></data>
+  <data name="Matches_Upcoming" xml:space="preserve"><value>À venir ({0})</value></data>
+  <data name="Matches_Past" xml:space="preserve"><value>Passés ({0})</value></data>
+  <data name="Matches_Filter" xml:space="preserve"><value>Matchs affichés</value></data>
+  <data name="Matches_Empty" xml:space="preserve"><value>Aucun match pour l'instant.</value></data>
+  <data name="Matches_NoUpcoming" xml:space="preserve"><value>Aucun match à venir.</value></data>
+  <data name="Matches_NoPast" xml:space="preserve"><value>Aucun match passé.</value></data>
   <data name="Players_Title" xml:space="preserve"><value>Joueurs</value></data>
   <data name="Players_Empty" xml:space="preserve"><value>Ton répertoire est vide. Un prénom ou un pseudo suffit pour ajouter un joueur.</value></data>
   <data name="Players_Me" xml:space="preserve"><value>Moi</value></data>
@@ -114,7 +150,6 @@
   <data name="Player_NotFound" xml:space="preserve"><value>Ce joueur est introuvable.</value></data>
   <data name="Player_Back" xml:space="preserve"><value>Retour aux joueurs</value></data>
   <data name="More_Title" xml:space="preserve"><value>Plus</value></data>
-  <data name="Section_ComingSoon" xml:space="preserve"><value>Cette section arrive bientôt.</value></data>
 
   <data name="Theme_Label" xml:space="preserve"><value>Thème</value></data>
   <data name="Theme_Auto" xml:space="preserve"><value>Automatique</value></data>

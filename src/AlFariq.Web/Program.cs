@@ -22,6 +22,8 @@ builder.Services
     .AddAlFariqClientCore()
     .AddLocalRepository<Profile>(LocalSchema.ProfilesStore)
     .AddLocalRepository<Player>(LocalSchema.PlayersStore)
+    .AddLocalRepository<Match>(LocalSchema.MatchesStore)
+    .AddLocalRepository<MatchParticipant>(LocalSchema.MatchParticipantsStore)
     .AddAlFariqUi();
 
 await builder.Build().RunAsync();

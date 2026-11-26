@@ -96,7 +96,7 @@ Critères d'acceptation :
 - L'accueil affiche le prochain match (s'il existe), un bouton « Créer un match » et l'accès aux joueurs.
 - Un état vide explicite guide le premier lancement.
 
-**Note (US-003)** : tant que les matchs n'existent pas, l'accueil lit `IUpcomingMatchQuery` (implémentation vide, `NoUpcomingMatchQuery`) et « Créer un match » ouvre une page d'attente (`/matchs/nouveau`). US-006 fournira la lecture réelle (prochain match planifié à venir) et le formulaire.
+**Note (US-003)** : tant que les matchs n'existent pas, l'accueil lit `IUpcomingMatchQuery` (implémentation vide à l'époque) et « Créer un match » ouvrait une page d'attente (`/matchs/nouveau`). US-006 a fourni la lecture réelle (`UpcomingMatchQuery`) et le formulaire.
 
 ### US-004 — Créer mon profil local
 En tant qu'utilisateur, je veux saisir mon nom ou pseudo, mon sport par défaut et mon poste préféré afin de personnaliser l'appli sans créer de compte.
@@ -130,6 +130,8 @@ Critères d'acceptation :
 - Un match est créé à l'état « Planifié ».
 - On peut modifier, dupliquer et supprimer (suppression logique) un match.
 - « Dupliquer » préremplit un nouveau match (même lieu, même format, mêmes joueurs, date + 7 jours).
+
+**Note (US-006)** : les joueurs d'un match sont des entités `MatchParticipant` ; US-007 ajoutera leur sélection. La duplication reprend le sport, le format, la durée, l'heure et le lieu à J+7, ainsi que les joueurs non archivés (inscrits à l'enregistrement de la copie) ; les notes ne sont pas reprises. Un match reste « à venir » tant qu'il n'est pas terminé (début + durée).
 
 ### US-007 — Choisir les joueurs d'un match
 En tant qu'organisateur, je veux sélectionner les joueurs présents depuis mon répertoire (et en ajouter un à la volée) afin de savoir qui joue.

@@ -6,7 +6,7 @@ public class HomePageTests
         File.ReadAllText(Path.Combine(RepoPaths.UiRoot, "Pages", name));
 
     [Theory]
-    [InlineData("matchs/nouveau", "NewMatch.razor")]
+    [InlineData("matchs/nouveau", "MatchEdit.razor")]
     [InlineData("joueurs", "Players.razor")]
     [InlineData("profil", "MyProfile.razor")]
     public void Home_links_to_a_page_that_exists(string link, string pageFile)

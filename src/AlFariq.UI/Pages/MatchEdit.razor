@@ -1,0 +1,294 @@
+@page "/matchs/nouveau"
+@page "/matchs/{Id:guid}/modifier"
+@page "/matchs/{SourceId:guid}/dupliquer"
+@using System.Globalization
+@using AlFariq.Application
+@inject IStringLocalizer<Strings> L
+@inject MatchService Service
+@inject ProfileService Profiles
+@inject IStoragePersistence StoragePersistence
+@inject TimeProvider Clock
+@inject NavigationManager Navigation
+
+<PageTitle>@Title · @L["App_Name"]</PageTitle>
+
+<section class="page">
+    <h1>@Title</h1>
+
+    @if (_loadFailed)
+    {
+        <div class="card" role="alert">
+            <p>@L["Storage_Unavailable"]</p>
+        </div>
+    }
+    else if (_notFound)
+    {
+        <div class="card card--empty">
+            <p>@L["Match_NotFound"]</p>
+        </div>
+    }
+    else if (_loaded)
+    {
+        <form class="card" novalidate @onsubmit="SaveAsync" @onsubmit:preventDefault>
+            <div class="field">
+                <label for="match-date">@L["Match_Date"]</label>
+                <input id="match-date" type="date" aria-required="true"
+                       aria-invalid="@(_dateError ? "true" : "false")"
+                       value="@_date" @onchange="e => _date = e.Value as string ?? string.Empty" />
+                @if (_dateError)
+                {
+                    <p class="field__error" role="alert">@L["Match_DateRequired"]</p>
+                }
+                else if (IsPast)
+                {
+                    <p class="field__warning" role="status">@L["Match_PastDate"]</p>
+                }
+            </div>
+
+            <div class="field">
+                <label for="match-time">@L["Match_Time"]</label>
+                <input id="match-time" type="time" aria-required="true"
+                       aria-invalid="@(_timeError ? "true" : "false")"
+                       value="@_time" @onchange="e => _time = e.Value as string ?? string.Empty" />
+                @if (_timeError)
+                {
+                    <p class="field__error" role="alert">@L["Match_TimeRequired"]</p>
+                }
+            </div>
+
+            <div class="field">
+                <label for="match-sport">@L["Match_Sport"]</label>
+                <select id="match-sport" @bind="_sportCode" @bind:after="ApplySportFormat">
+                    @foreach (var sport in SportCatalog.All)
+                    {
+                        <option @key="sport.Code" value="@sport.Code">@L[SportLabels.SportKey(sport.Code)]</option>
+                    }
+                </select>
+            </div>
+
+            <div class="field">
+                <label for="match-format">@L["Match_Format"]</label>
+                <div class="chips">
+                    @foreach (var format in CurrentSport.Formats)
+                    {
+                        var value = format.ToString(CultureInfo.InvariantCulture);
+                        <button @key="format" type="button" class="chip" aria-pressed="@(_playersPerSide == value ? "true" : "false")"
+                                @onclick="() => _playersPerSide = value">
+                            @L["Home_MatchFormat", format]
+                        </button>
+                    }
+                </div>
+                <input id="match-format" type="number" inputmode="numeric" aria-required="true"
+                       min="@Match.MinPlayersPerSide" max="@Match.MaxPlayersPerSide"
+                       aria-invalid="@(_formatError ? "true" : "false")"
+                       value="@_playersPerSide" @oninput="e => _playersPerSide = e.Value as string ?? string.Empty" />
+                @if (_formatError)
+                {
+                    <p class="field__error" role="alert">@L["Match_FormatInvalid", Match.MinPlayersPerSide, Match.MaxPlayersPerSide]</p>
+                }
+            </div>
+
+            <div class="field">
+                <label for="match-duration">@L["Match_Duration"]</label>
+                <input id="match-duration" type="number" inputmode="numeric" step="5"
+                       min="@Match.MinDurationMinutes" max="@Match.MaxDurationMinutes"
+                       aria-invalid="@(_durationError ? "true" : "false")"
+                       value="@_duration" @oninput="e => _duration = e.Value as string ?? string.Empty" />
+                @if (_durationError)
+                {
+                    <p class="field__error" role="alert">@L["Match_DurationInvalid", Match.MinDurationMinutes, Match.MaxDurationMinutes]</p>
+                }
+            </div>
+
+            <div class="field">
+                <label for="match-location">@L["Match_Location"]</label>
+                <input id="match-location" type="text" dir="auto" autocomplete="off" maxlength="@Match.MaxLocationLength"
+                       @bind="_location" @bind:event="oninput" />
+            </div>
+
+            <div class="field">
+                <label for="match-notes">@L["Match_Notes"]</label>
+                <textarea id="match-notes" dir="auto" rows="3" maxlength="@Match.MaxNotesLength"
+                          @bind="_notes" @bind:event="oninput"></textarea>
+            </div>
+
+            <div class="actions">
+                <button type="submit" class="button" disabled="@_saving">
+                    @(Id is null ? L["Match_Create"] : L["Profile_Save"])
+                </button>
+            </div>
+
+            @if (_saveFailed)
+            {
+                <p class="field__error" role="alert">@L["Match_SaveFailed"]</p>
+            }
+        </form>
+    }
+
+    <div class="actions">
+        <a class="button button--ghost" href="@BackLink">@L["Match_Cancel"]</a>
+    </div>
+</section>
+
+@code {
+    private static readonly string[] TimeFormats = ["HH:mm", "HH:mm:ss", "HH:mm:ss.fff"];
+
+    private (Guid? Id, Guid? SourceId)? _loadedFor;
+    private string _date = "";
+    private string _time = "";
+    private string _sportCode = SportCatalog.FootballCode;
+    private string _playersPerSide = "";
+    private string _duration = "";
+    private string _location = "";
+    private string _notes = "";
+    private bool _loaded;
+    private bool _loadFailed;
+    private bool _notFound;
+    private bool _saving;
+    private bool _saveFailed;
+    private bool _dateError;
+    private bool _timeError;
+    private bool _formatError;
+    private bool _durationError;
+
+    /// <summary>Match à modifier ; null pour une création ou une duplication.</summary>
+    [Parameter] public Guid? Id { get; set; }
+
+    /// <summary>Match à dupliquer.</summary>
+    [Parameter] public Guid? SourceId { get; set; }
+
+    private string Title =>
+        Id is not null ? L["Match_EditTitle"] : SourceId is not null ? L["Match_DuplicateTitle"] : L["Match_NewTitle"];
+
+    private string BackLink => (Id ?? SourceId) is { } origin ? $"matchs/{origin}" : "matchs";
+
+    private Sport CurrentSport => SportCatalog.Find(_sportCode) ?? SportCatalog.Default;
+
+    private bool IsPast =>
+        TryGetDate(out var date)
+        && TryGetTime(out var time)
+        && MatchSchedule.At(date, time, Clock.LocalTimeZone) < Clock.GetUtcNow();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Ne pas recharger (et écraser la saisie) si la page n'a pas changé de match.
+        if (_loadedFor == (Id, SourceId))
+        {
+            return;
+        }
+
+        _loadedFor = (Id, SourceId);
+        _loaded = _loadFailed = _notFound = _saveFailed = false;
+        _dateError = _timeError = _formatError = _durationError = false;
+
+        try
+        {
+            if ((Id ?? SourceId) is not null)
+            {
+                var input = Id is { } id
+                    ? await Service.GetInputAsync(id)
+                    : await Service.GetDuplicateInputAsync(SourceId!.Value);
+                if (input is null)
+                {
+                    _notFound = true;
+                    return;
+                }
+
+                Fill(input);
+            }
+            else
+            {
+                var profile = await Profiles.GetAsync();
+                var sport = SportCatalog.Find(profile?.SportCode) ?? SportCatalog.Default;
+                _sportCode = sport.Code;
+                _playersPerSide = sport.DefaultPlayersPerSide.ToString(CultureInfo.InvariantCulture);
+                _duration = Match.DefaultDurationMinutes.ToString(CultureInfo.InvariantCulture);
+                _date = _time = _location = _notes = "";
+            }
+
+            _loaded = true;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _loadFailed = true;
+        }
+    }
+
+    private void Fill(MatchInput input)
+    {
+        _date = input.Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        _time = input.Time.ToString("HH:mm", CultureInfo.InvariantCulture);
+        _sportCode = input.SportCode;
+        _playersPerSide = input.PlayersPerSide.ToString(CultureInfo.InvariantCulture);
+        _duration = input.DurationMinutes.ToString(CultureInfo.InvariantCulture);
+        _location = input.Location ?? "";
+        _notes = input.Notes ?? "";
+    }
+
+    /// <summary>Au changement de sport, un format qui n'y est pas courant revient au format par défaut.</summary>
+    private void ApplySportFormat()
+    {
+        if (!TryGetNumber(_playersPerSide, out var format) || !CurrentSport.Formats.Contains(format))
+        {
+            _playersPerSide = CurrentSport.DefaultPlayersPerSide.ToString(CultureInfo.InvariantCulture);
+        }
+    }
+
+    private bool TryGetDate(out DateOnly date) =>
+        DateOnly.TryParseExact(_date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out date)
+        && date.Year is >= Match.MinYear and <= Match.MaxYear;
+
+    private bool TryGetTime(out TimeOnly time) =>
+        TimeOnly.TryParseExact(_time, TimeFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out time);
+
+    private static bool TryGetNumber(string text, out int number) =>
+        int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out number);
+
+    private async Task SaveAsync()
+    {
+        if (_saving)
+        {
+            return;
+        }
+
+        _saveFailed = false;
+        _dateError = !TryGetDate(out var date);
+        _timeError = !TryGetTime(out var time);
+        _formatError = !TryGetNumber(_playersPerSide, out var format)
+            || format is < Match.MinPlayersPerSide or > Match.MaxPlayersPerSide;
+
+        // Durée laissée vide : durée par défaut.
+        var duration = Match.DefaultDurationMinutes;
+        _durationError = !string.IsNullOrWhiteSpace(_duration)
+            && (!TryGetNumber(_duration, out duration)
+                || duration is < Match.MinDurationMinutes or > Match.MaxDurationMinutes);
+
+        if (_dateError || _timeError || _formatError || _durationError)
+        {
+            return;
+        }
+
+        _saving = true;
+        try
+        {
+            var input = new MatchInput(date, time, format, _sportCode, duration, _location, _notes);
+            var saved = Id is { } id
+                ? await Service.UpdateAsync(id, input)
+                : await Service.CreateAsync(input, duplicatedFrom: SourceId);
+
+            // US-002 : des données viennent d'être saisies, on redemande au navigateur de les conserver.
+            await StoragePersistence.RequestAsync();
+            Navigation.NavigateTo($"matchs/{saved.Id}", replace: true);
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _saveFailed = true;
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}

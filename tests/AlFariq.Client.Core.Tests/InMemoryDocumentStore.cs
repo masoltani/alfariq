@@ -31,6 +31,11 @@ internal sealed class FakeClock : TimeProvider
 {
     private DateTimeOffset _now = new(2026, 11, 25, 10, 0, 0, TimeSpan.Zero);
 
+    /// <summary>Fuseau horaire « de l'appareil » ; UTC par défaut.</summary>
+    public TimeZoneInfo Zone { get; set; } = TimeZoneInfo.Utc;
+
+    public override TimeZoneInfo LocalTimeZone => Zone;
+
     public override DateTimeOffset GetUtcNow() => _now;
 
     public void Advance(TimeSpan duration) => _now += duration;

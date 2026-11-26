@@ -1,6 +1,28 @@
 {
   "entries": [
     {
+      "version": "0.7.0",
+      "date": "2026-11-26",
+      "changes": [
+        {
+          "type": "added",
+          "text": {
+            "fr": "Crée un match : date, heure, sport, format et durée, avec un lieu et des notes facultatifs.",
+            "en": "Create a match: date, time, sport, format and duration, with an optional location and notes.",
+            "ar": "أنشئ مباراة: التاريخ والوقت والرياضة وعدد اللاعبين والمدة، مع مكان وملاحظات اختياريين."
+          }
+        },
+        {
+          "type": "added",
+          "text": {
+            "fr": "Modifie, duplique ou supprime un match ; le prochain s'affiche à l'accueil.",
+            "en": "Edit, duplicate or delete a match; the next one appears on the home screen.",
+            "ar": "عدّل مباراة أو انسخها أو احذفها، وتظهر المباراة القادمة في الصفحة الرئيسية."
+          }
+        }
+      ]
+    },
+    {
       "version": "0.6.0",
       "date": "2026-11-25",
       "changes": [

@@ -55,8 +55,21 @@
     protected override async Task OnInitializedAsync()
     {
         await LoadProfileAsync();
-        _nextMatch = await UpcomingMatches.GetNextAsync();
+        await LoadNextMatchAsync();
         _loaded = true;
+    }
+
+    private async Task LoadNextMatchAsync()
+    {
+        try
+        {
+            _nextMatch = await UpcomingMatches.GetNextAsync();
+        }
+        catch (Exception exception)
+        {
+            // L'accueil reste utilisable ; l'écran des matchs explique le problème.
+            Console.Error.WriteLine(exception);
+        }
     }
 
     private async Task LoadProfileAsync()
