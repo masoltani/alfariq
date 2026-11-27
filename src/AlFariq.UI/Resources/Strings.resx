@@ -60,8 +60,19 @@
   <data name="Sport_volleyball" xml:space="preserve"><value>Volleyball</value></data>
   <data name="Position_football_goalkeeper" xml:space="preserve"><value>Gardien</value></data>
   <data name="Position_football_defender" xml:space="preserve"><value>Défenseur</value></data>
+  <data name="Position_football_centre_back" xml:space="preserve"><value>Défenseur central</value></data>
+  <data name="Position_football_left_back" xml:space="preserve"><value>Arrière gauche</value></data>
+  <data name="Position_football_right_back" xml:space="preserve"><value>Arrière droit</value></data>
   <data name="Position_football_midfielder" xml:space="preserve"><value>Milieu</value></data>
+  <data name="Position_football_defensive_midfielder" xml:space="preserve"><value>Milieu défensif</value></data>
+  <data name="Position_football_central_midfielder" xml:space="preserve"><value>Milieu central</value></data>
+  <data name="Position_football_attacking_midfielder" xml:space="preserve"><value>Milieu offensif</value></data>
+  <data name="Position_football_left_midfielder" xml:space="preserve"><value>Milieu gauche</value></data>
+  <data name="Position_football_right_midfielder" xml:space="preserve"><value>Milieu droit</value></data>
   <data name="Position_football_forward" xml:space="preserve"><value>Attaquant</value></data>
+  <data name="Position_football_striker" xml:space="preserve"><value>Avant-centre</value></data>
+  <data name="Position_football_left_winger" xml:space="preserve"><value>Ailier gauche</value></data>
+  <data name="Position_football_right_winger" xml:space="preserve"><value>Ailier droit</value></data>
   <data name="Position_futsal_goalkeeper" xml:space="preserve"><value>Gardien</value></data>
   <data name="Position_futsal_defender" xml:space="preserve"><value>Fixe</value></data>
   <data name="Position_futsal_winger" xml:space="preserve"><value>Ailier</value></data>
@@ -78,6 +89,21 @@
   <data name="Position_volleyball_opposite" xml:space="preserve"><value>Pointu</value></data>
   <data name="Position_volleyball_middle" xml:space="preserve"><value>Central</value></data>
   <data name="Position_volleyball_libero" xml:space="preserve"><value>Libéro</value></data>
+  <data name="PositionShort_football_goalkeeper" xml:space="preserve"><value>G</value></data>
+  <data name="PositionShort_football_defender" xml:space="preserve"><value>DÉF</value></data>
+  <data name="PositionShort_football_centre_back" xml:space="preserve"><value>DC</value></data>
+  <data name="PositionShort_football_left_back" xml:space="preserve"><value>DG</value></data>
+  <data name="PositionShort_football_right_back" xml:space="preserve"><value>DD</value></data>
+  <data name="PositionShort_football_midfielder" xml:space="preserve"><value>MIL</value></data>
+  <data name="PositionShort_football_defensive_midfielder" xml:space="preserve"><value>MDF</value></data>
+  <data name="PositionShort_football_central_midfielder" xml:space="preserve"><value>MC</value></data>
+  <data name="PositionShort_football_attacking_midfielder" xml:space="preserve"><value>MOF</value></data>
+  <data name="PositionShort_football_left_midfielder" xml:space="preserve"><value>MG</value></data>
+  <data name="PositionShort_football_right_midfielder" xml:space="preserve"><value>MD</value></data>
+  <data name="PositionShort_football_forward" xml:space="preserve"><value>ATT</value></data>
+  <data name="PositionShort_football_striker" xml:space="preserve"><value>BU</value></data>
+  <data name="PositionShort_football_left_winger" xml:space="preserve"><value>AG</value></data>
+  <data name="PositionShort_football_right_winger" xml:space="preserve"><value>AD</value></data>
 
   <data name="Match_Title" xml:space="preserve"><value>Match</value></data>
   <data name="Match_NewTitle" xml:space="preserve"><value>Nouveau match</value></data>
@@ -157,6 +183,28 @@
   <data name="Teams_NoPlayers" xml:space="preserve"><value>Choisis d'abord les joueurs du match.</value></data>
   <data name="Teams_AutoSave" xml:space="preserve"><value>Touche A ou B pour placer un joueur, et de nouveau pour le retirer. Tout est enregistré automatiquement.</value></data>
   <data name="Teams_SaveFailed" xml:space="preserve"><value>L'enregistrement a échoué. Réessaie.</value></data>
+  <data name="Pitch_Title" xml:space="preserve"><value>Terrain</value></data>
+  <data name="Pitch_Open" xml:space="preserve"><value>Voir sur le terrain</value></data>
+  <data name="Pitch_Team" xml:space="preserve"><value>Équipe affichée</value></data>
+  <data name="Pitch_Formation" xml:space="preserve"><value>Formation</value></data>
+  <data name="Pitch_NoFormation" xml:space="preserve"><value>Sans formation</value></data>
+  <data name="Pitch_NoKeeper" xml:space="preserve"><value>{0} (sans gardien)</value></data>
+  <data name="Pitch_NoPresets" xml:space="preserve"><value>Pas de formation prédéfinie pour ce format.</value></data>
+  <data name="Pitch_Tap" xml:space="preserve"><value>Touche un emplacement pour placer ou remplacer un joueur.</value></data>
+  <data name="Pitch_Optional" xml:space="preserve"><value>Formation et postes sont facultatifs. Tout est enregistré automatiquement.</value></data>
+  <data name="Pitch_SlotFree" xml:space="preserve"><value>{0} : emplacement libre</value></data>
+  <data name="Pitch_SlotTaken" xml:space="preserve"><value>{0} : {1}</value></data>
+  <data name="Pitch_Filled" xml:space="preserve"><value>Emplacements occupés : {0} sur {1}</value></data>
+  <data name="Pitch_Choose" xml:space="preserve"><value>Choisir : {0}</value></data>
+  <data name="Pitch_Current" xml:space="preserve"><value>Actuellement : {0}</value></data>
+  <data name="Pitch_Remove" xml:space="preserve"><value>Retirer du terrain</value></data>
+  <data name="Pitch_Bench" xml:space="preserve"><value>Hors du terrain</value></data>
+  <data name="Pitch_BenchCount" xml:space="preserve"><value>Hors du terrain ({0})</value></data>
+  <data name="Pitch_OnPitch" xml:space="preserve"><value>Déjà sur le terrain</value></data>
+  <data name="Pitch_Unassigned" xml:space="preserve"><value>Non assignés (rejoignent l'équipe)</value></data>
+  <data name="Pitch_NoCandidate" xml:space="preserve"><value>Aucun autre joueur disponible.</value></data>
+  <data name="Pitch_EveryonePlaced" xml:space="preserve"><value>Toute l'équipe est sur le terrain.</value></data>
+  <data name="Pitch_Positions" xml:space="preserve"><value>Postes</value></data>
   <data name="Color_blue" xml:space="preserve"><value>Bleu</value></data>
   <data name="Color_red" xml:space="preserve"><value>Rouge</value></data>
   <data name="Color_green" xml:space="preserve"><value>Vert</value></data>

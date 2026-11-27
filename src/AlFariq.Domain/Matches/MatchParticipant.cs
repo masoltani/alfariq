@@ -12,4 +12,13 @@ public sealed class MatchParticipant : Entity
 
     /// <summary>Équipe du joueur ; null tant qu'il n'est pas assigné. Un seul champ : jamais deux équipes.</summary>
     public TeamSide? Side { get; set; }
+
+    /// <summary>
+    /// Emplacement occupé dans la formation de l'équipe (<see cref="FormationSlot.Index"/>) ; null hors du terrain.
+    /// Quitter l'équipe libère l'emplacement.
+    /// </summary>
+    public int? Slot { get; set; }
+
+    /// <summary>Poste pour ce match (US-010), facultatif ; code de <see cref="SportCatalog"/>.</summary>
+    public string? PositionCode { get; set; }
 }

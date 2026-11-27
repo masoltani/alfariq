@@ -179,6 +179,8 @@ Critères d'acceptation :
 - Le visuel reste lisible sur un écran de téléphone en mode portrait.
 - Les postes sont optionnels : la composition sans postes reste valide.
 
+**Note (US-010)** : le catalogue ajoute des variantes aux quatre postes du football (`SportCatalog`) ; l'équilibrage (US-009) les compte comme leur poste général. Les formations sont dans `FormationCatalog` : 2-1-1, 1-2-1 et 2-2-1 (sans gardien attitré, 2-2-1 faisant cinq joueurs) en 5 contre 5 ; 2-3-1, 3-2-1 et 2-2-2 en 7 contre 7 ; 4-4-2, 4-3-3, 4-2-3-1 et 3-5-2 en 11 contre 11. Sur le terrain (`/matchs/{id}/equipes/terrain`, une équipe à la fois), le poste vient de l'emplacement (`MatchParticipant.Slot`, `MatchSide.FormationCode`) ; placer un joueur déjà sur le terrain échange les deux places. Sans formation (autre sport, format libre ou par choix), un poste se donne joueur par joueur. Changer un joueur d'équipe libère son emplacement. Si le format du match change, la formation enregistrée n'est plus appliquée. Le glisser-déposer et l'annulation (RG-COM-06) ne sont pas dans cette US.
+
 ### US-011 — Partager la composition
 En tant qu'organisateur, je veux partager la composition (image ou texte) vers WhatsApp ou une autre appli afin d'informer tout le monde sans qu'ils aient l'appli.
 Priorité : M — Taille : M — Dépend de : US-008

@@ -23,4 +23,23 @@ public class SportTranslationTests
 
         Assert.Empty(expected.Except(defined));
     }
+
+    [Fact]
+    public void Every_position_used_by_a_formation_has_a_short_label()
+    {
+        var defined = XDocument
+            .Load(Path.Combine(RepoPaths.UiRoot, "Resources", "Strings.resx"))
+            .Root!
+            .Elements("data")
+            .Select(e => (string)e.Attribute("name")!)
+            .ToHashSet();
+
+        // Même convention que SportLabels (AlFariq.UI).
+        var expected = SportCatalog.All
+            .SelectMany(sport => sport.Formats.SelectMany(format => FormationCatalog.For(sport.Code, format)))
+            .SelectMany(formation => formation.Slots)
+            .Select(slot => "PositionShort_" + slot.PositionCode.Replace('.', '_'));
+
+        Assert.Empty(expected.Except(defined));
+    }
 }

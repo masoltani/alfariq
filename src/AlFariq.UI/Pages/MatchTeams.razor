@@ -48,12 +48,13 @@
         }
         else
         {
-            if (_players.Count >= 2)
-            {
-                <div class="actions">
+            <div class="actions">
+                @if (_players.Count >= 2)
+                {
                     <a class="button button--ghost" href="matchs/@_match.Id/equipes/proposition">@L["Teams_Suggest"]</a>
-                </div>
-            }
+                }
+                <a class="button button--ghost" href="matchs/@_match.Id/equipes/terrain">@L["Pitch_Open"]</a>
+            </div>
 
             <div class="team-summary">
                 <div class="team-summary__counts" role="status">

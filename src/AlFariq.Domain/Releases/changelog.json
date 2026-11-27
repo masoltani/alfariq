@@ -1,6 +1,28 @@
 {
   "entries": [
     {
+      "version": "0.11.0",
+      "date": "2026-11-27",
+      "changes": [
+        {
+          "type": "added",
+          "text": {
+            "fr": "Place les joueurs sur un terrain : choisis une formation, puis touche un emplacement pour placer ou remplacer un joueur.",
+            "en": "Place players on a pitch: pick a formation, then tap a spot to place or replace a player.",
+            "ar": "وزّع اللاعبين على الملعب: اختر خطة اللعب، ثم المس موقعاً لوضع لاعب أو استبداله."
+          }
+        },
+        {
+          "type": "added",
+          "text": {
+            "fr": "Davantage de postes au football (arrière gauche, milieu offensif, avant-centre…), toujours facultatifs.",
+            "en": "More football positions (left back, attacking midfielder, striker…), still optional.",
+            "ar": "مراكز أكثر في كرة القدم (ظهير أيسر، وسط مهاجم، رأس حربة…)، وتبقى اختيارية."
+          }
+        }
+      ]
+    },
+    {
       "version": "0.10.0",
       "date": "2026-11-27",
       "changes": [

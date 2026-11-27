@@ -1,0 +1,386 @@
+@page "/matchs/{Id:guid}/equipes/terrain"
+@using AlFariq.Application
+@inject IStringLocalizer<Strings> L
+@inject LineupService Service
+@inject IStoragePersistence StoragePersistence
+@inject TimeProvider Clock
+
+<PageTitle>@L["Pitch_Title"] · @L["App_Name"]</PageTitle>
+
+<section class="page">
+    <h1>@L["Pitch_Title"]</h1>
+
+    @if (_loadFailed)
+    {
+        <div class="card" role="alert">
+            <p>@L["Storage_Unavailable"]</p>
+        </div>
+    }
+    else if (_notFound)
+    {
+        <div class="card card--empty">
+            <p>@L["Match_NotFound"]</p>
+        </div>
+        <div class="actions">
+            <a class="button button--ghost" href="matchs">@L["Match_Back"]</a>
+        </div>
+    }
+    else if (_lineup is not null)
+    {
+        var start = MatchSchedule.ToLocal(_lineup.Match.StartsAt, Clock.LocalTimeZone);
+        var team = _lineup.Team(_side);
+        var formations = FormationCatalog.For(_lineup.Match.SportCode, _lineup.Match.PlayersPerSide);
+
+        <p class="lead squad-lead">
+            @L["Home_MatchDate", MatchLabels.LongDate(start), MatchLabels.Time(start)]<br />
+            @L["Home_MatchFormat", _lineup.Match.PlayersPerSide]
+        </p>
+
+        <fieldset class="segmented pitch-teams">
+            <legend class="sr-only">@L["Pitch_Team"]</legend>
+            @foreach (var candidate in new[] { _lineup.TeamA, _lineup.TeamB })
+            {
+                <label @key="candidate.Side" class="segmented__option">
+                    <input type="radio" name="pitch-team" checked="@(candidate.Side == _side)"
+                           @onchange="() => ShowTeam(candidate.Side)" />
+                    <span class="team-color--@candidate.ColorCode" dir="auto">@Label(candidate)</span>
+                </label>
+            }
+        </fieldset>
+
+        <p class="sr-only" role="status">@_announcement</p>
+        @if (_saveFailed)
+        {
+            <p class="field__error" role="alert">@L["Teams_SaveFailed"]</p>
+        }
+
+        if (team.Formation is { } formation && _picking is { } picked && picked < formation.Slots.Count)
+        {
+            var slot = formation.Slots[picked];
+            var occupant = team.OnPitch.GetValueOrDefault(picked);
+            var bench = BestFirst(slot, team.OffPitch);
+            var others = BestFirst(slot, team.OnPitch.Values
+                .Where(player => player.Id != occupant?.Id)
+                .OrderBy(player => player.Name, StringComparer.CurrentCultureIgnoreCase));
+            var unassigned = BestFirst(slot, _lineup.Unassigned);
+
+            <div class="picker">
+                <h2 class="picker__title" tabindex="-1" @ref="_pickerTitle">
+                    @L["Pitch_Choose", PositionName(slot.PositionCode)]
+                </h2>
+                @if (occupant is not null)
+                {
+                    <p class="user-text">@L["Pitch_Current", occupant.Name]</p>
+                    <div class="actions">
+                        <button type="button" class="button button--ghost" @onclick="() => PlaceAsync(slot, null)">
+                            @L["Pitch_Remove"]
+                        </button>
+                    </div>
+                }
+
+                <PlayerChoiceList Title="@L["Pitch_Bench"].Value" Players="bench" Detail="PreferredDetail"
+                                  OnPick="player => PlaceAsync(slot, player)" />
+                <PlayerChoiceList Title="@L["Pitch_OnPitch"].Value" Players="others" Detail="player => CurrentDetail(team, player)"
+                                  OnPick="player => PlaceAsync(slot, player)" />
+                <PlayerChoiceList Title="@L["Pitch_Unassigned"].Value" Players="unassigned" Detail="PreferredDetail"
+                                  OnPick="player => PlaceAsync(slot, player)" />
+
+                @if (bench.Count + others.Count + unassigned.Count == 0)
+                {
+                    <p class="hint">@L["Pitch_NoCandidate"]</p>
+                }
+
+                <div class="actions">
+                    <button type="button" class="button button--ghost" @onclick="() => ClosePicker(picked)">
+                        @L["Match_Cancel"]
+                    </button>
+                </div>
+            </div>
+        }
+        else
+        {
+            if (formations.Count > 0)
+            {
+                <div class="chips pitch-formations" role="group" aria-label="@L["Pitch_Formation"]">
+                    <button type="button" class="chip" aria-pressed="@(team.Formation is null ? "true" : "false")"
+                            @onclick="() => SetFormationAsync(null)">
+                        @L["Pitch_NoFormation"]
+                    </button>
+                    @foreach (var choice in formations)
+                    {
+                        <button @key="choice.Code" type="button" class="chip"
+                                aria-pressed="@(team.Formation?.Code == choice.Code ? "true" : "false")"
+                                @onclick="() => SetFormationAsync(choice.Code)">
+                            @(choice.HasGoalkeeper ? choice.Code : L["Pitch_NoKeeper", choice.Code].Value)
+                        </button>
+                    }
+                </div>
+            }
+            else
+            {
+                <p class="hint pitch-formations">@L["Pitch_NoPresets"]</p>
+            }
+
+            if (team.Formation is { } shown)
+            {
+                <p class="hint">@L["Pitch_Tap"]</p>
+
+                <div @key="(_side, shown.Code)" class="pitch team-color--@team.ColorCode" dir="ltr">
+                    @* L'attaque en haut, le but en bas. *@
+                    @foreach (var line in shown.Lines.Reverse())
+                    {
+                        <div class="pitch__line">
+                            @foreach (var slot in line)
+                            {
+                                var occupant = team.OnPitch.GetValueOrDefault(slot.Index);
+
+                                <button @key="slot.Index" @ref="_slotButtons[slot.Index]" type="button"
+                                        class="pitch__slot @(occupant is null ? "pitch__slot--free" : "")"
+                                        aria-label="@SlotLabel(slot, occupant)"
+                                        @onclick="() => OpenPicker(slot.Index)">
+                                    <span class="pitch__marker" aria-hidden="true">@L[SportLabels.PositionShortKey(slot.PositionCode)]</span>
+                                    <span class="pitch__name" dir="auto" aria-hidden="true">@(occupant?.Name ?? "+")</span>
+                                </button>
+                            }
+                        </div>
+                    }
+                </div>
+
+                <p class="hint pitch-count">@L["Pitch_Filled", team.OnPitch.Count, shown.Slots.Count]</p>
+
+                var offPitch = team.OffPitch;
+                <h2 class="lineup__title">@L["Pitch_BenchCount", offPitch.Count]</h2>
+                if (offPitch.Count == 0)
+                {
+                    <p class="hint">@(team.Players.Count == 0 ? L["Teams_Empty"] : L["Pitch_EveryonePlaced"])</p>
+                }
+                else
+                {
+                    <ul class="card squad-names pitch-bench">
+                        @foreach (var player in offPitch)
+                        {
+                            <li @key="player.Id"><span dir="auto">@player.Name</span></li>
+                        }
+                    </ul>
+                }
+            }
+            else if (team.Players.Count == 0)
+            {
+                <p class="hint">@L["Teams_Empty"]</p>
+            }
+            else
+            {
+                var positionCodes = SportCatalog.Find(_lineup.Match.SportCode)?.PositionCodes ?? [];
+
+                <h2 class="lineup__title">@L["Pitch_Positions"]</h2>
+                <ul class="card lineup">
+                    @foreach (var player in team.Players)
+                    {
+                        <li @key="(player.Id, _revision)" class="lineup__player pitch-position">
+                            <label for="position-@player.Id" class="player-list__name" dir="auto">@player.Name</label>
+                            <select id="position-@player.Id" value="@team.Positions.GetValueOrDefault(player.Id, "")"
+                                    @onchange="e => SetPositionAsync(player, e.Value as string)">
+                                <option value="">@L["Profile_NoPosition"]</option>
+                                @foreach (var positionCode in positionCodes)
+                                {
+                                    <option @key="positionCode" value="@positionCode">@PositionName(positionCode)</option>
+                                }
+                            </select>
+                        </li>
+                    }
+                </ul>
+            }
+
+            <p class="hint squad-hint">@L["Pitch_Optional"]</p>
+        }
+
+        <div class="actions">
+            <a class="button button--ghost" href="matchs/@Id/equipes">@L["Teams_Compose"]</a>
+            <a class="button" href="matchs/@Id">@L["Squad_Done"]</a>
+        </div>
+    }
+</section>
+
+@code {
+    private readonly ElementReference[] _slotButtons = new ElementReference[Match.MaxPlayersPerSide];
+
+    private MatchLineup? _lineup;
+    private TeamSide _side = TeamSide.A;
+    private ElementReference _pickerTitle;
+    private Guid _loadedId;
+    private int? _picking;
+    private int? _slotToFocus;
+    private int _revision;
+    private string _announcement = "";
+    private bool _focusPicker;
+    private bool _loadFailed;
+    private bool _notFound;
+    private bool _saving;
+    private bool _saveFailed;
+    private bool _persistenceRequested;
+
+    [Parameter] public Guid Id { get; set; }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedId == Id)
+        {
+            return;
+        }
+
+        _loadedId = Id;
+        _lineup = null;
+        _side = TeamSide.A;
+        _picking = _slotToFocus = null;
+        _announcement = "";
+        _loadFailed = _notFound = _saveFailed = false;
+
+        await LoadAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Le clavier et les lecteurs d'écran suivent : vers le choix d'un joueur, puis retour à l'emplacement.
+        if (_focusPicker)
+        {
+            _focusPicker = false;
+            await _pickerTitle.FocusAsync();
+        }
+        else if (_slotToFocus is { } slot)
+        {
+            _slotToFocus = null;
+
+            // Le terrain n'est plus affiché si la relecture a échoué.
+            if (!_loadFailed && _lineup?.Team(_side).Formation is { } formation && slot < formation.Slots.Count)
+            {
+                await _slotButtons[slot].FocusAsync();
+            }
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            _lineup = await Service.GetAsync(Id);
+            _notFound = _lineup is null;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _loadFailed = true;
+        }
+    }
+
+    private string Label(TeamLineup team) => TeamLabels.Name(L, team.Side, team.Name);
+
+    private string PositionName(string positionCode) => L[SportLabels.PositionKey(positionCode)];
+
+    private string SlotLabel(FormationSlot slot, Player? occupant) => occupant is null
+        ? L["Pitch_SlotFree", PositionName(slot.PositionCode)]
+        : L["Pitch_SlotTaken", PositionName(slot.PositionCode), occupant.Name];
+
+    /// <summary>Les joueurs dont le poste préféré convient à l'emplacement d'abord ; l'ordre reçu ensuite.</summary>
+    private static List<Player> BestFirst(FormationSlot slot, IEnumerable<Player> players) =>
+        players.OrderByDescending(player => slot.Affinity(player.PreferredPositionCode)).ToList();
+
+    private string PreferredDetail(Player player)
+    {
+        var details = new List<string>();
+        if (player.PreferredPositionCode is { } position)
+        {
+            details.Add(PositionName(position));
+        }
+
+        if (player.Level is { } level)
+        {
+            details.Add(L["Players_LevelShort", level]);
+        }
+
+        return string.Join(" · ", details);
+    }
+
+    private string CurrentDetail(TeamLineup team, Player player) =>
+        team.Positions.TryGetValue(player.Id, out var position) ? PositionName(position) : "";
+
+    private void ShowTeam(TeamSide side)
+    {
+        _side = side;
+        _picking = null;
+        _saveFailed = false;
+        _announcement = "";
+    }
+
+    private void OpenPicker(int slot)
+    {
+        _picking = slot;
+        _focusPicker = true;
+        _saveFailed = false;
+        _announcement = "";
+    }
+
+    private void ClosePicker(int slot)
+    {
+        _picking = null;
+        _slotToFocus = slot;
+    }
+
+    private Task SetFormationAsync(string? code)
+    {
+        if (_lineup!.Team(_side).Formation?.Code == code)
+        {
+            return Task.CompletedTask;
+        }
+
+        var side = _side;
+        return SaveAsync(() => Service.SetFormationAsync(Id, side, code), announcement: "");
+    }
+
+    private async Task PlaceAsync(FormationSlot slot, Player? player)
+    {
+        var side = _side;
+        await SaveAsync(() => Service.PlaceAsync(Id, side, slot.Index, player?.Id), SlotLabel(slot, player));
+        ClosePicker(slot.Index);
+    }
+
+    private Task SetPositionAsync(Player player, string? code)
+    {
+        var position = string.IsNullOrEmpty(code) ? null : code;
+        return SaveAsync(() => Service.SetPositionAsync(Id, player.Id, position), announcement: "");
+    }
+
+    /// <summary>Enregistre puis relit la composition : l'écran montre toujours ce qui est enregistré.</summary>
+    private async Task SaveAsync(Func<Task> write, string announcement)
+    {
+        // Un seul changement à la fois : un second tap pendant l'écriture est ignoré.
+        if (_saving)
+        {
+            return;
+        }
+
+        _saving = true;
+        _saveFailed = false;
+        _announcement = "";
+        try
+        {
+            await write();
+            _announcement = announcement;
+
+            // US-002 : des données ont été saisies, on demande au navigateur de les conserver (une fois par visite).
+            if (!_persistenceRequested)
+            {
+                _persistenceRequested = true;
+                await StoragePersistence.RequestAsync();
+            }
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _saveFailed = true;
+            _revision++;
+        }
+
+        await LoadAsync();
+        _saving = false;
+    }
+}

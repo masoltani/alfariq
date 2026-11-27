@@ -1,0 +1,32 @@
+@* Une liste de joueurs à toucher pour en choisir un (US-010). Rien ne s'affiche si elle est vide. *@
+@if (Players.Count > 0)
+{
+    <h3 class="picker__group">@Title</h3>
+    <ul class="card lineup">
+        @foreach (var player in Players)
+        {
+            var detail = Detail(player);
+
+            <li @key="player.Id">
+                <button type="button" class="picker__player" @onclick="() => OnPick.InvokeAsync(player)">
+                    <span class="player-list__name" dir="auto">@player.Name</span>
+                    @if (detail.Length > 0)
+                    {
+                        <span class="picker__detail">@detail</span>
+                    }
+                </button>
+            </li>
+        }
+    </ul>
+}
+
+@code {
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+
+    [Parameter, EditorRequired] public IReadOnlyList<Player> Players { get; set; } = [];
+
+    /// <summary>La précision affichée sous un nom ; vide s'il n'y en a pas.</summary>
+    [Parameter, EditorRequired] public Func<Player, string> Detail { get; set; } = default!;
+
+    [Parameter] public EventCallback<Player> OnPick { get; set; }
+}

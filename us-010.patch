@@ -1,0 +1,1920 @@
+diff --git a/Directory.Build.props b/Directory.Build.props
+index 3b730fd..419ae9e 100644
+--- a/Directory.Build.props
++++ b/Directory.Build.props
+@@ -6,7 +6,7 @@
+     <Nullable>enable</Nullable>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <AnalysisLevel>latest</AnalysisLevel>
+-    <Version>0.10.0</Version>
++    <Version>0.11.0</Version>
+     <Deterministic>true</Deterministic>
+   </PropertyGroup>
+ 
+diff --git a/docs/user-stories.md b/docs/user-stories.md
+index a7ae9a3..ac5d9f3 100644
+--- a/docs/user-stories.md
++++ b/docs/user-stories.md
+@@ -179,6 +179,8 @@ Critères d'acceptation :
+ - Le visuel reste lisible sur un écran de téléphone en mode portrait.
+ - Les postes sont optionnels : la composition sans postes reste valide.
+ 
++**Note (US-010)** : le catalogue ajoute des variantes aux quatre postes du football (`SportCatalog`) ; l'équilibrage (US-009) les compte comme leur poste général. Les formations sont dans `FormationCatalog` : 2-1-1, 1-2-1 et 2-2-1 (sans gardien attitré, 2-2-1 faisant cinq joueurs) en 5 contre 5 ; 2-3-1, 3-2-1 et 2-2-2 en 7 contre 7 ; 4-4-2, 4-3-3, 4-2-3-1 et 3-5-2 en 11 contre 11. Sur le terrain (`/matchs/{id}/equipes/terrain`, une équipe à la fois), le poste vient de l'emplacement (`MatchParticipant.Slot`, `MatchSide.FormationCode`) ; placer un joueur déjà sur le terrain échange les deux places. Sans formation (autre sport, format libre ou par choix), un poste se donne joueur par joueur. Changer un joueur d'équipe libère son emplacement. Si le format du match change, la formation enregistrée n'est plus appliquée. Le glisser-déposer et l'annulation (RG-COM-06) ne sont pas dans cette US.
++
+ ### US-011 — Partager la composition
+ En tant qu'organisateur, je veux partager la composition (image ou texte) vers WhatsApp ou une autre appli afin d'informer tout le monde sans qu'ils aient l'appli.
+ Priorité : M — Taille : M — Dépend de : US-008
+diff --git a/src/AlFariq.Application/LineupService.cs b/src/AlFariq.Application/LineupService.cs
+index a9b980e..c8dd372 100644
+--- a/src/AlFariq.Application/LineupService.cs
++++ b/src/AlFariq.Application/LineupService.cs
+@@ -7,15 +7,35 @@ namespace AlFariq.Application;
+ /// <param name="Name">Nom choisi ; null pour le nom par défaut.</param>
+ /// <param name="ColorCode">Code de <see cref="TeamColors"/>.</param>
+ /// <param name="Players">Ses joueurs, triés par nom.</param>
+-public sealed record TeamLineup(TeamSide Side, string? Name, string ColorCode, IReadOnlyList<Player> Players);
++/// <param name="Formation">Sa formation ; null sans formation, ou si celle enregistrée ne convient plus au format.</param>
++/// <param name="OnPitch">Le joueur de chaque emplacement occupé de la formation.</param>
++/// <param name="Positions">Le poste des joueurs qui en ont un pour ce match.</param>
++public sealed record TeamLineup(
++    TeamSide Side,
++    string? Name,
++    string ColorCode,
++    IReadOnlyList<Player> Players,
++    Formation? Formation,
++    IReadOnlyDictionary<int, Player> OnPitch,
++    IReadOnlyDictionary<Guid, string> Positions)
++{
++    /// <summary>Les joueurs de l'équipe sans emplacement (RG-COM-05), triés par nom.</summary>
++    public IReadOnlyList<Player> OffPitch =>
++        Players.Where(player => OnPitch.Values.All(placed => placed.Id != player.Id)).ToList();
++}
+ 
+ /// <summary>La composition d'un match : chaque joueur inscrit figure dans une seule des trois listes.</summary>
+ public sealed record MatchLineup(Match Match, TeamLineup TeamA, TeamLineup TeamB, IReadOnlyList<Player> Unassigned)
+ {
+     public int PlayerCount => TeamA.Players.Count + TeamB.Players.Count + Unassigned.Count;
++
++    public TeamLineup Team(TeamSide side) => side == TeamSide.A ? TeamA : TeamB;
+ }
+ 
+-/// <summary>Composition des équipes : à la main (US-008) ou d'après une proposition validée (US-009).</summary>
++/// <summary>
++/// Composition des équipes : à la main (US-008), d'après une proposition validée (US-009), puis placement sur le
++/// terrain et postes (US-010).
++/// </summary>
+ public sealed class LineupService
+ {
+     private readonly IRepository<Match> _matches;
+@@ -48,22 +68,52 @@ public sealed class LineupService
+         }
+ 
+         // Si un joueur avait plusieurs inscriptions (synchronisation future), la plus récemment modifiée l'emporte.
+-        var assignments = (await _participants.ListAsync(cancellationToken: cancellationToken))
+-            .Where(participant => participant.MatchId == matchId)
++        var registrations = (await RegistrationsAsync(matchId, cancellationToken))
+             .GroupBy(participant => participant.PlayerId)
+-            .ToDictionary(group => group.Key, group => group.MaxBy(participant => participant.UpdatedAt)!.Side);
++            .ToDictionary(group => group.Key, group => group.MaxBy(participant => participant.UpdatedAt)!);
++        var sport = SportCatalog.Find(squad.Match.SportCode);
+         var settings = (await _sides.ListAsync(cancellationToken: cancellationToken))
+             .Where(side => side.MatchId == matchId)
+             .ToList();
+ 
+         List<Player> PlayersOn(TeamSide? side) =>
+-            squad.Selected.Where(player => assignments.GetValueOrDefault(player.Id) == side).ToList();
++            squad.Selected.Where(player => registrations.GetValueOrDefault(player.Id)?.Side == side).ToList();
+ 
+         TeamLineup TeamOn(TeamSide side)
+         {
+             var custom = settings.FirstOrDefault(candidate => candidate.Side == side);
+             var color = TeamColors.IsKnown(custom?.ColorCode) ? custom!.ColorCode : TeamColors.DefaultFor(side);
+-            return new TeamLineup(side, custom?.Name, color, PlayersOn(side));
++            var players = PlayersOn(side);
++            var formation = FormationCatalog.Find(
++                squad.Match.SportCode, squad.Match.PlayersPerSide, custom?.FormationCode);
++
++            // Deux joueurs sur le même emplacement (synchronisation future) : le dernier placé l'occupe.
++            var onPitch = formation is null
++                ? new Dictionary<int, Player>()
++                : players
++                    .Where(player => registrations[player.Id].Slot is { } slot
++                        && slot >= 0 && slot < formation.Slots.Count)
++                    .GroupBy(player => registrations[player.Id].Slot!.Value)
++                    .ToDictionary(
++                        group => group.Key,
++                        group => group.MaxBy(player => registrations[player.Id].UpdatedAt)!);
++
++            var positions = new Dictionary<Guid, string>();
++            foreach (var player in players)
++            {
++                if (registrations[player.Id].PositionCode is { } code && sport?.HasPosition(code) == true)
++                {
++                    positions[player.Id] = code;
++                }
++            }
++
++            // Sur le terrain, c'est l'emplacement qui donne le poste.
++            foreach (var (slot, player) in onPitch)
++            {
++                positions[player.Id] = formation!.Slots[slot].PositionCode;
++            }
++
++            return new TeamLineup(side, custom?.Name, color, players, formation, onPitch, positions);
+         }
+ 
+         return new MatchLineup(squad.Match, TeamOn(TeamSide.A), TeamOn(TeamSide.B), PlayersOn(null));
+@@ -85,8 +135,8 @@ public sealed class LineupService
+         {
+             await RequireMatchAsync(matchId, cancellationToken);
+ 
+-            var registrations = (await _participants.ListAsync(cancellationToken: cancellationToken))
+-                .Where(participant => participant.MatchId == matchId && participant.PlayerId == playerId)
++            var registrations = (await RegistrationsAsync(matchId, cancellationToken))
++                .Where(participant => participant.PlayerId == playerId)
+                 .ToList();
+             if (registrations.Count == 0)
+             {
+@@ -96,6 +146,7 @@ public sealed class LineupService
+             foreach (var participant in registrations.Where(participant => participant.Side != side))
+             {
+                 participant.Side = side;
++                participant.Slot = null;
+                 await _participants.UpdateAsync(participant, cancellationToken);
+             }
+         }
+@@ -132,14 +183,12 @@ public sealed class LineupService
+                 throw new InvalidOperationException("Les joueurs du match ont changé depuis la proposition.");
+             }
+ 
+-            var registrations = (await _participants.ListAsync(cancellationToken: cancellationToken))
+-                .Where(participant => participant.MatchId == matchId)
+-                .ToList();
+-            foreach (var participant in registrations)
++            foreach (var participant in await RegistrationsAsync(matchId, cancellationToken))
+             {
+                 if (sides.TryGetValue(participant.PlayerId, out var side) && participant.Side != side)
+                 {
+                     participant.Side = side;
++                    participant.Slot = null;
+                     await _participants.UpdateAsync(participant, cancellationToken);
+                 }
+             }
+@@ -178,20 +227,80 @@ public sealed class LineupService
+         {
+             await RequireMatchAsync(matchId, cancellationToken);
+ 
+-            var existing = (await _sides.ListAsync(cancellationToken: cancellationToken))
+-                .FirstOrDefault(candidate => candidate.MatchId == matchId && candidate.Side == side);
+-            var team = existing ?? new MatchSide { MatchId = matchId, Side = side };
+-            team.Name = cleaned.Length == 0 ? null : cleaned;
+-            team.ColorCode = colorCode;
++            await SaveSideAsync(
++                matchId,
++                side,
++                team =>
++                {
++                    team.Name = cleaned.Length == 0 ? null : cleaned;
++                    team.ColorCode = colorCode;
++                },
++                cancellationToken);
++        }
++        finally
++        {
++            _writeGate.Release();
++        }
++    }
++
++    /// <summary>
++    /// Choisit la formation d'une équipe, ou l'enlève (<paramref name="formationCode"/> null). Les joueurs sont
++    /// replacés au mieux (<see cref="Formation.Distribute"/>) ; sans formation, ils gardent leur poste.
++    /// </summary>
++    /// <exception cref="ArgumentException">Cette formation n'existe pas pour le format du match.</exception>
++    /// <exception cref="KeyNotFoundException">Le match est introuvable.</exception>
++    public async Task SetFormationAsync(
++        Guid matchId, TeamSide side, string? formationCode, CancellationToken cancellationToken = default)
++    {
++        if (!Enum.IsDefined(side))
++        {
++            throw new ArgumentOutOfRangeException(nameof(side));
++        }
+ 
+-            if (existing is null)
++        await _writeGate.WaitAsync(cancellationToken);
++        try
++        {
++            var lineup = await RequireLineupAsync(matchId, cancellationToken);
++            var formation = FormationCatalog.Find(
++                lineup.Match.SportCode, lineup.Match.PlayersPerSide, formationCode);
++            if (formationCode is not null && formation is null)
+             {
+-                await _sides.AddAsync(team, cancellationToken);
++                throw new ArgumentException(
++                    $"Formation inconnue pour ce format : « {formationCode} ».", nameof(formationCode));
+             }
+-            else
++
++            var team = lineup.Team(side);
++            var previous = team.OnPitch.ToDictionary(entry => entry.Value.Id, entry => entry.Key);
++            var candidates = team.Players
++                .OrderBy(player => previous.GetValueOrDefault(player.Id, int.MaxValue))
++                .Select(player => new SlotCandidate(
++                    player.Id, team.Positions.GetValueOrDefault(player.Id), previous.ContainsKey(player.Id)))
++                .ToList();
++            var placed = formation?.Distribute(candidates) ?? new Dictionary<Guid, int>();
++            var members = team.Players.Select(player => player.Id).ToHashSet();
++
++            foreach (var participant in await RegistrationsAsync(matchId, cancellationToken))
+             {
+-                await _sides.UpdateAsync(team, cancellationToken);
++                var playerId = participant.PlayerId;
++                if (!members.Contains(playerId))
++                {
++                    continue;
++                }
++
++                if (formation is not null && placed.TryGetValue(playerId, out var slot))
++                {
++                    await MoveAsync(participant, side, slot, formation.Slots[slot].PositionCode, cancellationToken);
++                }
++                else
++                {
++                    // Un joueur qui perd sa place dans la nouvelle formation perd aussi le poste qui allait avec.
++                    var losesPlace = formation is not null && previous.ContainsKey(playerId);
++                    var position = losesPlace ? null : team.Positions.GetValueOrDefault(playerId);
++                    await MoveAsync(participant, side, slot: null, position, cancellationToken);
++                }
+             }
++
++            await SaveSideAsync(matchId, side, settings => settings.FormationCode = formation?.Code, cancellationToken);
+         }
+         finally
+         {
+@@ -199,6 +308,183 @@ public sealed class LineupService
+         }
+     }
+ 
++    /// <summary>
++    /// Place un joueur sur un emplacement, ou le libère (<paramref name="playerId"/> null). Un joueur non assigné
++    /// rejoint l'équipe. L'occupant précédent sort du terrain ; si le nouveau venu était déjà sur le terrain, les
++    /// deux échangent leurs places.
++    /// </summary>
++    /// <exception cref="ArgumentOutOfRangeException">Cet emplacement n'existe pas dans la formation.</exception>
++    /// <exception cref="KeyNotFoundException">Le match est introuvable.</exception>
++    /// <exception cref="InvalidOperationException">
++    /// L'équipe n'a pas de formation, ou le joueur n'est pas inscrit au match ou joue dans l'autre équipe.
++    /// </exception>
++    public async Task PlaceAsync(
++        Guid matchId, TeamSide side, int slot, Guid? playerId, CancellationToken cancellationToken = default)
++    {
++        if (!Enum.IsDefined(side))
++        {
++            throw new ArgumentOutOfRangeException(nameof(side));
++        }
++
++        await _writeGate.WaitAsync(cancellationToken);
++        try
++        {
++            var lineup = await RequireLineupAsync(matchId, cancellationToken);
++            var team = lineup.Team(side);
++            var formation = team.Formation
++                ?? throw new InvalidOperationException("Cette équipe n'a pas de formation.");
++            if (slot < 0 || slot >= formation.Slots.Count)
++            {
++                throw new ArgumentOutOfRangeException(nameof(slot));
++            }
++
++            var registrations = await RegistrationsAsync(matchId, cancellationToken);
++            int? origin = null;
++            if (playerId is { } incoming)
++            {
++                if (registrations.All(participant => participant.PlayerId != incoming))
++                {
++                    throw new InvalidOperationException("Ce joueur n'est pas inscrit à ce match.");
++                }
++
++                var opponents = lineup.Team(side == TeamSide.A ? TeamSide.B : TeamSide.A);
++                if (opponents.Players.Any(player => player.Id == incoming))
++                {
++                    throw new InvalidOperationException("Ce joueur est dans l'autre équipe.");
++                }
++
++                origin = team.OnPitch
++                    .Where(entry => entry.Value.Id == incoming)
++                    .Select(entry => (int?)entry.Key)
++                    .FirstOrDefault();
++                if (origin == slot)
++                {
++                    return;
++                }
++            }
++
++            // L'occupant s'en va d'abord, puis le nouveau venu arrive.
++            var occupant = team.OnPitch.GetValueOrDefault(slot);
++            foreach (var participant in registrations.Where(participant =>
++                participant.Side == side && participant.Slot == slot && participant.PlayerId != playerId))
++            {
++                if (origin is { } free && participant.PlayerId == occupant?.Id)
++                {
++                    await MoveAsync(participant, side, free, formation.Slots[free].PositionCode, cancellationToken);
++                }
++                else
++                {
++                    await MoveAsync(participant, side, slot: null, positionCode: null, cancellationToken);
++                }
++            }
++
++            foreach (var participant in registrations.Where(participant => participant.PlayerId == playerId))
++            {
++                await MoveAsync(participant, side, slot, formation.Slots[slot].PositionCode, cancellationToken);
++            }
++        }
++        finally
++        {
++            _writeGate.Release();
++        }
++    }
++
++    /// <summary>
++    /// Donne un poste à un joueur dont l'équipe n'a pas de formation, ou le lui retire
++    /// (<paramref name="positionCode"/> null).
++    /// </summary>
++    /// <exception cref="ArgumentException">Ce poste n'existe pas dans le sport du match.</exception>
++    /// <exception cref="KeyNotFoundException">Le match est introuvable.</exception>
++    /// <exception cref="InvalidOperationException">
++    /// Le joueur n'est pas inscrit au match, ou son équipe a une formation : le poste vient alors de l'emplacement.
++    /// </exception>
++    public async Task SetPositionAsync(
++        Guid matchId, Guid playerId, string? positionCode, CancellationToken cancellationToken = default)
++    {
++        await _writeGate.WaitAsync(cancellationToken);
++        try
++        {
++            var lineup = await RequireLineupAsync(matchId, cancellationToken);
++            if (positionCode is not null
++                && SportCatalog.Find(lineup.Match.SportCode)?.HasPosition(positionCode) != true)
++            {
++                throw new ArgumentException(
++                    $"Le poste « {positionCode} » n'existe pas dans ce sport.", nameof(positionCode));
++            }
++
++            var registrations = (await RegistrationsAsync(matchId, cancellationToken))
++                .Where(participant => participant.PlayerId == playerId)
++                .ToList();
++            if (registrations.Count == 0)
++            {
++                throw new InvalidOperationException("Ce joueur n'est pas inscrit à ce match.");
++            }
++
++            if (new[] { lineup.TeamA, lineup.TeamB }.Any(team =>
++                team.Formation is not null && team.Players.Any(player => player.Id == playerId)))
++            {
++                throw new InvalidOperationException("Avec une formation, le poste vient de l'emplacement.");
++            }
++
++            foreach (var participant in registrations)
++            {
++                await MoveAsync(participant, participant.Side, slot: null, positionCode, cancellationToken);
++            }
++        }
++        finally
++        {
++            _writeGate.Release();
++        }
++    }
++
++    private async Task<List<MatchParticipant>> RegistrationsAsync(Guid matchId, CancellationToken cancellationToken) =>
++        (await _participants.ListAsync(cancellationToken: cancellationToken))
++            .Where(participant => participant.MatchId == matchId)
++            .ToList();
++
++    /// <summary>Enregistre l'équipe, l'emplacement et le poste d'une inscription, seulement s'ils changent.</summary>
++    private async Task MoveAsync(
++        MatchParticipant participant,
++        TeamSide? side,
++        int? slot,
++        string? positionCode,
++        CancellationToken cancellationToken)
++    {
++        if (participant.Side == side && participant.Slot == slot && participant.PositionCode == positionCode)
++        {
++            return;
++        }
++
++        participant.Side = side;
++        participant.Slot = slot;
++        participant.PositionCode = positionCode;
++        await _participants.UpdateAsync(participant, cancellationToken);
++    }
++
++    /// <summary>Modifie les réglages d'une équipe, en les créant à la première personnalisation.</summary>
++    private async Task SaveSideAsync(
++        Guid matchId, TeamSide side, Action<MatchSide> change, CancellationToken cancellationToken)
++    {
++        var existing = (await _sides.ListAsync(cancellationToken: cancellationToken))
++            .FirstOrDefault(candidate => candidate.MatchId == matchId && candidate.Side == side);
++        var settings = existing
++            ?? new MatchSide { MatchId = matchId, Side = side, ColorCode = TeamColors.DefaultFor(side) };
++        change(settings);
++
++        if (existing is null)
++        {
++            await _sides.AddAsync(settings, cancellationToken);
++        }
++        else
++        {
++            await _sides.UpdateAsync(settings, cancellationToken);
++        }
++    }
++
++    private async Task<MatchLineup> RequireLineupAsync(Guid matchId, CancellationToken cancellationToken) =>
++        await GetAsync(matchId, cancellationToken)
++            ?? throw new KeyNotFoundException($"Aucun match actif avec l'identifiant {matchId}.");
++
+     private async Task RequireMatchAsync(Guid matchId, CancellationToken cancellationToken)
+     {
+         if (await _matches.GetAsync(matchId, cancellationToken: cancellationToken) is null)
+diff --git a/src/AlFariq.Domain/Matches/BalancePlayer.cs b/src/AlFariq.Domain/Matches/BalancePlayer.cs
+index 09c1cf4..ba7fed9 100644
+--- a/src/AlFariq.Domain/Matches/BalancePlayer.cs
++++ b/src/AlFariq.Domain/Matches/BalancePlayer.cs
+@@ -7,12 +7,17 @@ namespace AlFariq.Domain;
+ /// <param name="LockedSide">Côté imposé par l'organisateur ; null si le joueur est libre.</param>
+ public sealed record BalancePlayer(Guid Id, int? Level, string? PositionCode = null, TeamSide? LockedSide = null)
+ {
+-    /// <summary>Un joueur du répertoire pour un match de ce sport : un poste d'un autre sport est ignoré.</summary>
++    /// <summary>
++    /// Un joueur du répertoire pour un match de ce sport : un poste d'un autre sport est ignoré, et une variante
++    /// compte comme son poste général (un arrière gauche est un défenseur).
++    /// </summary>
+     public static BalancePlayer From(Player player, Sport? sport, TeamSide? lockedSide = null)
+     {
+         ArgumentNullException.ThrowIfNull(player);
+ 
+-        var position = sport?.HasPosition(player.PreferredPositionCode) == true ? player.PreferredPositionCode : null;
++        var position = player.PreferredPositionCode is { } code && sport?.HasPosition(code) == true
++            ? SportCatalog.BaseOf(code)
++            : null;
+         return new BalancePlayer(player.Id, player.Level, position, lockedSide);
+     }
+ }
+diff --git a/src/AlFariq.Domain/Matches/Formation.cs b/src/AlFariq.Domain/Matches/Formation.cs
+new file mode 100644
+index 0000000..d7c465d
+--- /dev/null
++++ b/src/AlFariq.Domain/Matches/Formation.cs
+@@ -0,0 +1,78 @@
++namespace AlFariq.Domain;
++
++/// <summary>Un emplacement du terrain.</summary>
++/// <param name="Index">Rang dans la formation, de l'arrière vers l'avant puis de gauche à droite ; enregistré avec les données.</param>
++/// <param name="PositionCode">Poste de cet emplacement, code de <see cref="SportCatalog"/>.</param>
++public sealed record FormationSlot(int Index, string PositionCode)
++{
++    /// <summary>À quel point un poste convient ici : 2 pour le même, 1 pour le même poste général, 0 sinon.</summary>
++    public int Affinity(string? positionCode)
++    {
++        if (positionCode is null)
++        {
++            return 0;
++        }
++
++        if (positionCode == PositionCode)
++        {
++            return 2;
++        }
++
++        return SportCatalog.BaseOf(positionCode) == SportCatalog.BaseOf(PositionCode) ? 1 : 0;
++    }
++}
++
++/// <summary>Un joueur d'une équipe à répartir sur les emplacements d'une formation.</summary>
++/// <param name="PlayerId">Identifiant du joueur.</param>
++/// <param name="PositionCode">Son poste actuel pour ce match ; null s'il n'en a pas.</param>
++/// <param name="WasOnPitch">Vrai s'il occupait déjà un emplacement.</param>
++public sealed record SlotCandidate(Guid PlayerId, string? PositionCode, bool WasOnPitch);
++
++/// <summary>Une disposition d'une équipe sur le terrain, gardien compris.</summary>
++/// <param name="Code">Nom usuel (« 4-4-2 »), unique pour un format et enregistré avec les données.</param>
++/// <param name="Lines">Les lignes d'emplacements, de l'arrière vers l'avant, chacune de gauche à droite.</param>
++public sealed record Formation(string Code, IReadOnlyList<IReadOnlyList<FormationSlot>> Lines)
++{
++    /// <summary>Tous les emplacements, dans l'ordre de leur rang.</summary>
++    public IReadOnlyList<FormationSlot> Slots { get; } = Lines.SelectMany(line => line).ToList();
++
++    public int PlayersPerSide => Slots.Count;
++
++    public bool HasGoalkeeper => Slots.Any(slot => slot.PositionCode.EndsWith(".goalkeeper", StringComparison.Ordinal));
++
++    /// <summary>
++    /// Replace les joueurs quand on choisit cette formation : d'abord sur leur poste exact, puis sur le même poste
++    /// général. Ceux qui étaient déjà sur le terrain passent en premier et prennent ensuite les places qui restent,
++    /// sauf le but : personne ne devient gardien automatiquement. Les autres joueurs ne sont placés que si leur poste
++    /// correspond.
++    /// </summary>
++    /// <returns>L'emplacement de chaque joueur placé.</returns>
++    public IReadOnlyDictionary<Guid, int> Distribute(IReadOnlyList<SlotCandidate> candidates)
++    {
++        ArgumentNullException.ThrowIfNull(candidates);
++
++        var ordered = candidates.OrderByDescending(candidate => candidate.WasOnPitch).ToList();
++        var free = Slots.ToList();
++        var placed = new Dictionary<Guid, int>();
++
++        Fill((candidate, slot) => slot.Affinity(candidate.PositionCode) == 2);
++        Fill((candidate, slot) => slot.Affinity(candidate.PositionCode) == 1);
++        Fill((candidate, slot) =>
++            candidate.WasOnPitch && !slot.PositionCode.EndsWith(".goalkeeper", StringComparison.Ordinal));
++
++        return placed;
++
++        void Fill(Func<SlotCandidate, FormationSlot, bool> fits)
++        {
++            foreach (var candidate in ordered.Where(candidate => !placed.ContainsKey(candidate.PlayerId)))
++            {
++                var slot = free.FirstOrDefault(open => fits(candidate, open));
++                if (slot is not null)
++                {
++                    placed[candidate.PlayerId] = slot.Index;
++                    free.Remove(slot);
++                }
++            }
++        }
++    }
++}
+diff --git a/src/AlFariq.Domain/Matches/FormationCatalog.cs b/src/AlFariq.Domain/Matches/FormationCatalog.cs
+new file mode 100644
+index 0000000..6a2d0e2
+--- /dev/null
++++ b/src/AlFariq.Domain/Matches/FormationCatalog.cs
+@@ -0,0 +1,85 @@
++namespace AlFariq.Domain;
++
++/// <summary>
++/// Formations livrées avec l'application (US-010), pour le football seulement. Pour en ajouter une : l'ajouter ici.
++/// Ne jamais renommer une formation livrée ni réordonner ses emplacements : les compositions enregistrées s'y réfèrent.
++/// </summary>
++public static class FormationCatalog
++{
++    private const string Goal = "football.goalkeeper";
++    private const string Defender = "football.defender";
++    private const string CentreBack = "football.centre_back";
++    private const string LeftBack = "football.left_back";
++    private const string RightBack = "football.right_back";
++    private const string Midfielder = "football.midfielder";
++    private const string Holding = "football.defensive_midfielder";
++    private const string Central = "football.central_midfielder";
++    private const string Attacking = "football.attacking_midfielder";
++    private const string LeftMid = "football.left_midfielder";
++    private const string RightMid = "football.right_midfielder";
++    private const string Forward = "football.forward";
++    private const string Striker = "football.striker";
++    private const string LeftWing = "football.left_winger";
++    private const string RightWing = "football.right_winger";
++
++    private static readonly IReadOnlyList<Formation> Football =
++    [
++        // 5 contre 5. « 2-2-1 » compte cinq joueurs de champ : c'est la variante sans gardien attitré.
++        Create("2-1-1", [Goal], [Defender, Defender], [Midfielder], [Forward]),
++        Create("1-2-1", [Goal], [Defender], [LeftMid, RightMid], [Forward]),
++        Create("2-2-1", [Defender, Defender], [Midfielder, Midfielder], [Forward]),
++
++        // 7 contre 7.
++        Create("2-3-1", [Goal], [CentreBack, CentreBack], [LeftMid, Central, RightMid], [Striker]),
++        Create("3-2-1", [Goal], [LeftBack, CentreBack, RightBack], [Central, Central], [Striker]),
++        Create("2-2-2", [Goal], [CentreBack, CentreBack], [Central, Central], [Striker, Striker]),
++
++        // 11 contre 11.
++        Create(
++            "4-4-2",
++            [Goal],
++            [LeftBack, CentreBack, CentreBack, RightBack],
++            [LeftMid, Central, Central, RightMid],
++            [Striker, Striker]),
++        Create(
++            "4-3-3",
++            [Goal],
++            [LeftBack, CentreBack, CentreBack, RightBack],
++            [Central, Holding, Central],
++            [LeftWing, Striker, RightWing]),
++        Create(
++            "4-2-3-1",
++            [Goal],
++            [LeftBack, CentreBack, CentreBack, RightBack],
++            [Holding, Holding],
++            [LeftMid, Attacking, RightMid],
++            [Striker]),
++        Create(
++            "3-5-2",
++            [Goal],
++            [CentreBack, CentreBack, CentreBack],
++            [LeftMid, Central, Holding, Central, RightMid],
++            [Striker, Striker]),
++    ];
++
++    /// <summary>Les formations d'un format ; vide s'il n'y en a pas (autre sport ou format libre).</summary>
++    public static IReadOnlyList<Formation> For(string sportCode, int playersPerSide) =>
++        sportCode == SportCatalog.FootballCode
++            ? Football.Where(formation => formation.PlayersPerSide == playersPerSide).ToList()
++            : [];
++
++    /// <summary>La formation portant ce code pour ce format, ou null.</summary>
++    public static Formation? Find(string sportCode, int playersPerSide, string? code) =>
++        For(sportCode, playersPerSide).FirstOrDefault(formation => formation.Code == code);
++
++    private static Formation Create(string code, params string[][] lines)
++    {
++        var index = 0;
++        var slots = lines
++            .Select(line => (IReadOnlyList<FormationSlot>)line
++                .Select(position => new FormationSlot(index++, position))
++                .ToList())
++            .ToList();
++        return new Formation(code, slots);
++    }
++}
+diff --git a/src/AlFariq.Domain/Matches/MatchParticipant.cs b/src/AlFariq.Domain/Matches/MatchParticipant.cs
+index 192d083..9dd262b 100644
+--- a/src/AlFariq.Domain/Matches/MatchParticipant.cs
++++ b/src/AlFariq.Domain/Matches/MatchParticipant.cs
+@@ -12,4 +12,13 @@ public sealed class MatchParticipant : Entity
+ 
+     /// <summary>Équipe du joueur ; null tant qu'il n'est pas assigné. Un seul champ : jamais deux équipes.</summary>
+     public TeamSide? Side { get; set; }
++
++    /// <summary>
++    /// Emplacement occupé dans la formation de l'équipe (<see cref="FormationSlot.Index"/>) ; null hors du terrain.
++    /// Quitter l'équipe libère l'emplacement.
++    /// </summary>
++    public int? Slot { get; set; }
++
++    /// <summary>Poste pour ce match (US-010), facultatif ; code de <see cref="SportCatalog"/>.</summary>
++    public string? PositionCode { get; set; }
+ }
+diff --git a/src/AlFariq.Domain/Matches/MatchSide.cs b/src/AlFariq.Domain/Matches/MatchSide.cs
+index d163f77..50c7931 100644
+--- a/src/AlFariq.Domain/Matches/MatchSide.cs
++++ b/src/AlFariq.Domain/Matches/MatchSide.cs
+@@ -1,8 +1,8 @@
+ namespace AlFariq.Domain;
+ 
+ /// <summary>
+-/// Réglages d'une équipe pour un match (US-008). Elle n'est enregistrée qu'une fois personnalisée :
+-/// sans elle, le nom et la couleur par défaut s'appliquent.
++/// Réglages d'une équipe pour un match (US-008, US-010). Ils ne sont enregistrés qu'une fois personnalisés :
++/// sans eux, le nom et la couleur par défaut s'appliquent, sans formation.
+ /// </summary>
+ public sealed class MatchSide : Entity
+ {
+@@ -17,4 +17,7 @@ public sealed class MatchSide : Entity
+ 
+     /// <summary>Code de <see cref="TeamColors"/>.</summary>
+     public string ColorCode { get; set; } = "";
++
++    /// <summary>Code d'une formation de <see cref="FormationCatalog"/> ; null sans formation (US-010).</summary>
++    public string? FormationCode { get; set; }
+ }
+diff --git a/src/AlFariq.Domain/Releases/changelog.json b/src/AlFariq.Domain/Releases/changelog.json
+index 9397d1a..60e048f 100644
+--- a/src/AlFariq.Domain/Releases/changelog.json
++++ b/src/AlFariq.Domain/Releases/changelog.json
+@@ -1,5 +1,27 @@
+ {
+   "entries": [
++    {
++      "version": "0.11.0",
++      "date": "2026-11-27",
++      "changes": [
++        {
++          "type": "added",
++          "text": {
++            "fr": "Place les joueurs sur un terrain : choisis une formation, puis touche un emplacement pour placer ou remplacer un joueur.",
++            "en": "Place players on a pitch: pick a formation, then tap a spot to place or replace a player.",
++            "ar": "وزّع اللاعبين على الملعب: اختر خطة اللعب، ثم المس موقعاً لوضع لاعب أو استبداله."
++          }
++        },
++        {
++          "type": "added",
++          "text": {
++            "fr": "Davantage de postes au football (arrière gauche, milieu offensif, avant-centre…), toujours facultatifs.",
++            "en": "More football positions (left back, attacking midfielder, striker…), still optional.",
++            "ar": "مراكز أكثر في كرة القدم (ظهير أيسر، وسط مهاجم، رأس حربة…)، وتبقى اختيارية."
++          }
++        }
++      ]
++    },
+     {
+       "version": "0.10.0",
+       "date": "2026-11-27",
+diff --git a/src/AlFariq.Domain/Sports/SportCatalog.cs b/src/AlFariq.Domain/Sports/SportCatalog.cs
+index 8e24d77..9fad859 100644
+--- a/src/AlFariq.Domain/Sports/SportCatalog.cs
++++ b/src/AlFariq.Domain/Sports/SportCatalog.cs
+@@ -11,15 +11,41 @@ public static class SportCatalog
+     /// <summary>Les sports proposés ; le premier est le sport par défaut.</summary>
+     public static IReadOnlyList<Sport> All { get; } =
+     [
+-        Create(FootballCode, [5, 7, 11], "goalkeeper", "defender", "midfielder", "forward"),
++        Create(
++            FootballCode,
++            [5, 7, 11],
++            "goalkeeper",
++            "defender", "centre_back", "left_back", "right_back",
++            "midfielder", "defensive_midfielder", "central_midfielder", "attacking_midfielder",
++            "left_midfielder", "right_midfielder",
++            "forward", "striker", "left_winger", "right_winger"),
+         Create("futsal", [5], "goalkeeper", "defender", "winger", "pivot"),
+         Create("basketball", [5, 3], "guard", "forward", "center"),
+         Create("handball", [7], "goalkeeper", "winger", "back", "pivot"),
+         Create("volleyball", [6, 4, 2], "setter", "outside", "opposite", "middle", "libero"),
+     ];
+ 
++    // Variante → poste général. Un poste absent de cette table est lui-même un poste général.
++    private static readonly Dictionary<string, string> BasePositions = new()
++    {
++        ["football.centre_back"] = "football.defender",
++        ["football.left_back"] = "football.defender",
++        ["football.right_back"] = "football.defender",
++        ["football.defensive_midfielder"] = "football.midfielder",
++        ["football.central_midfielder"] = "football.midfielder",
++        ["football.attacking_midfielder"] = "football.midfielder",
++        ["football.left_midfielder"] = "football.midfielder",
++        ["football.right_midfielder"] = "football.midfielder",
++        ["football.striker"] = "football.forward",
++        ["football.left_winger"] = "football.forward",
++        ["football.right_winger"] = "football.forward",
++    };
++
+     public static Sport Default => All[0];
+ 
++    /// <summary>Le poste général d'une variante (« arrière gauche » → « défenseur ») ; sinon le poste lui-même.</summary>
++    public static string BaseOf(string positionCode) => BasePositions.GetValueOrDefault(positionCode, positionCode);
++
+     /// <summary>Le sport portant ce code, ou null s'il est inconnu.</summary>
+     public static Sport? Find(string? code) => All.FirstOrDefault(sport => sport.Code == code);
+ 
+diff --git a/src/AlFariq.UI/Components/PlayerChoiceList.razor b/src/AlFariq.UI/Components/PlayerChoiceList.razor
+new file mode 100644
+index 0000000..5b75305
+--- /dev/null
++++ b/src/AlFariq.UI/Components/PlayerChoiceList.razor
+@@ -0,0 +1,32 @@
++@* Une liste de joueurs à toucher pour en choisir un (US-010). Rien ne s'affiche si elle est vide. *@
++@if (Players.Count > 0)
++{
++    <h3 class="picker__group">@Title</h3>
++    <ul class="card lineup">
++        @foreach (var player in Players)
++        {
++            var detail = Detail(player);
++
++            <li @key="player.Id">
++                <button type="button" class="picker__player" @onclick="() => OnPick.InvokeAsync(player)">
++                    <span class="player-list__name" dir="auto">@player.Name</span>
++                    @if (detail.Length > 0)
++                    {
++                        <span class="picker__detail">@detail</span>
++                    }
++                </button>
++            </li>
++        }
++    </ul>
++}
++
++@code {
++    [Parameter, EditorRequired] public string Title { get; set; } = "";
++
++    [Parameter, EditorRequired] public IReadOnlyList<Player> Players { get; set; } = [];
++
++    /// <summary>La précision affichée sous un nom ; vide s'il n'y en a pas.</summary>
++    [Parameter, EditorRequired] public Func<Player, string> Detail { get; set; } = default!;
++
++    [Parameter] public EventCallback<Player> OnPick { get; set; }
++}
+diff --git a/src/AlFariq.UI/Pages/MatchDetails.razor b/src/AlFariq.UI/Pages/MatchDetails.razor
+index c7c22d2..b232ae4 100644
+--- a/src/AlFariq.UI/Pages/MatchDetails.razor
++++ b/src/AlFariq.UI/Pages/MatchDetails.razor
+@@ -114,6 +114,7 @@
+                 }
+                 <div class="actions">
+                     <a class="button" href="matchs/@_match.Id/equipes">@L["Teams_Compose"]</a>
++                    <a class="button button--ghost" href="matchs/@_match.Id/equipes/terrain">@L["Pitch_Open"]</a>
+                 </div>
+             </div>
+         }
+diff --git a/src/AlFariq.UI/Pages/MatchPitch.razor b/src/AlFariq.UI/Pages/MatchPitch.razor
+new file mode 100644
+index 0000000..2f51fa3
+--- /dev/null
++++ b/src/AlFariq.UI/Pages/MatchPitch.razor
+@@ -0,0 +1,386 @@
++@page "/matchs/{Id:guid}/equipes/terrain"
++@using AlFariq.Application
++@inject IStringLocalizer<Strings> L
++@inject LineupService Service
++@inject IStoragePersistence StoragePersistence
++@inject TimeProvider Clock
++
++<PageTitle>@L["Pitch_Title"] · @L["App_Name"]</PageTitle>
++
++<section class="page">
++    <h1>@L["Pitch_Title"]</h1>
++
++    @if (_loadFailed)
++    {
++        <div class="card" role="alert">
++            <p>@L["Storage_Unavailable"]</p>
++        </div>
++    }
++    else if (_notFound)
++    {
++        <div class="card card--empty">
++            <p>@L["Match_NotFound"]</p>
++        </div>
++        <div class="actions">
++            <a class="button button--ghost" href="matchs">@L["Match_Back"]</a>
++        </div>
++    }
++    else if (_lineup is not null)
++    {
++        var start = MatchSchedule.ToLocal(_lineup.Match.StartsAt, Clock.LocalTimeZone);
++        var team = _lineup.Team(_side);
++        var formations = FormationCatalog.For(_lineup.Match.SportCode, _lineup.Match.PlayersPerSide);
++
++        <p class="lead squad-lead">
++            @L["Home_MatchDate", MatchLabels.LongDate(start), MatchLabels.Time(start)]<br />
++            @L["Home_MatchFormat", _lineup.Match.PlayersPerSide]
++        </p>
++
++        <fieldset class="segmented pitch-teams">
++            <legend class="sr-only">@L["Pitch_Team"]</legend>
++            @foreach (var candidate in new[] { _lineup.TeamA, _lineup.TeamB })
++            {
++                <label @key="candidate.Side" class="segmented__option">
++                    <input type="radio" name="pitch-team" checked="@(candidate.Side == _side)"
++                           @onchange="() => ShowTeam(candidate.Side)" />
++                    <span class="team-color--@candidate.ColorCode" dir="auto">@Label(candidate)</span>
++                </label>
++            }
++        </fieldset>
++
++        <p class="sr-only" role="status">@_announcement</p>
++        @if (_saveFailed)
++        {
++            <p class="field__error" role="alert">@L["Teams_SaveFailed"]</p>
++        }
++
++        if (team.Formation is { } formation && _picking is { } picked && picked < formation.Slots.Count)
++        {
++            var slot = formation.Slots[picked];
++            var occupant = team.OnPitch.GetValueOrDefault(picked);
++            var bench = BestFirst(slot, team.OffPitch);
++            var others = BestFirst(slot, team.OnPitch.Values
++                .Where(player => player.Id != occupant?.Id)
++                .OrderBy(player => player.Name, StringComparer.CurrentCultureIgnoreCase));
++            var unassigned = BestFirst(slot, _lineup.Unassigned);
++
++            <div class="picker">
++                <h2 class="picker__title" tabindex="-1" @ref="_pickerTitle">
++                    @L["Pitch_Choose", PositionName(slot.PositionCode)]
++                </h2>
++                @if (occupant is not null)
++                {
++                    <p class="user-text">@L["Pitch_Current", occupant.Name]</p>
++                    <div class="actions">
++                        <button type="button" class="button button--ghost" @onclick="() => PlaceAsync(slot, null)">
++                            @L["Pitch_Remove"]
++                        </button>
++                    </div>
++                }
++
++                <PlayerChoiceList Title="@L["Pitch_Bench"].Value" Players="bench" Detail="PreferredDetail"
++                                  OnPick="player => PlaceAsync(slot, player)" />
++                <PlayerChoiceList Title="@L["Pitch_OnPitch"].Value" Players="others" Detail="player => CurrentDetail(team, player)"
++                                  OnPick="player => PlaceAsync(slot, player)" />
++                <PlayerChoiceList Title="@L["Pitch_Unassigned"].Value" Players="unassigned" Detail="PreferredDetail"
++                                  OnPick="player => PlaceAsync(slot, player)" />
++
++                @if (bench.Count + others.Count + unassigned.Count == 0)
++                {
++                    <p class="hint">@L["Pitch_NoCandidate"]</p>
++                }
++
++                <div class="actions">
++                    <button type="button" class="button button--ghost" @onclick="() => ClosePicker(picked)">
++                        @L["Match_Cancel"]
++                    </button>
++                </div>
++            </div>
++        }
++        else
++        {
++            if (formations.Count > 0)
++            {
++                <div class="chips pitch-formations" role="group" aria-label="@L["Pitch_Formation"]">
++                    <button type="button" class="chip" aria-pressed="@(team.Formation is null ? "true" : "false")"
++                            @onclick="() => SetFormationAsync(null)">
++                        @L["Pitch_NoFormation"]
++                    </button>
++                    @foreach (var choice in formations)
++                    {
++                        <button @key="choice.Code" type="button" class="chip"
++                                aria-pressed="@(team.Formation?.Code == choice.Code ? "true" : "false")"
++                                @onclick="() => SetFormationAsync(choice.Code)">
++                            @(choice.HasGoalkeeper ? choice.Code : L["Pitch_NoKeeper", choice.Code].Value)
++                        </button>
++                    }
++                </div>
++            }
++            else
++            {
++                <p class="hint pitch-formations">@L["Pitch_NoPresets"]</p>
++            }
++
++            if (team.Formation is { } shown)
++            {
++                <p class="hint">@L["Pitch_Tap"]</p>
++
++                <div @key="(_side, shown.Code)" class="pitch team-color--@team.ColorCode" dir="ltr">
++                    @* L'attaque en haut, le but en bas. *@
++                    @foreach (var line in shown.Lines.Reverse())
++                    {
++                        <div class="pitch__line">
++                            @foreach (var slot in line)
++                            {
++                                var occupant = team.OnPitch.GetValueOrDefault(slot.Index);
++
++                                <button @key="slot.Index" @ref="_slotButtons[slot.Index]" type="button"
++                                        class="pitch__slot @(occupant is null ? "pitch__slot--free" : "")"
++                                        aria-label="@SlotLabel(slot, occupant)"
++                                        @onclick="() => OpenPicker(slot.Index)">
++                                    <span class="pitch__marker" aria-hidden="true">@L[SportLabels.PositionShortKey(slot.PositionCode)]</span>
++                                    <span class="pitch__name" dir="auto" aria-hidden="true">@(occupant?.Name ?? "+")</span>
++                                </button>
++                            }
++                        </div>
++                    }
++                </div>
++
++                <p class="hint pitch-count">@L["Pitch_Filled", team.OnPitch.Count, shown.Slots.Count]</p>
++
++                var offPitch = team.OffPitch;
++                <h2 class="lineup__title">@L["Pitch_BenchCount", offPitch.Count]</h2>
++                if (offPitch.Count == 0)
++                {
++                    <p class="hint">@(team.Players.Count == 0 ? L["Teams_Empty"] : L["Pitch_EveryonePlaced"])</p>
++                }
++                else
++                {
++                    <ul class="card squad-names pitch-bench">
++                        @foreach (var player in offPitch)
++                        {
++                            <li @key="player.Id"><span dir="auto">@player.Name</span></li>
++                        }
++                    </ul>
++                }
++            }
++            else if (team.Players.Count == 0)
++            {
++                <p class="hint">@L["Teams_Empty"]</p>
++            }
++            else
++            {
++                var positionCodes = SportCatalog.Find(_lineup.Match.SportCode)?.PositionCodes ?? [];
++
++                <h2 class="lineup__title">@L["Pitch_Positions"]</h2>
++                <ul class="card lineup">
++                    @foreach (var player in team.Players)
++                    {
++                        <li @key="(player.Id, _revision)" class="lineup__player pitch-position">
++                            <label for="position-@player.Id" class="player-list__name" dir="auto">@player.Name</label>
++                            <select id="position-@player.Id" value="@team.Positions.GetValueOrDefault(player.Id, "")"
++                                    @onchange="e => SetPositionAsync(player, e.Value as string)">
++                                <option value="">@L["Profile_NoPosition"]</option>
++                                @foreach (var positionCode in positionCodes)
++                                {
++                                    <option @key="positionCode" value="@positionCode">@PositionName(positionCode)</option>
++                                }
++                            </select>
++                        </li>
++                    }
++                </ul>
++            }
++
++            <p class="hint squad-hint">@L["Pitch_Optional"]</p>
++        }
++
++        <div class="actions">
++            <a class="button button--ghost" href="matchs/@Id/equipes">@L["Teams_Compose"]</a>
++            <a class="button" href="matchs/@Id">@L["Squad_Done"]</a>
++        </div>
++    }
++</section>
++
++@code {
++    private readonly ElementReference[] _slotButtons = new ElementReference[Match.MaxPlayersPerSide];
++
++    private MatchLineup? _lineup;
++    private TeamSide _side = TeamSide.A;
++    private ElementReference _pickerTitle;
++    private Guid _loadedId;
++    private int? _picking;
++    private int? _slotToFocus;
++    private int _revision;
++    private string _announcement = "";
++    private bool _focusPicker;
++    private bool _loadFailed;
++    private bool _notFound;
++    private bool _saving;
++    private bool _saveFailed;
++    private bool _persistenceRequested;
++
++    [Parameter] public Guid Id { get; set; }
++
++    protected override async Task OnParametersSetAsync()
++    {
++        if (_loadedId == Id)
++        {
++            return;
++        }
++
++        _loadedId = Id;
++        _lineup = null;
++        _side = TeamSide.A;
++        _picking = _slotToFocus = null;
++        _announcement = "";
++        _loadFailed = _notFound = _saveFailed = false;
++
++        await LoadAsync();
++    }
++
++    protected override async Task OnAfterRenderAsync(bool firstRender)
++    {
++        // Le clavier et les lecteurs d'écran suivent : vers le choix d'un joueur, puis retour à l'emplacement.
++        if (_focusPicker)
++        {
++            _focusPicker = false;
++            await _pickerTitle.FocusAsync();
++        }
++        else if (_slotToFocus is { } slot)
++        {
++            _slotToFocus = null;
++
++            // Le terrain n'est plus affiché si la relecture a échoué.
++            if (!_loadFailed && _lineup?.Team(_side).Formation is { } formation && slot < formation.Slots.Count)
++            {
++                await _slotButtons[slot].FocusAsync();
++            }
++        }
++    }
++
++    private async Task LoadAsync()
++    {
++        try
++        {
++            _lineup = await Service.GetAsync(Id);
++            _notFound = _lineup is null;
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _loadFailed = true;
++        }
++    }
++
++    private string Label(TeamLineup team) => TeamLabels.Name(L, team.Side, team.Name);
++
++    private string PositionName(string positionCode) => L[SportLabels.PositionKey(positionCode)];
++
++    private string SlotLabel(FormationSlot slot, Player? occupant) => occupant is null
++        ? L["Pitch_SlotFree", PositionName(slot.PositionCode)]
++        : L["Pitch_SlotTaken", PositionName(slot.PositionCode), occupant.Name];
++
++    /// <summary>Les joueurs dont le poste préféré convient à l'emplacement d'abord ; l'ordre reçu ensuite.</summary>
++    private static List<Player> BestFirst(FormationSlot slot, IEnumerable<Player> players) =>
++        players.OrderByDescending(player => slot.Affinity(player.PreferredPositionCode)).ToList();
++
++    private string PreferredDetail(Player player)
++    {
++        var details = new List<string>();
++        if (player.PreferredPositionCode is { } position)
++        {
++            details.Add(PositionName(position));
++        }
++
++        if (player.Level is { } level)
++        {
++            details.Add(L["Players_LevelShort", level]);
++        }
++
++        return string.Join(" · ", details);
++    }
++
++    private string CurrentDetail(TeamLineup team, Player player) =>
++        team.Positions.TryGetValue(player.Id, out var position) ? PositionName(position) : "";
++
++    private void ShowTeam(TeamSide side)
++    {
++        _side = side;
++        _picking = null;
++        _saveFailed = false;
++        _announcement = "";
++    }
++
++    private void OpenPicker(int slot)
++    {
++        _picking = slot;
++        _focusPicker = true;
++        _saveFailed = false;
++        _announcement = "";
++    }
++
++    private void ClosePicker(int slot)
++    {
++        _picking = null;
++        _slotToFocus = slot;
++    }
++
++    private Task SetFormationAsync(string? code)
++    {
++        if (_lineup!.Team(_side).Formation?.Code == code)
++        {
++            return Task.CompletedTask;
++        }
++
++        var side = _side;
++        return SaveAsync(() => Service.SetFormationAsync(Id, side, code), announcement: "");
++    }
++
++    private async Task PlaceAsync(FormationSlot slot, Player? player)
++    {
++        var side = _side;
++        await SaveAsync(() => Service.PlaceAsync(Id, side, slot.Index, player?.Id), SlotLabel(slot, player));
++        ClosePicker(slot.Index);
++    }
++
++    private Task SetPositionAsync(Player player, string? code)
++    {
++        var position = string.IsNullOrEmpty(code) ? null : code;
++        return SaveAsync(() => Service.SetPositionAsync(Id, player.Id, position), announcement: "");
++    }
++
++    /// <summary>Enregistre puis relit la composition : l'écran montre toujours ce qui est enregistré.</summary>
++    private async Task SaveAsync(Func<Task> write, string announcement)
++    {
++        // Un seul changement à la fois : un second tap pendant l'écriture est ignoré.
++        if (_saving)
++        {
++            return;
++        }
++
++        _saving = true;
++        _saveFailed = false;
++        _announcement = "";
++        try
++        {
++            await write();
++            _announcement = announcement;
++
++            // US-002 : des données ont été saisies, on demande au navigateur de les conserver (une fois par visite).
++            if (!_persistenceRequested)
++            {
++                _persistenceRequested = true;
++                await StoragePersistence.RequestAsync();
++            }
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _saveFailed = true;
++            _revision++;
++        }
++
++        await LoadAsync();
++        _saving = false;
++    }
++}
+diff --git a/src/AlFariq.UI/Pages/MatchTeams.razor b/src/AlFariq.UI/Pages/MatchTeams.razor
+index 4a44cab..a298822 100644
+--- a/src/AlFariq.UI/Pages/MatchTeams.razor
++++ b/src/AlFariq.UI/Pages/MatchTeams.razor
+@@ -48,12 +48,13 @@
+         }
+         else
+         {
+-            if (_players.Count >= 2)
+-            {
+-                <div class="actions">
++            <div class="actions">
++                @if (_players.Count >= 2)
++                {
+                     <a class="button button--ghost" href="matchs/@_match.Id/equipes/proposition">@L["Teams_Suggest"]</a>
+-                </div>
+-            }
++                }
++                <a class="button button--ghost" href="matchs/@_match.Id/equipes/terrain">@L["Pitch_Open"]</a>
++            </div>
+ 
+             <div class="team-summary">
+                 <div class="team-summary__counts" role="status">
+diff --git a/src/AlFariq.UI/Resources/SportLabels.cs b/src/AlFariq.UI/Resources/SportLabels.cs
+index 61f5dab..5ddd30c 100644
+--- a/src/AlFariq.UI/Resources/SportLabels.cs
++++ b/src/AlFariq.UI/Resources/SportLabels.cs
+@@ -6,4 +6,7 @@ public static class SportLabels
+     public static string SportKey(string sportCode) => $"Sport_{sportCode}";
+ 
+     public static string PositionKey(string positionCode) => $"Position_{positionCode.Replace('.', '_')}";
++
++    /// <summary>Clé de l'abréviation affichée sur le terrain (postes du football).</summary>
++    public static string PositionShortKey(string positionCode) => $"PositionShort_{positionCode.Replace('.', '_')}";
+ }
+diff --git a/src/AlFariq.UI/Resources/Strings.resx b/src/AlFariq.UI/Resources/Strings.resx
+index 7cf6d5f..253af6f 100644
+--- a/src/AlFariq.UI/Resources/Strings.resx
++++ b/src/AlFariq.UI/Resources/Strings.resx
+@@ -60,8 +60,19 @@
+   <data name="Sport_volleyball" xml:space="preserve"><value>Volleyball</value></data>
+   <data name="Position_football_goalkeeper" xml:space="preserve"><value>Gardien</value></data>
+   <data name="Position_football_defender" xml:space="preserve"><value>Défenseur</value></data>
++  <data name="Position_football_centre_back" xml:space="preserve"><value>Défenseur central</value></data>
++  <data name="Position_football_left_back" xml:space="preserve"><value>Arrière gauche</value></data>
++  <data name="Position_football_right_back" xml:space="preserve"><value>Arrière droit</value></data>
+   <data name="Position_football_midfielder" xml:space="preserve"><value>Milieu</value></data>
++  <data name="Position_football_defensive_midfielder" xml:space="preserve"><value>Milieu défensif</value></data>
++  <data name="Position_football_central_midfielder" xml:space="preserve"><value>Milieu central</value></data>
++  <data name="Position_football_attacking_midfielder" xml:space="preserve"><value>Milieu offensif</value></data>
++  <data name="Position_football_left_midfielder" xml:space="preserve"><value>Milieu gauche</value></data>
++  <data name="Position_football_right_midfielder" xml:space="preserve"><value>Milieu droit</value></data>
+   <data name="Position_football_forward" xml:space="preserve"><value>Attaquant</value></data>
++  <data name="Position_football_striker" xml:space="preserve"><value>Avant-centre</value></data>
++  <data name="Position_football_left_winger" xml:space="preserve"><value>Ailier gauche</value></data>
++  <data name="Position_football_right_winger" xml:space="preserve"><value>Ailier droit</value></data>
+   <data name="Position_futsal_goalkeeper" xml:space="preserve"><value>Gardien</value></data>
+   <data name="Position_futsal_defender" xml:space="preserve"><value>Fixe</value></data>
+   <data name="Position_futsal_winger" xml:space="preserve"><value>Ailier</value></data>
+@@ -78,6 +89,21 @@
+   <data name="Position_volleyball_opposite" xml:space="preserve"><value>Pointu</value></data>
+   <data name="Position_volleyball_middle" xml:space="preserve"><value>Central</value></data>
+   <data name="Position_volleyball_libero" xml:space="preserve"><value>Libéro</value></data>
++  <data name="PositionShort_football_goalkeeper" xml:space="preserve"><value>G</value></data>
++  <data name="PositionShort_football_defender" xml:space="preserve"><value>DÉF</value></data>
++  <data name="PositionShort_football_centre_back" xml:space="preserve"><value>DC</value></data>
++  <data name="PositionShort_football_left_back" xml:space="preserve"><value>DG</value></data>
++  <data name="PositionShort_football_right_back" xml:space="preserve"><value>DD</value></data>
++  <data name="PositionShort_football_midfielder" xml:space="preserve"><value>MIL</value></data>
++  <data name="PositionShort_football_defensive_midfielder" xml:space="preserve"><value>MDF</value></data>
++  <data name="PositionShort_football_central_midfielder" xml:space="preserve"><value>MC</value></data>
++  <data name="PositionShort_football_attacking_midfielder" xml:space="preserve"><value>MOF</value></data>
++  <data name="PositionShort_football_left_midfielder" xml:space="preserve"><value>MG</value></data>
++  <data name="PositionShort_football_right_midfielder" xml:space="preserve"><value>MD</value></data>
++  <data name="PositionShort_football_forward" xml:space="preserve"><value>ATT</value></data>
++  <data name="PositionShort_football_striker" xml:space="preserve"><value>BU</value></data>
++  <data name="PositionShort_football_left_winger" xml:space="preserve"><value>AG</value></data>
++  <data name="PositionShort_football_right_winger" xml:space="preserve"><value>AD</value></data>
+ 
+   <data name="Match_Title" xml:space="preserve"><value>Match</value></data>
+   <data name="Match_NewTitle" xml:space="preserve"><value>Nouveau match</value></data>
+@@ -157,6 +183,28 @@
+   <data name="Teams_NoPlayers" xml:space="preserve"><value>Choisis d'abord les joueurs du match.</value></data>
+   <data name="Teams_AutoSave" xml:space="preserve"><value>Touche A ou B pour placer un joueur, et de nouveau pour le retirer. Tout est enregistré automatiquement.</value></data>
+   <data name="Teams_SaveFailed" xml:space="preserve"><value>L'enregistrement a échoué. Réessaie.</value></data>
++  <data name="Pitch_Title" xml:space="preserve"><value>Terrain</value></data>
++  <data name="Pitch_Open" xml:space="preserve"><value>Voir sur le terrain</value></data>
++  <data name="Pitch_Team" xml:space="preserve"><value>Équipe affichée</value></data>
++  <data name="Pitch_Formation" xml:space="preserve"><value>Formation</value></data>
++  <data name="Pitch_NoFormation" xml:space="preserve"><value>Sans formation</value></data>
++  <data name="Pitch_NoKeeper" xml:space="preserve"><value>{0} (sans gardien)</value></data>
++  <data name="Pitch_NoPresets" xml:space="preserve"><value>Pas de formation prédéfinie pour ce format.</value></data>
++  <data name="Pitch_Tap" xml:space="preserve"><value>Touche un emplacement pour placer ou remplacer un joueur.</value></data>
++  <data name="Pitch_Optional" xml:space="preserve"><value>Formation et postes sont facultatifs. Tout est enregistré automatiquement.</value></data>
++  <data name="Pitch_SlotFree" xml:space="preserve"><value>{0} : emplacement libre</value></data>
++  <data name="Pitch_SlotTaken" xml:space="preserve"><value>{0} : {1}</value></data>
++  <data name="Pitch_Filled" xml:space="preserve"><value>Emplacements occupés : {0} sur {1}</value></data>
++  <data name="Pitch_Choose" xml:space="preserve"><value>Choisir : {0}</value></data>
++  <data name="Pitch_Current" xml:space="preserve"><value>Actuellement : {0}</value></data>
++  <data name="Pitch_Remove" xml:space="preserve"><value>Retirer du terrain</value></data>
++  <data name="Pitch_Bench" xml:space="preserve"><value>Hors du terrain</value></data>
++  <data name="Pitch_BenchCount" xml:space="preserve"><value>Hors du terrain ({0})</value></data>
++  <data name="Pitch_OnPitch" xml:space="preserve"><value>Déjà sur le terrain</value></data>
++  <data name="Pitch_Unassigned" xml:space="preserve"><value>Non assignés (rejoignent l'équipe)</value></data>
++  <data name="Pitch_NoCandidate" xml:space="preserve"><value>Aucun autre joueur disponible.</value></data>
++  <data name="Pitch_EveryonePlaced" xml:space="preserve"><value>Toute l'équipe est sur le terrain.</value></data>
++  <data name="Pitch_Positions" xml:space="preserve"><value>Postes</value></data>
+   <data name="Color_blue" xml:space="preserve"><value>Bleu</value></data>
+   <data name="Color_red" xml:space="preserve"><value>Rouge</value></data>
+   <data name="Color_green" xml:space="preserve"><value>Vert</value></data>
+diff --git a/src/AlFariq.UI/wwwroot/css/app.css b/src/AlFariq.UI/wwwroot/css/app.css
+index e72b64c..76f6586 100644
+--- a/src/AlFariq.UI/wwwroot/css/app.css
++++ b/src/AlFariq.UI/wwwroot/css/app.css
+@@ -807,6 +807,210 @@ h1:focus {
+   }
+ }
+ 
++/* ---------- Terrain ---------- */
++
++.pitch-teams {
++  margin-top: var(--gutter);
++}
++
++/* La pastille à la couleur de l'équipe accompagne son nom. */
++.segmented.pitch-teams .segmented__option span {
++  gap: 0.5rem;
++  overflow-wrap: anywhere;
++  text-align: center;
++}
++
++.pitch-teams .segmented__option span::before {
++  content: "";
++  flex: none;
++  width: 0.875rem;
++  height: 0.875rem;
++  border: 1px solid #ffffff;
++  border-radius: 50%;
++  background: var(--team-color);
++  box-shadow: 0 0 0 1px #55645c;
++}
++
++.pitch-formations {
++  margin-top: var(--gutter);
++}
++
++.pitch {
++  position: relative;
++  isolation: isolate;
++  display: flex;
++  flex-direction: column;
++  justify-content: space-around;
++  gap: 0.5rem;
++  max-width: 420px;
++  min-height: 480px;
++  margin: 0 auto;
++  padding: 0.75rem 0.25rem;
++  border: 2px solid #ffffff;
++  border-radius: 10px;
++  background:
++    linear-gradient(rgb(255 255 255 / 45%), rgb(255 255 255 / 45%)) 0 50% / 100% 2px no-repeat,
++    #1f6b3a;
++  box-shadow: 0 0 0 1px var(--color-border);
++}
++
++/* Tracé schématique : ligne médiane, rond central et surfaces de réparation. */
++.pitch::before,
++.pitch::after {
++  content: "";
++  position: absolute;
++  z-index: -1;
++  left: 50%;
++  transform: translateX(-50%);
++  border: 2px solid rgb(255 255 255 / 45%);
++}
++
++.pitch::before {
++  top: 50%;
++  width: 28%;
++  aspect-ratio: 1;
++  border-radius: 50%;
++  transform: translate(-50%, -50%);
++}
++
++.pitch::after {
++  bottom: 0;
++  width: 56%;
++  height: 14%;
++  border-bottom: 0;
++}
++
++.pitch__line {
++  display: flex;
++  justify-content: space-evenly;
++  align-items: flex-start;
++}
++
++.pitch__slot {
++  display: flex;
++  flex: 1 1 0;
++  flex-direction: column;
++  align-items: center;
++  gap: 0.25rem;
++  min-width: 0;
++  max-width: 5.5rem;
++  min-height: 44px;
++  padding: 0.125rem;
++  border: 0;
++  border-radius: 10px;
++  background: transparent;
++  color: #ffffff;
++  font: inherit;
++  cursor: pointer;
++}
++
++.pitch__slot:focus-visible {
++  outline-color: #ffffff;
++}
++
++.pitch__marker {
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  width: 44px;
++  height: 44px;
++  border: 2px solid #ffffff;
++  border-radius: 50%;
++  background: var(--team-color);
++  color: var(--team-ink);
++  font-size: 0.8125rem;
++  font-weight: 700;
++}
++
++.pitch__slot--free .pitch__marker {
++  border-style: dashed;
++  background: rgb(0 0 0 / 25%);
++  color: #ffffff;
++}
++
++/* Deux lignes au plus ; le nom complet reste lu par les lecteurs d'écran (aria-label du bouton). */
++.pitch__name {
++  display: -webkit-box;
++  max-width: 100%;
++  padding: 0 0.25rem;
++  overflow: hidden;
++  border-radius: 6px;
++  background: var(--color-surface);
++  color: var(--color-text);
++  font-size: 0.75rem;
++  font-weight: 600;
++  line-height: 1.3;
++  overflow-wrap: anywhere;
++  text-align: center;
++  -webkit-box-orient: vertical;
++  -webkit-line-clamp: 2;
++}
++
++.pitch__slot--free .pitch__name {
++  background: transparent;
++  color: #ffffff;
++  font-size: 1rem;
++}
++
++.pitch-count {
++  margin-top: 0.5rem;
++  text-align: center;
++}
++
++.card.pitch-bench {
++  padding-block: 0.5rem;
++}
++
++.pitch-position label {
++  flex: 1;
++  min-width: 0;
++}
++
++.pitch-position select {
++  width: 55%;
++  min-height: 44px;
++  padding: 0 0.5rem;
++  border: 1px solid var(--color-muted);
++  border-radius: 10px;
++  background: var(--color-surface);
++  color: var(--color-text);
++  font: inherit;
++}
++
++.picker__title {
++  margin-top: var(--gutter);
++}
++
++.picker__title:focus {
++  outline: none;
++}
++
++.picker__group {
++  margin: var(--gutter) 0 0;
++  font-size: 1rem;
++}
++
++.picker__player {
++  display: flex;
++  flex-direction: column;
++  align-items: flex-start;
++  justify-content: center;
++  width: 100%;
++  min-height: 52px;
++  padding: 0.5rem 0;
++  border: 0;
++  background: transparent;
++  color: inherit;
++  font: inherit;
++  text-align: start;
++  cursor: pointer;
++}
++
++.picker__detail {
++  color: var(--color-muted);
++  font-size: 0.875rem;
++}
++
+ /* ---------- Bandeaux ---------- */
+ 
+ .banner {
+diff --git a/tests/AlFariq.Client.Core.Tests/PitchTests.cs b/tests/AlFariq.Client.Core.Tests/PitchTests.cs
+new file mode 100644
+index 0000000..c51177b
+--- /dev/null
++++ b/tests/AlFariq.Client.Core.Tests/PitchTests.cs
+@@ -0,0 +1,251 @@
++using AlFariq.Application;
++using AlFariq.Domain;
++using Microsoft.Extensions.DependencyInjection;
++
++namespace AlFariq.Client.Core.Tests;
++
++/// <summary>Placement sur le terrain et postes (US-010).</summary>
++public sealed class PitchTests : IDisposable
++{
++    private static readonly MatchInput Evening = new(new DateOnly(2026, 12, 2), new TimeOnly(20, 0), 5);
++
++    private readonly FakeClock _clock = new();
++    private readonly ServiceProvider _app;
++    private readonly LineupService _lineups;
++
++    public PitchTests()
++    {
++        _app = MatchTestHost.Create(_clock);
++        _lineups = _app.GetRequiredService<LineupService>();
++    }
++
++    public void Dispose() => _app.Dispose();
++
++    private MatchService Matches => _app.GetRequiredService<MatchService>();
++
++    private SquadService Squads => _app.GetRequiredService<SquadService>();
++
++    private async Task<Guid> NewMatchAsync() => (await Matches.CreateAsync(Evening)).Id;
++
++    private async Task<Guid> JoinAsync(Guid match, string name, TeamSide? side = TeamSide.A)
++    {
++        var player = (await Squads.AddNewPlayerAsync(match, name)).Id;
++        await _lineups.AssignAsync(match, player, side);
++        return player;
++    }
++
++    private async Task<TeamLineup> TeamAAsync(Guid match) => (await _lineups.GetAsync(match))!.TeamA;
++
++    // Chaque écriture a sa propre date, comme sur un appareil.
++    private async Task PlaceAsync(Guid match, int slot, Guid? player)
++    {
++        _clock.Advance(TimeSpan.FromSeconds(1));
++        await _lineups.PlaceAsync(match, TeamSide.A, slot, player);
++    }
++
++    private async Task<Guid> MatchWithFormationAsync()
++    {
++        var match = await NewMatchAsync();
++        await _lineups.SetFormationAsync(match, TeamSide.A, "2-1-1");
++        return match;
++    }
++
++    [Fact]
++    public async Task A_lineup_without_formation_or_positions_is_valid()
++    {
++        var match = await NewMatchAsync();
++        await JoinAsync(match, "Sami");
++
++        var team = await TeamAAsync(match);
++
++        Assert.Null(team.Formation);
++        Assert.Empty(team.OnPitch);
++        Assert.Empty(team.Positions);
++        Assert.Single(team.OffPitch);
++    }
++
++    [Fact]
++    public async Task A_placed_player_takes_the_position_of_the_spot()
++    {
++        var match = await MatchWithFormationAsync();
++        var sami = await JoinAsync(match, "Sami");
++
++        await PlaceAsync(match, 0, sami);
++
++        var team = await TeamAAsync(match);
++        Assert.Equal(sami, team.OnPitch[0].Id);
++        Assert.Equal("football.goalkeeper", team.Positions[sami]);
++        Assert.Empty(team.OffPitch);
++    }
++
++    [Fact]
++    public async Task A_player_from_the_bench_replaces_the_occupant()
++    {
++        var match = await MatchWithFormationAsync();
++        var sami = await JoinAsync(match, "Sami");
++        var alice = await JoinAsync(match, "Alice");
++        await PlaceAsync(match, 3, sami);
++
++        await PlaceAsync(match, 3, alice);
++
++        var team = await TeamAAsync(match);
++        Assert.Equal(alice, team.OnPitch[3].Id);
++        Assert.Equal(new[] { sami }, team.OffPitch.Select(player => player.Id));
++        Assert.False(team.Positions.ContainsKey(sami));
++    }
++
++    [Fact]
++    public async Task Two_players_on_the_pitch_swap_their_spots()
++    {
++        var match = await MatchWithFormationAsync();
++        var sami = await JoinAsync(match, "Sami");
++        var alice = await JoinAsync(match, "Alice");
++        await PlaceAsync(match, 0, sami);
++        await PlaceAsync(match, 4, alice);
++
++        await PlaceAsync(match, 0, alice);
++
++        var team = await TeamAAsync(match);
++        Assert.Equal(alice, team.OnPitch[0].Id);
++        Assert.Equal(sami, team.OnPitch[4].Id);
++        Assert.Equal("football.forward", team.Positions[sami]);
++    }
++
++    [Fact]
++    public async Task A_spot_can_be_emptied()
++    {
++        var match = await MatchWithFormationAsync();
++        var sami = await JoinAsync(match, "Sami");
++        await PlaceAsync(match, 1, sami);
++
++        await PlaceAsync(match, 1, null);
++
++        var team = await TeamAAsync(match);
++        Assert.Empty(team.OnPitch);
++        Assert.Empty(team.Positions);
++    }
++
++    [Fact]
++    public async Task An_unassigned_player_joins_the_team_when_placed()
++    {
++        var match = await MatchWithFormationAsync();
++        var sami = await JoinAsync(match, "Sami", side: null);
++
++        await PlaceAsync(match, 2, sami);
++
++        Assert.Equal(sami, (await TeamAAsync(match)).OnPitch[2].Id);
++    }
++
++    [Fact]
++    public async Task Invalid_placements_are_rejected()
++    {
++        var match = await NewMatchAsync();
++        var opponent = await JoinAsync(match, "Zoé", TeamSide.B);
++
++        await Assert.ThrowsAsync<InvalidOperationException>(() => PlaceAsync(match, 0, null));
++
++        await _lineups.SetFormationAsync(match, TeamSide.A, "2-1-1");
++
++        await Assert.ThrowsAsync<InvalidOperationException>(() => PlaceAsync(match, 0, opponent));
++        await Assert.ThrowsAsync<InvalidOperationException>(() => PlaceAsync(match, 0, Guid.CreateVersion7()));
++        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => PlaceAsync(match, 5, null));
++        await Assert.ThrowsAsync<ArgumentException>(
++            () => _lineups.SetFormationAsync(match, TeamSide.A, "4-4-2"));
++    }
++
++    [Fact]
++    public async Task Changing_team_frees_the_spot()
++    {
++        var match = await MatchWithFormationAsync();
++        var sami = await JoinAsync(match, "Sami");
++        await PlaceAsync(match, 0, sami);
++
++        await _lineups.AssignAsync(match, sami, TeamSide.B);
++        await _lineups.AssignAsync(match, sami, TeamSide.A);
++
++        Assert.Empty((await TeamAAsync(match)).OnPitch);
++    }
++
++    [Fact]
++    public async Task Changing_formation_keeps_the_players_on_the_pitch()
++    {
++        var match = await MatchWithFormationAsync();
++        var sami = await JoinAsync(match, "Sami");
++        var alice = await JoinAsync(match, "Alice");
++        await PlaceAsync(match, 0, sami);
++        await PlaceAsync(match, 4, alice);
++
++        await _lineups.SetFormationAsync(match, TeamSide.A, "1-2-1");
++
++        var team = await TeamAAsync(match);
++        Assert.Equal("football.goalkeeper", team.Positions[sami]);
++        Assert.Equal("football.forward", team.Positions[alice]);
++        Assert.Equal(2, team.OnPitch.Count);
++    }
++
++    [Fact]
++    public async Task Removing_the_formation_keeps_the_positions()
++    {
++        var match = await MatchWithFormationAsync();
++        var sami = await JoinAsync(match, "Sami");
++        await PlaceAsync(match, 0, sami);
++
++        await _lineups.SetFormationAsync(match, TeamSide.A, null);
++
++        var team = await TeamAAsync(match);
++        Assert.Empty(team.OnPitch);
++        Assert.Equal("football.goalkeeper", team.Positions[sami]);
++    }
++
++    [Fact]
++    public async Task A_position_can_be_given_without_formation_only()
++    {
++        var match = await NewMatchAsync();
++        var sami = await JoinAsync(match, "Sami");
++
++        await _lineups.SetPositionAsync(match, sami, "football.striker");
++
++        Assert.Equal("football.striker", (await TeamAAsync(match)).Positions[sami]);
++        await Assert.ThrowsAsync<ArgumentException>(
++            () => _lineups.SetPositionAsync(match, sami, "handball.pivot"));
++
++        await _lineups.SetPositionAsync(match, sami, null);
++
++        Assert.Empty((await TeamAAsync(match)).Positions);
++
++        await _lineups.SetFormationAsync(match, TeamSide.A, "2-1-1");
++
++        await Assert.ThrowsAsync<InvalidOperationException>(
++            () => _lineups.SetPositionAsync(match, sami, "football.striker"));
++    }
++
++    [Fact]
++    public async Task A_formation_keeps_the_team_name_and_colour()
++    {
++        var match = await NewMatchAsync();
++        await _lineups.SetTeamAsync(match, TeamSide.A, "Les Verts", "green");
++
++        await _lineups.SetFormationAsync(match, TeamSide.A, "2-1-1");
++        await _lineups.SetTeamAsync(match, TeamSide.A, "Les Verts", "black");
++
++        var team = await TeamAAsync(match);
++        Assert.Equal("Les Verts", team.Name);
++        Assert.Equal("black", team.ColorCode);
++        Assert.Equal("2-1-1", team.Formation?.Code);
++    }
++
++    [Fact]
++    public async Task A_formation_no_longer_applies_when_the_format_changes()
++    {
++        var match = await MatchWithFormationAsync();
++        var sami = await JoinAsync(match, "Sami");
++        await PlaceAsync(match, 0, sami);
++
++        await Matches.UpdateAsync(match, Evening with { PlayersPerSide = 7 });
++
++        var team = await TeamAAsync(match);
++        Assert.Null(team.Formation);
++        Assert.Empty(team.OnPitch);
++        Assert.Equal(new[] { sami }, team.Players.Select(player => player.Id));
++    }
++}
+diff --git a/tests/AlFariq.Domain.Tests/FormationTests.cs b/tests/AlFariq.Domain.Tests/FormationTests.cs
+new file mode 100644
+index 0000000..f2249ed
+--- /dev/null
++++ b/tests/AlFariq.Domain.Tests/FormationTests.cs
+@@ -0,0 +1,107 @@
++using AlFariq.Domain;
++
++namespace AlFariq.Domain.Tests;
++
++public class FormationTests
++{
++    private const string Keeper = "football.goalkeeper";
++
++    private static Formation Get(int playersPerSide, string code) =>
++        FormationCatalog.Find("football", playersPerSide, code)!;
++
++    private static string[] PositionsOf(Formation formation, IReadOnlyDictionary<Guid, int> placed, params Guid[] players) =>
++        players.Select(player => formation.Slots[placed[player]].PositionCode).ToArray();
++
++    [Theory]
++    [InlineData(5)]
++    [InlineData(7)]
++    [InlineData(11)]
++    public void Every_football_format_has_formations_of_the_right_size(int format)
++    {
++        var formations = FormationCatalog.For("football", format);
++
++        Assert.NotEmpty(formations);
++        Assert.Equal(formations.Count, formations.Select(formation => formation.Code).Distinct().Count());
++        Assert.All(formations, formation =>
++        {
++            Assert.Equal(format, formation.PlayersPerSide);
++            Assert.Equal(Enumerable.Range(0, format), formation.Slots.Select(slot => slot.Index));
++            Assert.All(formation.Slots, slot => Assert.True(SportCatalog.Default.HasPosition(slot.PositionCode)));
++            Assert.True(formation.Slots.Count(slot => slot.PositionCode == Keeper) <= 1);
++        });
++    }
++
++    [Fact]
++    public void The_formations_of_the_user_story_are_provided()
++    {
++        Assert.True(Get(11, "4-4-2").HasGoalkeeper);
++        Assert.False(Get(5, "2-2-1").HasGoalkeeper);
++    }
++
++    [Fact]
++    public void There_is_no_formation_for_another_sport_or_a_free_format()
++    {
++        Assert.Empty(FormationCatalog.For("futsal", 5));
++        Assert.Empty(FormationCatalog.For("football", 6));
++        Assert.Null(FormationCatalog.Find("football", 5, "4-4-2"));
++        Assert.Null(FormationCatalog.Find("football", 5, null));
++    }
++
++    [Fact]
++    public void Every_variant_belongs_to_a_general_position()
++    {
++        var positions = SportCatalog.Default.PositionCodes;
++
++        Assert.All(positions, position => Assert.Contains(SportCatalog.BaseOf(position), positions));
++        Assert.Equal(
++            new[] { "football.goalkeeper", "football.defender", "football.midfielder", "football.forward" },
++            positions.Select(SportCatalog.BaseOf).Distinct());
++    }
++
++    [Fact]
++    public void A_variant_counts_as_its_general_position_for_balancing()
++    {
++        var player = new Player { Name = "Sami", PreferredPositionCode = "football.left_back" };
++
++        Assert.Equal("football.defender", BalancePlayer.From(player, SportCatalog.Default).PositionCode);
++    }
++
++    [Fact]
++    public void Players_go_to_their_exact_position_before_a_close_one()
++    {
++        var formation = Get(11, "4-4-2");
++        var defender = Guid.CreateVersion7();
++        var leftBack = Guid.CreateVersion7();
++
++        var placed = formation.Distribute(
++        [
++            new SlotCandidate(defender, "football.defender", WasOnPitch: false),
++            new SlotCandidate(leftBack, "football.left_back", WasOnPitch: false),
++        ]);
++
++        var positions = PositionsOf(formation, placed, leftBack, defender);
++        Assert.Equal("football.left_back", positions[0]);
++        Assert.Equal("football.defender", SportCatalog.BaseOf(positions[1]));
++    }
++
++    [Fact]
++    public void Nobody_becomes_goalkeeper_automatically()
++    {
++        var formation = Get(5, "2-1-1");
++        var midfielders = Enumerable.Range(0, 5).Select(_ => Guid.CreateVersion7()).ToList();
++
++        var placed = formation.Distribute(
++            midfielders.Select(id => new SlotCandidate(id, "football.midfielder", WasOnPitch: true)).ToList());
++
++        Assert.Equal(4, placed.Count);
++        Assert.DoesNotContain(0, placed.Values);
++    }
++
++    [Fact]
++    public void A_player_without_position_who_was_not_on_the_pitch_stays_off()
++    {
++        var placed = Get(5, "2-1-1").Distribute([new SlotCandidate(Guid.CreateVersion7(), null, WasOnPitch: false)]);
++
++        Assert.Empty(placed);
++    }
++}
+diff --git a/tests/AlFariq.Web.Tests/SportTranslationTests.cs b/tests/AlFariq.Web.Tests/SportTranslationTests.cs
+index be4a148..36a96c8 100644
+--- a/tests/AlFariq.Web.Tests/SportTranslationTests.cs
++++ b/tests/AlFariq.Web.Tests/SportTranslationTests.cs
+@@ -23,4 +23,23 @@ public class SportTranslationTests
+ 
+         Assert.Empty(expected.Except(defined));
+     }
++
++    [Fact]
++    public void Every_position_used_by_a_formation_has_a_short_label()
++    {
++        var defined = XDocument
++            .Load(Path.Combine(RepoPaths.UiRoot, "Resources", "Strings.resx"))
++            .Root!
++            .Elements("data")
++            .Select(e => (string)e.Attribute("name")!)
++            .ToHashSet();
++
++        // Même convention que SportLabels (AlFariq.UI).
++        var expected = SportCatalog.All
++            .SelectMany(sport => sport.Formats.SelectMany(format => FormationCatalog.For(sport.Code, format)))
++            .SelectMany(formation => formation.Slots)
++            .Select(slot => "PositionShort_" + slot.PositionCode.Replace('.', '_'));
++
++        Assert.Empty(expected.Except(defined));
++    }
+ }
