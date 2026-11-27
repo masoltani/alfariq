@@ -1,4 +1,5 @@
 using AlFariq.Application;
+using AlFariq.Client.Core.Sharing;
 using AlFariq.Client.Core.Storage;
 using AlFariq.Domain;
 using Microsoft.Extensions.DependencyInjection;
@@ -8,12 +9,13 @@ namespace AlFariq.Client.Core;
 
 public static class DependencyInjection
 {
-    /// <summary>Enregistre les services du client : horloge, stockage IndexedDB et demande de persistance.</summary>
+    /// <summary>Enregistre les services du client : horloge, stockage IndexedDB, demande de persistance et partage.</summary>
     public static IServiceCollection AddAlFariqClientCore(this IServiceCollection services)
     {
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton<IDocumentStore, IndexedDbDocumentStore>();
         services.TryAddSingleton<IStoragePersistence, StoragePersistence>();
+        services.TryAddSingleton<IShareService, BrowserShareService>();
         return services;
     }
 

@@ -1,0 +1,255 @@
+@page "/matchs/{Id:guid}/partage"
+@using System.Globalization
+@using AlFariq.Application
+@implements IAsyncDisposable
+@inject IStringLocalizer<Strings> L
+@inject LineupService Service
+@inject IShareService Share
+@inject TimeProvider Clock
+
+<PageTitle>@L["Share_Title"] · @L["App_Name"]</PageTitle>
+
+<section class="page">
+    <h1>@L["Share_Title"]</h1>
+
+    @if (_loadFailed)
+    {
+        <div class="card" role="alert">
+            <p>@L["Storage_Unavailable"]</p>
+        </div>
+    }
+    else if (_notFound)
+    {
+        <div class="card card--empty">
+            <p>@L["Match_NotFound"]</p>
+        </div>
+        <div class="actions">
+            <a class="button button--ghost" href="matchs">@L["Match_Back"]</a>
+        </div>
+    }
+    else if (_card is not null)
+    {
+        if (_card.Teams.Count == 0 && _card.Unassigned.Count == 0)
+        {
+            <div class="card card--empty">
+                <p>@L["Teams_NoPlayers"]</p>
+            </div>
+            <div class="actions">
+                <a class="button" href="matchs/@Id/joueurs">@L["Squad_Choose"]</a>
+            </div>
+        }
+        else
+        {
+            if (_card.Teams.Count == 0)
+            {
+                <p class="field__warning">@L["Share_NotComposed"]</p>
+                <div class="actions">
+                    <a class="button button--ghost" href="matchs/@Id/equipes">@L["Teams_Compose"]</a>
+                </div>
+            }
+
+            <div class="card">
+                <h2>@L["Share_TextTitle"]</h2>
+                <pre class="share-text" dir="auto" tabindex="0">@_text</pre>
+                <div class="actions">
+                    @if (_canShare)
+                    {
+                        <button type="button" class="button" @onclick="ShareTextAsync">@L["Share_Text"]</button>
+                    }
+                    <button type="button" class="button @(_canShare ? "button--ghost" : "")" @onclick="CopyAsync">
+                        @L["Share_Copy"]
+                    </button>
+                </div>
+                <div role="status">
+                    @if (_textMessage is not null)
+                    {
+                        <p class="share-message">@_textMessage</p>
+                    }
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>@L["Share_ImageTitle"]</h2>
+                @if (_image is not null)
+                {
+                    <img class="share-image" src="@_image.Url" alt="@L["Share_ImageAlt"]" />
+                    <div class="actions">
+                        @if (_image.CanShare)
+                        {
+                            <button type="button" class="button" @onclick="ShareImageAsync">@L["Share_Image"]</button>
+                        }
+                        <a class="button @(_image.CanShare ? "button--ghost" : "")" href="@_image.Url" download="@_image.FileName">
+                            @L["Share_Download"]
+                        </a>
+                    </div>
+                }
+                else if (_imageFailed)
+                {
+                    <p class="field__warning" role="alert">@L["Share_ImageFailed"]</p>
+                }
+                else
+                {
+                    <p class="hint" role="status">@L["Share_ImagePreparing"]</p>
+                }
+                <div role="status">
+                    @if (_imageMessage is not null)
+                    {
+                        <p class="share-message">@_imageMessage</p>
+                    }
+                </div>
+            </div>
+
+            <p class="hint squad-hint">@L["Share_Privacy"]</p>
+        }
+
+        <div class="actions">
+            <a class="button button--ghost" href="matchs/@Id">@L["Squad_Done"]</a>
+        </div>
+    }
+</section>
+
+@code {
+    private LineupCard? _card;
+    private ILineupImage? _image;
+    private Guid _loadedId;
+    private string _text = "";
+    private string? _textMessage;
+    private string? _imageMessage;
+    private bool _canShare;
+    private bool _imageFailed;
+    private bool _loadFailed;
+    private bool _notFound;
+    private bool _sharing;
+    private bool _disposed;
+
+    [Parameter] public Guid Id { get; set; }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedId == Id)
+        {
+            return;
+        }
+
+        var id = _loadedId = Id;
+        _card = null;
+        _textMessage = _imageMessage = null;
+        _imageFailed = _loadFailed = _notFound = false;
+        await ReleaseImageAsync();
+
+        DateTime start;
+        try
+        {
+            var lineup = await Service.GetAsync(id);
+            if (lineup is null)
+            {
+                _notFound = true;
+                return;
+            }
+
+            start = MatchSchedule.ToLocal(lineup.Match.StartsAt, Clock.LocalTimeZone);
+            _card = LineupCardBuilder.Build(lineup, Labels(lineup.Match, start));
+            _text = LineupText.Compose(_card);
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _loadFailed = true;
+            return;
+        }
+
+        if (_card.Teams.Count == 0 && _card.Unassigned.Count == 0)
+        {
+            return;
+        }
+
+        // Charge aussi le module de partage : au premier tap, le partage part sans attendre.
+        _canShare = await Share.CanShareAsync();
+        StateHasChanged();
+
+        // L'image est dessinée d'avance : le navigateur refuse un partage trop éloigné du tap.
+        var fileName = $"alfariq-{start.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}.png";
+        var image = await Share.CreateImageAsync(_card, fileName);
+        if (_disposed || id != Id)
+        {
+            // La page a été quittée pendant le dessin.
+            if (image is not null)
+            {
+                await image.DisposeAsync();
+            }
+
+            return;
+        }
+
+        _image = image;
+        _imageFailed = image is null;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        await ReleaseImageAsync();
+    }
+
+    private async Task ReleaseImageAsync()
+    {
+        if (_image is { } image)
+        {
+            _image = null;
+            await image.DisposeAsync();
+        }
+    }
+
+    private LineupCardLabels Labels(Match match, DateTime start) => new(
+        L["Share_Heading", MatchLabels.LongDate(start)],
+        L["Share_Details", MatchLabels.Time(start), L["Home_MatchFormat", match.PlayersPerSide].Value],
+        (side, name) => TeamLabels.Name(L, side, name),
+        code => L[SportLabels.PositionKey(code)].Value,
+        code => L[SportLabels.PositionShortKey(code)].Value,
+        L["Share_Substitutes"],
+        L["Share_OtherPlayers"],
+        L["Share_Unassigned"],
+        L["Share_Players"],
+        L["Teams_Empty"]);
+
+    private Task ShareTextAsync() => ShareAsync(
+        () => Share.ShareTextAsync(_text),
+        message => _textMessage = message,
+        L["Share_TextFailed"]);
+
+    private Task ShareImageAsync() => ShareAsync(
+        () => _image!.ShareAsync(),
+        message => _imageMessage = message,
+        L["Share_ImageShareFailed"]);
+
+    private async Task ShareAsync(Func<Task<ShareOutcome>> share, Action<string?> show, string failure)
+    {
+        // Un second tap pendant que le partage est ouvert est ignoré.
+        if (_sharing)
+        {
+            return;
+        }
+
+        _sharing = true;
+        _textMessage = _imageMessage = null;
+        try
+        {
+            // Une annulation n'appelle aucun message.
+            if (await share() == ShareOutcome.Failed)
+            {
+                show(failure);
+            }
+        }
+        finally
+        {
+            _sharing = false;
+        }
+    }
+
+    private async Task CopyAsync()
+    {
+        _textMessage = _imageMessage = null;
+        var copied = await Share.CopyTextAsync(_text);
+        _textMessage = copied ? L["Share_Copied"] : L["Share_CopyFailed"];
+    }
+}

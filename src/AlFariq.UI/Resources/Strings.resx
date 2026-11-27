@@ -205,6 +205,29 @@
   <data name="Pitch_NoCandidate" xml:space="preserve"><value>Aucun autre joueur disponible.</value></data>
   <data name="Pitch_EveryonePlaced" xml:space="preserve"><value>Toute l'équipe est sur le terrain.</value></data>
   <data name="Pitch_Positions" xml:space="preserve"><value>Postes</value></data>
+  <data name="Share_Open" xml:space="preserve"><value>Partager</value></data>
+  <data name="Share_Title" xml:space="preserve"><value>Partager la composition</value></data>
+  <data name="Share_TextTitle" xml:space="preserve"><value>Message</value></data>
+  <data name="Share_ImageTitle" xml:space="preserve"><value>Image</value></data>
+  <data name="Share_Text" xml:space="preserve"><value>Partager le texte</value></data>
+  <data name="Share_Copy" xml:space="preserve"><value>Copier le texte</value></data>
+  <data name="Share_Copied" xml:space="preserve"><value>Texte copié. Colle-le dans ta conversation.</value></data>
+  <data name="Share_CopyFailed" xml:space="preserve"><value>La copie a échoué. Sélectionne le message ci-dessus pour le copier.</value></data>
+  <data name="Share_TextFailed" xml:space="preserve"><value>Le partage a échoué. Utilise « Copier le texte ».</value></data>
+  <data name="Share_Image" xml:space="preserve"><value>Partager l'image</value></data>
+  <data name="Share_Download" xml:space="preserve"><value>Télécharger l'image</value></data>
+  <data name="Share_ImagePreparing" xml:space="preserve"><value>Préparation de l'image…</value></data>
+  <data name="Share_ImageFailed" xml:space="preserve"><value>L'image n'a pas pu être créée. Le message reste disponible.</value></data>
+  <data name="Share_ImageShareFailed" xml:space="preserve"><value>Le partage a échoué. Télécharge l'image puis envoie-la.</value></data>
+  <data name="Share_ImageAlt" xml:space="preserve"><value>Image de la composition ; son contenu est celui du message.</value></data>
+  <data name="Share_NotComposed" xml:space="preserve"><value>Les équipes ne sont pas encore composées : seuls les joueurs sont listés.</value></data>
+  <data name="Share_Privacy" xml:space="preserve"><value>Les niveaux et les notes ne sont jamais partagés.</value></data>
+  <data name="Share_Heading" xml:space="preserve"><value>Match du {0}</value></data>
+  <data name="Share_Details" xml:space="preserve"><value>{0} · {1}</value></data>
+  <data name="Share_Substitutes" xml:space="preserve"><value>Remplaçants :</value></data>
+  <data name="Share_OtherPlayers" xml:space="preserve"><value>Aussi dans l'équipe :</value></data>
+  <data name="Share_Unassigned" xml:space="preserve"><value>Non assignés :</value></data>
+  <data name="Share_Players" xml:space="preserve"><value>Joueurs</value></data>
   <data name="Color_blue" xml:space="preserve"><value>Bleu</value></data>
   <data name="Color_red" xml:space="preserve"><value>Rouge</value></data>
   <data name="Color_green" xml:space="preserve"><value>Vert</value></data>

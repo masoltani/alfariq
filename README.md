@@ -8,7 +8,7 @@ Documents de référence dans `docs/` : user stories, spécifications fonctionne
 
 - SDK .NET **10** (version épinglée dans `global.json`).
 - Python 3 + Pillow, uniquement pour régénérer les icônes (`python3 tools/generate-icons.py`).
-- Python 3 + Playwright + Chromium, uniquement pour les tests dans un vrai navigateur (service worker hors ligne, IndexedDB).
+- Python 3 + Playwright + Chromium, uniquement pour les tests dans un vrai navigateur (service worker hors ligne, IndexedDB, partage).
 
 ## Démarrer
 
@@ -41,6 +41,7 @@ dotnet publish src/AlFariq.Web -c Release -o artifacts/web
 | `tests/local-db` | Test Chromium (Playwright) : IndexedDB réel, migrations de schéma, stockage persistant. |
 | `tests/connectivity` | Test Chromium (Playwright) : détection de la coupure et du retour du réseau. |
 | `tests/whats-new` | Test Chromium (Playwright) : mémorisation de la dernière version vue, y compris stockage bloqué. |
+| `tests/share` | Test Chromium (Playwright) : partage natif (simulé), copie du texte et image de la composition. |
 
 ## Conventions
 

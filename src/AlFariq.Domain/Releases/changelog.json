@@ -1,6 +1,28 @@
 {
   "entries": [
     {
+      "version": "0.12.0",
+      "date": "2026-11-27",
+      "changes": [
+        {
+          "type": "added",
+          "text": {
+            "fr": "Partage la composition vers WhatsApp ou une autre appli, en message ou en image, ou copie le texte.",
+            "en": "Share the line-up to WhatsApp or another app, as a message or an image, or copy the text.",
+            "ar": "شارك التشكيلة عبر واتساب أو أي تطبيق آخر، كرسالة أو كصورة، أو انسخ النص."
+          }
+        },
+        {
+          "type": "added",
+          "text": {
+            "fr": "L'image est créée sur ton appareil, même hors ligne ; les niveaux et les notes ne sont pas partagés.",
+            "en": "The image is created on your device, even offline; skill levels and notes are not shared.",
+            "ar": "تُنشأ الصورة على جهازك، حتى دون اتصال، ولا تتم مشاركة المستويات أو الملاحظات."
+          }
+        }
+      ]
+    },
+    {
       "version": "0.11.0",
       "date": "2026-11-27",
       "changes": [

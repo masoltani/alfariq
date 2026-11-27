@@ -1,0 +1,1732 @@
+diff --git a/Directory.Build.props b/Directory.Build.props
+index 419ae9e..4de57c3 100644
+--- a/Directory.Build.props
++++ b/Directory.Build.props
+@@ -6,7 +6,7 @@
+     <Nullable>enable</Nullable>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <AnalysisLevel>latest</AnalysisLevel>
+-    <Version>0.11.0</Version>
++    <Version>0.12.0</Version>
+     <Deterministic>true</Deterministic>
+   </PropertyGroup>
+ 
+diff --git a/README.md b/README.md
+index 0a97072..d22ed22 100644
+--- a/README.md
++++ b/README.md
+@@ -8,7 +8,7 @@ Documents de référence dans `docs/` : user stories, spécifications fonctionne
+ 
+ - SDK .NET **10** (version épinglée dans `global.json`).
+ - Python 3 + Pillow, uniquement pour régénérer les icônes (`python3 tools/generate-icons.py`).
+-- Python 3 + Playwright + Chromium, uniquement pour les tests dans un vrai navigateur (service worker hors ligne, IndexedDB).
++- Python 3 + Playwright + Chromium, uniquement pour les tests dans un vrai navigateur (service worker hors ligne, IndexedDB, partage).
+ 
+ ## Démarrer
+ 
+@@ -41,6 +41,7 @@ dotnet publish src/AlFariq.Web -c Release -o artifacts/web
+ | `tests/local-db` | Test Chromium (Playwright) : IndexedDB réel, migrations de schéma, stockage persistant. |
+ | `tests/connectivity` | Test Chromium (Playwright) : détection de la coupure et du retour du réseau. |
+ | `tests/whats-new` | Test Chromium (Playwright) : mémorisation de la dernière version vue, y compris stockage bloqué. |
++| `tests/share` | Test Chromium (Playwright) : partage natif (simulé), copie du texte et image de la composition. |
+ 
+ ## Conventions
+ 
+diff --git a/docs/user-stories.md b/docs/user-stories.md
+index ac5d9f3..a0cd5d7 100644
+--- a/docs/user-stories.md
++++ b/docs/user-stories.md
+@@ -190,6 +190,8 @@ Critères d'acceptation :
+ - Le texte contient date, heure, lieu, équipes et joueurs, lisible dans WhatsApp.
+ - Une image de la composition est générée localement.
+ 
++**Note (US-011)** : l'écran `/matchs/{id}/partage` montre le message et l'image avant l'envoi. La même carte (`LineupCardBuilder`) donne les deux ; elle ne contient ni les niveaux (RG-JOU-06) ni les notes du match. Le partage passe par `IShareService` (navigateur : `share.js`) ; l'image est dessinée sur un canevas (`lineup-image.js`), avec le terrain pour une équipe qui a une formation et des joueurs placés. « Copier le texte » reste proposé même quand le partage natif existe ; sans partage de fichiers, l'image se télécharge. Texte et image se partagent séparément. La page de match en ligne est l'US-030.
++
+ ### US-012 — Saisir le résultat d'un match
+ En tant qu'organisateur, je veux saisir le score et, si je le souhaite, les buteurs afin de garder une trace des résultats.
+ Priorité : M — Taille : M — Dépend de : US-008
+diff --git a/src/AlFariq.Application/IShareService.cs b/src/AlFariq.Application/IShareService.cs
+new file mode 100644
+index 0000000..2a93ffa
+--- /dev/null
++++ b/src/AlFariq.Application/IShareService.cs
+@@ -0,0 +1,47 @@
++namespace AlFariq.Application;
++
++public enum ShareOutcome
++{
++    /// <summary>Le contenu a été remis à l'application choisie.</summary>
++    Shared,
++
++    /// <summary>L'utilisateur a refermé le partage.</summary>
++    Cancelled,
++
++    /// <summary>Le partage n'a pas pu avoir lieu.</summary>
++    Failed,
++}
++
++/// <summary>L'image d'une composition, prête à être partagée ou enregistrée. À libérer après usage.</summary>
++public interface ILineupImage : IAsyncDisposable
++{
++    /// <summary>Adresse locale de l'image, pour l'afficher et l'enregistrer.</summary>
++    string Url { get; }
++
++    string FileName { get; }
++
++    /// <summary>Vrai si l'appareil sait partager ce fichier.</summary>
++    bool CanShare { get; }
++
++    /// <summary>Ouvre le partage de l'appareil. À appeler directement depuis un geste de l'utilisateur.</summary>
++    Task<ShareOutcome> ShareAsync();
++}
++
++/// <summary>
++/// Partage d'un contenu avec les autres applications de l'appareil (US-011). Le navigateur en fournit une
++/// implémentation ; une application native aura la sienne. Aucune de ces méthodes ne lève d'exception.
++/// </summary>
++public interface IShareService
++{
++    /// <summary>Vrai si l'appareil propose un partage natif.</summary>
++    Task<bool> CanShareAsync();
++
++    /// <summary>Ouvre le partage de l'appareil. À appeler directement depuis un geste de l'utilisateur.</summary>
++    Task<ShareOutcome> ShareTextAsync(string text);
++
++    /// <summary>Copie le texte dans le presse-papiers ; faux en cas d'échec.</summary>
++    Task<bool> CopyTextAsync(string text);
++
++    /// <summary>Dessine l'image d'une composition, sur l'appareil ; null si elle ne peut pas être créée.</summary>
++    Task<ILineupImage?> CreateImageAsync(LineupCard card, string fileName);
++}
+diff --git a/src/AlFariq.Application/LineupCard.cs b/src/AlFariq.Application/LineupCard.cs
+new file mode 100644
+index 0000000..ed2203f
+--- /dev/null
++++ b/src/AlFariq.Application/LineupCard.cs
+@@ -0,0 +1,130 @@
++using AlFariq.Domain;
++
++namespace AlFariq.Application;
++
++/// <summary>Un joueur cité sur la carte.</summary>
++/// <param name="Name">Son nom.</param>
++/// <param name="Position">Son poste pour ce match ; null s'il n'en a pas.</param>
++public sealed record CardPlayer(string Name, string? Position);
++
++/// <summary>Un emplacement dessiné sur le terrain.</summary>
++/// <param name="Position">Abréviation du poste.</param>
++/// <param name="Name">Nom du joueur ; null si l'emplacement est libre.</param>
++public sealed record CardSpot(string Position, string? Name);
++
++/// <summary>Une équipe de la carte.</summary>
++/// <param name="Name">Nom affiché.</param>
++/// <param name="ColorCode">Code de <see cref="TeamColors"/>.</param>
++/// <param name="Formation">Code de la formation dessinée ; null sans terrain.</param>
++/// <param name="Lines">Les lignes du terrain, de l'arrière vers l'avant ; vide sans terrain.</param>
++/// <param name="Players">Les joueurs listés : ceux du terrain (gardien d'abord), sinon toute l'équipe.</param>
++/// <param name="Others">Avec un terrain, les joueurs de l'équipe sans emplacement.</param>
++/// <param name="OthersTitle">Titre de ces autres joueurs ; null s'il n'y en a pas.</param>
++public sealed record CardTeam(
++    string Name,
++    string ColorCode,
++    string? Formation,
++    IReadOnlyList<IReadOnlyList<CardSpot>> Lines,
++    IReadOnlyList<CardPlayer> Players,
++    IReadOnlyList<CardPlayer> Others,
++    string? OthersTitle);
++
++/// <summary>
++/// Ce qui est partagé d'un match (US-011) : la même carte donne le texte et l'image. Elle ne contient ni niveaux
++/// (visibles du seul organisateur, RG-JOU-06) ni notes.
++/// </summary>
++/// <param name="SportCode">Code de <see cref="SportCatalog"/>.</param>
++/// <param name="Title">Titre avec la date.</param>
++/// <param name="Details">Heure et format.</param>
++/// <param name="Location">Lieu ; null s'il n'est pas renseigné.</param>
++/// <param name="Teams">Les deux équipes ; vide tant que personne n'est assigné.</param>
++/// <param name="Unassigned">Les joueurs sans équipe.</param>
++/// <param name="UnassignedTitle">Titre de cette dernière liste.</param>
++/// <param name="EmptyTeam">Texte d'une équipe sans joueur.</param>
++public sealed record LineupCard(
++    string SportCode,
++    string Title,
++    string Details,
++    string? Location,
++    IReadOnlyList<CardTeam> Teams,
++    IReadOnlyList<string> Unassigned,
++    string UnassignedTitle,
++    string EmptyTeam);
++
++/// <summary>Les textes traduits d'une carte, fournis par l'interface.</summary>
++/// <param name="Title">Titre avec la date.</param>
++/// <param name="Details">Heure et format.</param>
++/// <param name="TeamName">Nom affiché d'une équipe, à partir de son côté et du nom choisi.</param>
++/// <param name="Position">Nom d'un poste.</param>
++/// <param name="ShortPosition">Abréviation d'un poste, pour le terrain.</param>
++/// <param name="Substitutes">Titre des joueurs hors du terrain quand il est complet.</param>
++/// <param name="OtherPlayers">Titre des joueurs hors du terrain quand il reste des places.</param>
++/// <param name="Unassigned">Titre des joueurs sans équipe.</param>
++/// <param name="Players">Titre de la liste des joueurs quand les équipes ne sont pas composées.</param>
++/// <param name="EmptyTeam">Texte d'une équipe sans joueur.</param>
++public sealed record LineupCardLabels(
++    string Title,
++    string Details,
++    Func<TeamSide, string?, string> TeamName,
++    Func<string, string> Position,
++    Func<string, string> ShortPosition,
++    string Substitutes,
++    string OtherPlayers,
++    string Unassigned,
++    string Players,
++    string EmptyTeam);
++
++/// <summary>Prépare la carte à partager à partir de la composition d'un match.</summary>
++public static class LineupCardBuilder
++{
++    public static LineupCard Build(MatchLineup lineup, LineupCardLabels labels)
++    {
++        ArgumentNullException.ThrowIfNull(lineup);
++        ArgumentNullException.ThrowIfNull(labels);
++
++        var composed = lineup.TeamA.Players.Count + lineup.TeamB.Players.Count > 0;
++        IReadOnlyList<CardTeam> teams = composed
++            ? [Describe(lineup.TeamA, labels), Describe(lineup.TeamB, labels)]
++            : [];
++
++        return new LineupCard(
++            lineup.Match.SportCode,
++            labels.Title,
++            labels.Details,
++            lineup.Match.Location,
++            teams,
++            lineup.Unassigned.Select(player => player.Name).ToList(),
++            composed ? labels.Unassigned : labels.Players,
++            labels.EmptyTeam);
++    }
++
++    private static CardTeam Describe(TeamLineup team, LineupCardLabels labels)
++    {
++        var name = labels.TeamName(team.Side, team.Name);
++
++        CardPlayer Listed(Player player) => new(
++            player.Name,
++            team.Positions.TryGetValue(player.Id, out var code) ? labels.Position(code) : null);
++
++        // Un terrain vide n'apprend rien : sans joueur placé, l'équipe est simplement listée.
++        if (team.Formation is not { } formation || team.OnPitch.Count == 0)
++        {
++            return new CardTeam(name, team.ColorCode, null, [], team.Players.Select(Listed).ToList(), [], null);
++        }
++
++        var lines = formation.Lines
++            .Select(line => (IReadOnlyList<CardSpot>)line
++                .Select(slot => new CardSpot(
++                    labels.ShortPosition(slot.PositionCode),
++                    team.OnPitch.GetValueOrDefault(slot.Index)?.Name))
++                .ToList())
++            .ToList();
++        var placed = team.OnPitch.OrderBy(entry => entry.Key).Select(entry => Listed(entry.Value)).ToList();
++        var others = team.OffPitch.Select(Listed).ToList();
++        var othersTitle = others.Count == 0 ? null
++            : team.OnPitch.Count == formation.Slots.Count ? labels.Substitutes
++            : labels.OtherPlayers;
++
++        return new CardTeam(name, team.ColorCode, formation.Code, lines, placed, others, othersTitle);
++    }
++}
+diff --git a/src/AlFariq.Application/LineupText.cs b/src/AlFariq.Application/LineupText.cs
+new file mode 100644
+index 0000000..a256e63
+--- /dev/null
++++ b/src/AlFariq.Application/LineupText.cs
+@@ -0,0 +1,85 @@
++namespace AlFariq.Application;
++
++/// <summary>
++/// Le texte à partager d'une composition (US-011), mis en forme pour WhatsApp : « *…* » y affiche du gras.
++/// Il reste lisible tel quel dans une autre application.
++/// </summary>
++public static class LineupText
++{
++    public static string Compose(LineupCard card)
++    {
++        ArgumentNullException.ThrowIfNull(card);
++
++        var lines = new List<string>
++        {
++            $"{SportSymbol(card.SportCode)} *{Bold(card.Title)}*",
++            $"🕒 {card.Details}",
++        };
++        if (!string.IsNullOrWhiteSpace(card.Location))
++        {
++            lines.Add($"📍 {card.Location}");
++        }
++
++        foreach (var team in card.Teams)
++        {
++            var formation = team.Formation is null ? "" : $" ({team.Formation})";
++            lines.Add("");
++            lines.Add($"{ColorSymbol(team.ColorCode)} *{Bold(team.Name)}*{formation}");
++
++            if (team.Players.Count == 0 && team.Others.Count == 0)
++            {
++                lines.Add(card.EmptyTeam);
++            }
++
++            lines.AddRange(team.Players.Select(player => $"• {Describe(player)}"));
++            if (team.OthersTitle is not null)
++            {
++                lines.Add($"{team.OthersTitle} {string.Join(", ", team.Others.Select(Describe))}");
++            }
++        }
++
++        if (card.Unassigned.Count > 0)
++        {
++            lines.Add("");
++            if (card.Teams.Count == 0)
++            {
++                lines.Add($"👥 *{Bold(card.UnassignedTitle)}*");
++                lines.AddRange(card.Unassigned.Select(name => $"• {name}"));
++            }
++            else
++            {
++                lines.Add($"{card.UnassignedTitle} {string.Join(", ", card.Unassigned)}");
++            }
++        }
++
++        return string.Join('\n', lines);
++    }
++
++    private static string Describe(CardPlayer player) =>
++        player.Position is null ? player.Name : $"{player.Name} ({player.Position})";
++
++    // Un astérisque saisi dans un nom couperait le gras.
++    private static string Bold(string text) => text.Replace("*", "", StringComparison.Ordinal).Trim();
++
++    private static string SportSymbol(string sportCode) => sportCode switch
++    {
++        "football" or "futsal" => "⚽",
++        "basketball" => "🏀",
++        "handball" => "🤾",
++        "volleyball" => "🏐",
++        _ => "🏆",
++    };
++
++    private static string ColorSymbol(string colorCode) => colorCode switch
++    {
++        "blue" => "🔵",
++        "red" => "🔴",
++        "green" => "🟢",
++        "yellow" => "🟡",
++        "orange" => "🟠",
++        "purple" => "🟣",
++        "white" => "⚪",
++        "black" => "⚫",
++        _ => "🔘",
++    };
++}
+diff --git a/src/AlFariq.Client.Core/AlFariq.Client.Core.csproj b/src/AlFariq.Client.Core/AlFariq.Client.Core.csproj
+index 2f633d7..78b323b 100644
+--- a/src/AlFariq.Client.Core/AlFariq.Client.Core.csproj
++++ b/src/AlFariq.Client.Core/AlFariq.Client.Core.csproj
+@@ -1,7 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk.Razor">
+ 
+-  <!-- Services propres au client : stockage local (US-002) et synchronisation (US-022).
+-       SDK Razor uniquement pour publier le module JavaScript d'IndexedDB (wwwroot/js/local-db.js) comme ressource web statique. -->
++  <!-- Services propres au client : stockage local (US-002), partage (US-011) et synchronisation (US-022).
++       SDK Razor uniquement pour publier les modules JavaScript de wwwroot/js comme ressources web statiques. -->
+ 
+   <ItemGroup>
+     <SupportedPlatform Include="browser" />
+diff --git a/src/AlFariq.Client.Core/DependencyInjection.cs b/src/AlFariq.Client.Core/DependencyInjection.cs
+index 101490a..5b251de 100644
+--- a/src/AlFariq.Client.Core/DependencyInjection.cs
++++ b/src/AlFariq.Client.Core/DependencyInjection.cs
+@@ -1,4 +1,5 @@
+ using AlFariq.Application;
++using AlFariq.Client.Core.Sharing;
+ using AlFariq.Client.Core.Storage;
+ using AlFariq.Domain;
+ using Microsoft.Extensions.DependencyInjection;
+@@ -8,12 +9,13 @@ namespace AlFariq.Client.Core;
+ 
+ public static class DependencyInjection
+ {
+-    /// <summary>Enregistre les services du client : horloge, stockage IndexedDB et demande de persistance.</summary>
++    /// <summary>Enregistre les services du client : horloge, stockage IndexedDB, demande de persistance et partage.</summary>
+     public static IServiceCollection AddAlFariqClientCore(this IServiceCollection services)
+     {
+         services.TryAddSingleton(TimeProvider.System);
+         services.TryAddSingleton<IDocumentStore, IndexedDbDocumentStore>();
+         services.TryAddSingleton<IStoragePersistence, StoragePersistence>();
++        services.TryAddSingleton<IShareService, BrowserShareService>();
+         return services;
+     }
+ 
+diff --git a/src/AlFariq.Client.Core/Sharing/BrowserShareService.cs b/src/AlFariq.Client.Core/Sharing/BrowserShareService.cs
+new file mode 100644
+index 0000000..735cc15
+--- /dev/null
++++ b/src/AlFariq.Client.Core/Sharing/BrowserShareService.cs
+@@ -0,0 +1,140 @@
++using AlFariq.Application;
++using Microsoft.JSInterop;
++
++namespace AlFariq.Client.Core.Sharing;
++
++/// <summary>
++/// Partage dans le navigateur (module <c>share.js</c>) : partage natif, presse-papiers et image dessinée sur place.
++/// </summary>
++/// <remarks>
++/// Le navigateur n'ouvre le partage que pendant un geste de l'utilisateur : une fois le module chargé (par
++/// <see cref="CanShareAsync"/>), les appels partent sans attente préalable.
++/// </remarks>
++public sealed class BrowserShareService : IShareService
++{
++    private const string ModulePath = "./_content/AlFariq.Client.Core/js/share.js";
++
++    private readonly IJSRuntime _js;
++    private Task<IJSObjectReference>? _module;
++
++    public BrowserShareService(IJSRuntime js) => _js = js;
++
++    public async Task<bool> CanShareAsync()
++    {
++        try
++        {
++            var module = await GetModuleAsync();
++            return await module.InvokeAsync<bool>("canShare");
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            return false;
++        }
++    }
++
++    public async Task<ShareOutcome> ShareTextAsync(string text)
++    {
++        try
++        {
++            var module = await GetModuleAsync();
++            return ToOutcome(await module.InvokeAsync<string>("shareText", text));
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            return ShareOutcome.Failed;
++        }
++    }
++
++    public async Task<bool> CopyTextAsync(string text)
++    {
++        try
++        {
++            var module = await GetModuleAsync();
++            return await module.InvokeAsync<bool>("copyText", text);
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            return false;
++        }
++    }
++
++    public async Task<ILineupImage?> CreateImageAsync(LineupCard card, string fileName)
++    {
++        try
++        {
++            var module = await GetModuleAsync();
++            var handle = await module.InvokeAsync<IJSObjectReference>("createImage", card, fileName);
++            var info = await handle.InvokeAsync<ImageInfo>("info");
++            return new BrowserImage(handle, info.Url, fileName, info.CanShare);
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            return null;
++        }
++    }
++
++    private static ShareOutcome ToOutcome(string result) => result switch
++    {
++        "shared" => ShareOutcome.Shared,
++        "cancelled" => ShareOutcome.Cancelled,
++        _ => ShareOutcome.Failed,
++    };
++
++    // Chargé à la première utilisation, rechargé si le chargement a échoué.
++    private async Task<IJSObjectReference> GetModuleAsync()
++    {
++        _module ??= _js.InvokeAsync<IJSObjectReference>("import", ModulePath).AsTask();
++        try
++        {
++            return await _module;
++        }
++        catch
++        {
++            _module = null;
++            throw;
++        }
++    }
++
++    private sealed record ImageInfo(string Url, bool CanShare);
++
++    private sealed class BrowserImage(IJSObjectReference handle, string url, string fileName, bool canShare)
++        : ILineupImage
++    {
++        public string Url => url;
++
++        public string FileName => fileName;
++
++        public bool CanShare => canShare;
++
++        public async Task<ShareOutcome> ShareAsync()
++        {
++            try
++            {
++                return ToOutcome(await handle.InvokeAsync<string>("share"));
++            }
++            catch (Exception exception)
++            {
++                Console.Error.WriteLine(exception);
++                return ShareOutcome.Failed;
++            }
++        }
++
++        public async ValueTask DisposeAsync()
++        {
++            try
++            {
++                await handle.InvokeVoidAsync("dispose");
++                await handle.DisposeAsync();
++            }
++            catch (Exception exception)
++            {
++                // Libérer la mémoire ne doit jamais gêner la navigation.
++                Console.Error.WriteLine(exception);
++            }
++        }
++    }
++}
+diff --git a/src/AlFariq.Client.Core/wwwroot/js/lineup-image.js b/src/AlFariq.Client.Core/wwwroot/js/lineup-image.js
+new file mode 100644
+index 0000000..6cd90e5
+--- /dev/null
++++ b/src/AlFariq.Client.Core/wwwroot/js/lineup-image.js
+@@ -0,0 +1,320 @@
++// Image d'une composition (US-011), dessinée sur un canevas dans le navigateur : rien n'est envoyé à un serveur.
++// Reçoit la carte préparée par LineupCardBuilder. Les couleurs d'équipe viennent de la feuille de style de l'appli.
++
++const WIDTH = 1080;
++const MARGIN = 40;
++const GAP = 24;
++const PADDING = 24;
++const ROW_HEIGHT = 190;
++const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
++
++// Thème clair fixe : l'image se lit de la même façon chez tous les destinataires.
++const COLORS = {
++  background: "#f5f7f6",
++  surface: "#ffffff",
++  text: "#17211c",
++  muted: "#55645c",
++  border: "#b9c6bf",
++  primary: "#0b6e4f",
++  pitch: "#1f6b3a",
++  chalk: "rgba(255, 255, 255, 0.45)",
++};
++
++export async function renderLineup(card) {
++  const canvas = document.createElement("canvas");
++  const context = canvas.getContext("2d");
++
++  // Un premier passage mesure la hauteur (le dessin hors du canevas est sans effet), le second dessine.
++  const height = Math.ceil(paint(context, card));
++  canvas.width = WIDTH;
++  canvas.height = height;
++  context.fillStyle = COLORS.background;
++  context.fillRect(0, 0, WIDTH, height);
++  paint(context, card);
++
++  return new Promise((resolve, reject) => canvas.toBlob(
++    blob => (blob ? resolve(blob) : reject(new Error("L'image n'a pas pu être créée."))),
++    "image/png"));
++}
++
++function paint(context, card) {
++  let y = header(context, card) + GAP;
++
++  // Deux listes tiennent côte à côte ; un terrain prend toute la largeur.
++  const sideBySide = card.teams.length === 2 && card.teams.every(team => team.lines.length === 0);
++  if (sideBySide) {
++    const width = (WIDTH - 2 * MARGIN - GAP) / 2;
++    const lefts = [MARGIN, MARGIN + width + GAP];
++    const bottom = Math.max(...card.teams.map((team, i) => teamBody(context, card, team, lefts[i], y, width)));
++    card.teams.forEach((team, i) => {
++      panel(context, lefts[i], y, width, bottom - y);
++      teamBody(context, card, team, lefts[i], y, width);
++    });
++    y = bottom + GAP;
++  } else {
++    for (const team of card.teams) {
++      const width = WIDTH - 2 * MARGIN;
++      const bottom = teamBody(context, card, team, MARGIN, y, width);
++      panel(context, MARGIN, y, width, bottom - y);
++      teamBody(context, card, team, MARGIN, y, width);
++      y = bottom + GAP;
++    }
++  }
++
++  if (card.unassigned.length > 0) {
++    const bottom = unassigned(context, card, y);
++    panel(context, MARGIN, y, WIDTH - 2 * MARGIN, bottom - y);
++    unassigned(context, card, y);
++    y = bottom + GAP;
++  }
++
++  setFont(context, 28, 600);
++  write(context, ["AlFariq"], WIDTH / 2, y, 36, COLORS.muted, "center");
++  return y + 36 + GAP;
++}
++
++function header(context, card) {
++  const width = WIDTH - 2 * MARGIN;
++  setFont(context, 52, 700);
++  const title = wrap(context, capitalize(card.title), width, 3);
++  setFont(context, 36, 400);
++  const details = wrap(context, card.details, width, 2);
++  const location = card.location ? wrap(context, card.location, width, 3) : [];
++  const height = 40 + title.length * 62 + (details.length + location.length) * 46 + 32;
++
++  context.fillStyle = COLORS.primary;
++  context.fillRect(0, 0, WIDTH, height);
++
++  let y = 40;
++  setFont(context, 52, 700);
++  y = write(context, title, MARGIN, y, 62, "#ffffff");
++  setFont(context, 36, 400);
++  write(context, [...details, ...location], MARGIN, y, 46, "#ffffff");
++  return height;
++}
++
++/** Dessine le contenu d'une équipe et rend le bas de ce qu'il occupe. */
++function teamBody(context, card, team, x, y, width) {
++  const color = teamColor(team.colorCode);
++  const inner = width - 2 * PADDING;
++
++  setFont(context, 38, 700);
++  const heading = wrap(context, team.formation ? `${team.name} · ${team.formation}` : team.name, inner, 2);
++  const bandHeight = 28 + heading.length * 48;
++  roundedRect(context, x + 6, y + 6, width - 12, bandHeight, 14);
++  context.fillStyle = color.fill;
++  context.fill();
++  // Contour : une équipe en blanc reste visible sur le fond blanc.
++  context.strokeStyle = COLORS.border;
++  context.lineWidth = 2;
++  context.stroke();
++  write(context, heading, x + PADDING, y + 22, 48, color.ink);
++  let bottom = y + 6 + bandHeight + 16;
++
++  if (team.lines.length > 0) {
++    bottom = pitch(context, team, x + 6, bottom, width - 12, color);
++    if (team.othersTitle) {
++      setFont(context, 32, 700);
++      bottom = write(context, [team.othersTitle], x + PADDING, bottom + 16, 42, COLORS.muted);
++      setFont(context, 32, 400);
++      const others = wrap(context, team.others.map(describe).join(", "), inner);
++      bottom = write(context, others, x + PADDING, bottom, 42, COLORS.text);
++    }
++  } else if (team.players.length === 0) {
++    setFont(context, 32, 400);
++    bottom = write(context, wrap(context, card.emptyTeam, inner), x + PADDING, bottom, 42, COLORS.muted);
++  } else {
++    for (const player of team.players) {
++      setFont(context, 34, 600);
++      bottom = write(context, wrap(context, player.name, inner, 2), x + PADDING, bottom, 42, COLORS.text);
++      if (player.position) {
++        setFont(context, 28, 400);
++        bottom = write(context, wrap(context, player.position, inner, 1), x + PADDING, bottom, 34, COLORS.muted);
++      }
++
++      bottom += 14;
++    }
++  }
++
++  return bottom + 16;
++}
++
++function pitch(context, team, x, y, width, color) {
++  const rows = [...team.lines].reverse(); // l'attaque en haut, le but en bas
++  const height = rows.length * ROW_HEIGHT + 32;
++
++  roundedRect(context, x, y, width, height, 14);
++  context.fillStyle = COLORS.pitch;
++  context.fill();
++
++  // Tracé schématique : ligne médiane, rond central et surface de réparation.
++  context.strokeStyle = COLORS.chalk;
++  context.lineWidth = 4;
++  context.beginPath();
++  context.moveTo(x, y + height / 2);
++  context.lineTo(x + width, y + height / 2);
++  context.stroke();
++  context.beginPath();
++  context.arc(x + width / 2, y + height / 2, width * 0.12, 0, 2 * Math.PI);
++  context.stroke();
++  context.strokeRect(x + width * 0.22, y + height - 130, width * 0.56, 130);
++
++  rows.forEach((row, rowIndex) => {
++    const spotWidth = width / row.length;
++    row.forEach((spot, i) => {
++      const centre = x + spotWidth * (i + 0.5);
++      const top = y + 24 + rowIndex * ROW_HEIGHT;
++      marker(context, spot, centre, top, color);
++      if (spot.name) {
++        nameTag(context, spot.name, centre, top + 90, Math.min(spotWidth - 24, 320));
++      }
++    });
++  });
++
++  return y + height;
++}
++
++function marker(context, spot, centre, top, color) {
++  const free = !spot.name;
++  context.beginPath();
++  context.arc(centre, top + 40, 40, 0, 2 * Math.PI);
++  context.fillStyle = free ? "rgba(0, 0, 0, 0.25)" : color.fill;
++  context.fill();
++  context.setLineDash(free ? [12, 10] : []);
++  context.strokeStyle = "#ffffff";
++  context.lineWidth = 4;
++  context.stroke();
++  context.setLineDash([]);
++
++  setFont(context, 26, 700);
++  write(context, [spot.position], centre, top + 26, 30, free ? "#ffffff" : color.ink, "center");
++}
++
++function nameTag(context, name, centre, top, maxWidth) {
++  setFont(context, 28, 600);
++  const lines = wrap(context, name, maxWidth, 2);
++  const width = Math.max(...lines.map(line => context.measureText(line).width)) + 20;
++  roundedRect(context, centre - width / 2, top, width, lines.length * 34 + 8, 10);
++  context.fillStyle = COLORS.surface;
++  context.fill();
++  write(context, lines, centre, top + 6, 34, COLORS.text, "center");
++}
++
++function unassigned(context, card, y) {
++  const inner = WIDTH - 2 * MARGIN - 2 * PADDING;
++  setFont(context, 34, 700);
++  let bottom = write(
++    context, wrap(context, card.unassignedTitle, inner), MARGIN + PADDING, y + PADDING, 44, COLORS.text);
++  setFont(context, 32, 400);
++  bottom = write(
++    context, wrap(context, card.unassigned.join(", "), inner), MARGIN + PADDING, bottom + 4, 42, COLORS.text);
++  return bottom + PADDING;
++}
++
++// ---------- Outils de dessin ----------
++
++function describe(player) {
++  return player.position ? `${player.name} (${player.position})` : player.name;
++}
++
++function capitalize(text) {
++  return text.charAt(0).toLocaleUpperCase() + text.slice(1);
++}
++
++function teamColor(code) {
++  const probe = document.createElement("span");
++  probe.className = `team-color--${code}`;
++  probe.hidden = true;
++  document.body.append(probe);
++  const style = getComputedStyle(probe);
++  const fill = style.getPropertyValue("--team-color").trim() || COLORS.muted;
++  const ink = style.getPropertyValue("--team-ink").trim() || "#ffffff";
++  probe.remove();
++  return { fill, ink };
++}
++
++function setFont(context, size, weight) {
++  context.font = `${weight} ${size}px ${FONT}`;
++}
++
++/** Écrit des lignes et rend la position qui suit la dernière. */
++function write(context, lines, x, y, lineHeight, color, align = "left") {
++  context.fillStyle = color;
++  context.textAlign = align;
++  context.textBaseline = "top";
++  lines.forEach((line, i) => context.fillText(line, x, y + i * lineHeight));
++  return y + lines.length * lineHeight;
++}
++
++/** Découpe un texte à la largeur donnée ; au-delà de maxLines, la dernière ligne finit par « … ». */
++export function wrap(context, text, maxWidth, maxLines = Infinity) {
++  const fits = candidate => context.measureText(candidate).width <= maxWidth;
++  const lines = [];
++  let line = "";
++
++  for (const { part, glue } of breakable(String(text))) {
++    const candidate = line ? `${line}${glue}${part}` : part;
++    if (fits(candidate)) {
++      line = candidate;
++      continue;
++    }
++
++    if (line) {
++      lines.push(line);
++    }
++
++    // Un morceau plus large que la place disponible est coupé.
++    line = "";
++    for (const character of part) {
++      if (line && !fits(line + character)) {
++        lines.push(line);
++        line = "";
++      }
++
++      line += character;
++    }
++  }
++
++  if (line) {
++    lines.push(line);
++  }
++
++  if (lines.length <= maxLines) {
++    return lines;
++  }
++
++  const kept = lines.slice(0, maxLines);
++  const last = Array.from(kept[maxLines - 1]);
++  while (last.length > 0 && !fits(`${last.join("")}…`)) {
++    last.pop();
++  }
++
++  kept[maxLines - 1] = `${last.join("")}…`;
++  return kept;
++}
++
++// On revient à la ligne entre deux mots, ou après un trait d'union (« Jean- / Christophe »).
++function breakable(text) {
++  return text.split(/\s+/).filter(Boolean).flatMap(word =>
++    word.match(/[^-]*-|[^-]+/g).map((part, i) => ({ part, glue: i === 0 ? " " : "" })));
++}
++
++function panel(context, x, y, width, height) {
++  roundedRect(context, x, y, width, height, 18);
++  context.fillStyle = COLORS.surface;
++  context.fill();
++  context.strokeStyle = COLORS.border;
++  context.lineWidth = 2;
++  context.stroke();
++}
++
++// Écrit à la main : CanvasRenderingContext2D.roundRect manque sur d'anciens navigateurs.
++function roundedRect(context, x, y, width, height, radius) {
++  context.beginPath();
++  context.moveTo(x + radius, y);
++  context.arcTo(x + width, y, x + width, y + height, radius);
++  context.arcTo(x + width, y + height, x, y + height, radius);
++  context.arcTo(x, y + height, x, y, radius);
++  context.arcTo(x, y, x + width, y, radius);
++  context.closePath();
++}
+diff --git a/src/AlFariq.Client.Core/wwwroot/js/share.js b/src/AlFariq.Client.Core/wwwroot/js/share.js
+new file mode 100644
+index 0000000..b8a8bf5
+--- /dev/null
++++ b/src/AlFariq.Client.Core/wwwroot/js/share.js
+@@ -0,0 +1,72 @@
++// Partage d'une composition (US-011) : partage natif, presse-papiers et image. Tout reste sur l'appareil jusqu'à
++// ce que l'utilisateur choisisse une application. Chargé comme module ES par BrowserShareService.
++
++import { renderLineup } from "./lineup-image.js";
++
++export function canShare() {
++  return typeof navigator.share === "function";
++}
++
++// Doit partir directement du geste de l'utilisateur : aucune attente avant navigator.share.
++async function share(data) {
++  try {
++    await navigator.share(data);
++    return "shared";
++  } catch (error) {
++    return error?.name === "AbortError" ? "cancelled" : "failed";
++  }
++}
++
++export function shareText(text) {
++  return share({ text });
++}
++
++export async function copyText(text) {
++  try {
++    await navigator.clipboard.writeText(text);
++    return true;
++  } catch {
++    // Presse-papiers moderne absent (page non sécurisée) ou refusé : ancienne méthode.
++    return copyFromSelection(text);
++  }
++}
++
++function copyFromSelection(text) {
++  const previous = document.activeElement;
++  const area = document.createElement("textarea");
++  area.value = text;
++  area.setAttribute("readonly", "");
++  area.style.position = "fixed";
++  area.style.top = "0";
++  area.style.opacity = "0";
++  document.body.append(area);
++  area.select();
++  try {
++    return document.execCommand("copy");
++  } catch {
++    return false;
++  } finally {
++    area.remove();
++    previous?.focus?.();
++  }
++}
++
++/** Dessine l'image et la garde prête : le partage peut ensuite partir sans délai. */
++export async function createImage(card, fileName) {
++  const blob = await renderLineup(card);
++  const file = new File([blob], fileName, { type: "image/png" });
++  const url = URL.createObjectURL(blob);
++
++  let shareable = false;
++  try {
++    shareable = canShare() && navigator.canShare?.({ files: [file] }) === true;
++  } catch {
++    shareable = false;
++  }
++
++  return {
++    info: () => ({ url, canShare: shareable }),
++    share: () => share({ files: [file] }),
++    dispose: () => URL.revokeObjectURL(url),
++  };
++}
+diff --git a/src/AlFariq.Domain/Releases/changelog.json b/src/AlFariq.Domain/Releases/changelog.json
+index 60e048f..e033e09 100644
+--- a/src/AlFariq.Domain/Releases/changelog.json
++++ b/src/AlFariq.Domain/Releases/changelog.json
+@@ -1,5 +1,27 @@
+ {
+   "entries": [
++    {
++      "version": "0.12.0",
++      "date": "2026-11-27",
++      "changes": [
++        {
++          "type": "added",
++          "text": {
++            "fr": "Partage la composition vers WhatsApp ou une autre appli, en message ou en image, ou copie le texte.",
++            "en": "Share the line-up to WhatsApp or another app, as a message or an image, or copy the text.",
++            "ar": "شارك التشكيلة عبر واتساب أو أي تطبيق آخر، كرسالة أو كصورة، أو انسخ النص."
++          }
++        },
++        {
++          "type": "added",
++          "text": {
++            "fr": "L'image est créée sur ton appareil, même hors ligne ; les niveaux et les notes ne sont pas partagés.",
++            "en": "The image is created on your device, even offline; skill levels and notes are not shared.",
++            "ar": "تُنشأ الصورة على جهازك، حتى دون اتصال، ولا تتم مشاركة المستويات أو الملاحظات."
++          }
++        }
++      ]
++    },
+     {
+       "version": "0.11.0",
+       "date": "2026-11-27",
+diff --git a/src/AlFariq.UI/Pages/MatchDetails.razor b/src/AlFariq.UI/Pages/MatchDetails.razor
+index b232ae4..3eb64f7 100644
+--- a/src/AlFariq.UI/Pages/MatchDetails.razor
++++ b/src/AlFariq.UI/Pages/MatchDetails.razor
+@@ -115,6 +115,7 @@
+                 <div class="actions">
+                     <a class="button" href="matchs/@_match.Id/equipes">@L["Teams_Compose"]</a>
+                     <a class="button button--ghost" href="matchs/@_match.Id/equipes/terrain">@L["Pitch_Open"]</a>
++                    <a class="button button--ghost" href="matchs/@_match.Id/partage">@L["Share_Open"]</a>
+                 </div>
+             </div>
+         }
+diff --git a/src/AlFariq.UI/Pages/MatchPitch.razor b/src/AlFariq.UI/Pages/MatchPitch.razor
+index 2f51fa3..cc3cf77 100644
+--- a/src/AlFariq.UI/Pages/MatchPitch.razor
++++ b/src/AlFariq.UI/Pages/MatchPitch.razor
+@@ -196,6 +196,7 @@
+ 
+         <div class="actions">
+             <a class="button button--ghost" href="matchs/@Id/equipes">@L["Teams_Compose"]</a>
++            <a class="button button--ghost" href="matchs/@Id/partage">@L["Share_Open"]</a>
+             <a class="button" href="matchs/@Id">@L["Squad_Done"]</a>
+         </div>
+     }
+diff --git a/src/AlFariq.UI/Pages/MatchShare.razor b/src/AlFariq.UI/Pages/MatchShare.razor
+new file mode 100644
+index 0000000..c30a06a
+--- /dev/null
++++ b/src/AlFariq.UI/Pages/MatchShare.razor
+@@ -0,0 +1,255 @@
++@page "/matchs/{Id:guid}/partage"
++@using System.Globalization
++@using AlFariq.Application
++@implements IAsyncDisposable
++@inject IStringLocalizer<Strings> L
++@inject LineupService Service
++@inject IShareService Share
++@inject TimeProvider Clock
++
++<PageTitle>@L["Share_Title"] · @L["App_Name"]</PageTitle>
++
++<section class="page">
++    <h1>@L["Share_Title"]</h1>
++
++    @if (_loadFailed)
++    {
++        <div class="card" role="alert">
++            <p>@L["Storage_Unavailable"]</p>
++        </div>
++    }
++    else if (_notFound)
++    {
++        <div class="card card--empty">
++            <p>@L["Match_NotFound"]</p>
++        </div>
++        <div class="actions">
++            <a class="button button--ghost" href="matchs">@L["Match_Back"]</a>
++        </div>
++    }
++    else if (_card is not null)
++    {
++        if (_card.Teams.Count == 0 && _card.Unassigned.Count == 0)
++        {
++            <div class="card card--empty">
++                <p>@L["Teams_NoPlayers"]</p>
++            </div>
++            <div class="actions">
++                <a class="button" href="matchs/@Id/joueurs">@L["Squad_Choose"]</a>
++            </div>
++        }
++        else
++        {
++            if (_card.Teams.Count == 0)
++            {
++                <p class="field__warning">@L["Share_NotComposed"]</p>
++                <div class="actions">
++                    <a class="button button--ghost" href="matchs/@Id/equipes">@L["Teams_Compose"]</a>
++                </div>
++            }
++
++            <div class="card">
++                <h2>@L["Share_TextTitle"]</h2>
++                <pre class="share-text" dir="auto" tabindex="0">@_text</pre>
++                <div class="actions">
++                    @if (_canShare)
++                    {
++                        <button type="button" class="button" @onclick="ShareTextAsync">@L["Share_Text"]</button>
++                    }
++                    <button type="button" class="button @(_canShare ? "button--ghost" : "")" @onclick="CopyAsync">
++                        @L["Share_Copy"]
++                    </button>
++                </div>
++                <div role="status">
++                    @if (_textMessage is not null)
++                    {
++                        <p class="share-message">@_textMessage</p>
++                    }
++                </div>
++            </div>
++
++            <div class="card">
++                <h2>@L["Share_ImageTitle"]</h2>
++                @if (_image is not null)
++                {
++                    <img class="share-image" src="@_image.Url" alt="@L["Share_ImageAlt"]" />
++                    <div class="actions">
++                        @if (_image.CanShare)
++                        {
++                            <button type="button" class="button" @onclick="ShareImageAsync">@L["Share_Image"]</button>
++                        }
++                        <a class="button @(_image.CanShare ? "button--ghost" : "")" href="@_image.Url" download="@_image.FileName">
++                            @L["Share_Download"]
++                        </a>
++                    </div>
++                }
++                else if (_imageFailed)
++                {
++                    <p class="field__warning" role="alert">@L["Share_ImageFailed"]</p>
++                }
++                else
++                {
++                    <p class="hint" role="status">@L["Share_ImagePreparing"]</p>
++                }
++                <div role="status">
++                    @if (_imageMessage is not null)
++                    {
++                        <p class="share-message">@_imageMessage</p>
++                    }
++                </div>
++            </div>
++
++            <p class="hint squad-hint">@L["Share_Privacy"]</p>
++        }
++
++        <div class="actions">
++            <a class="button button--ghost" href="matchs/@Id">@L["Squad_Done"]</a>
++        </div>
++    }
++</section>
++
++@code {
++    private LineupCard? _card;
++    private ILineupImage? _image;
++    private Guid _loadedId;
++    private string _text = "";
++    private string? _textMessage;
++    private string? _imageMessage;
++    private bool _canShare;
++    private bool _imageFailed;
++    private bool _loadFailed;
++    private bool _notFound;
++    private bool _sharing;
++    private bool _disposed;
++
++    [Parameter] public Guid Id { get; set; }
++
++    protected override async Task OnParametersSetAsync()
++    {
++        if (_loadedId == Id)
++        {
++            return;
++        }
++
++        var id = _loadedId = Id;
++        _card = null;
++        _textMessage = _imageMessage = null;
++        _imageFailed = _loadFailed = _notFound = false;
++        await ReleaseImageAsync();
++
++        DateTime start;
++        try
++        {
++            var lineup = await Service.GetAsync(id);
++            if (lineup is null)
++            {
++                _notFound = true;
++                return;
++            }
++
++            start = MatchSchedule.ToLocal(lineup.Match.StartsAt, Clock.LocalTimeZone);
++            _card = LineupCardBuilder.Build(lineup, Labels(lineup.Match, start));
++            _text = LineupText.Compose(_card);
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _loadFailed = true;
++            return;
++        }
++
++        if (_card.Teams.Count == 0 && _card.Unassigned.Count == 0)
++        {
++            return;
++        }
++
++        // Charge aussi le module de partage : au premier tap, le partage part sans attendre.
++        _canShare = await Share.CanShareAsync();
++        StateHasChanged();
++
++        // L'image est dessinée d'avance : le navigateur refuse un partage trop éloigné du tap.
++        var fileName = $"alfariq-{start.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}.png";
++        var image = await Share.CreateImageAsync(_card, fileName);
++        if (_disposed || id != Id)
++        {
++            // La page a été quittée pendant le dessin.
++            if (image is not null)
++            {
++                await image.DisposeAsync();
++            }
++
++            return;
++        }
++
++        _image = image;
++        _imageFailed = image is null;
++    }
++
++    public async ValueTask DisposeAsync()
++    {
++        _disposed = true;
++        await ReleaseImageAsync();
++    }
++
++    private async Task ReleaseImageAsync()
++    {
++        if (_image is { } image)
++        {
++            _image = null;
++            await image.DisposeAsync();
++        }
++    }
++
++    private LineupCardLabels Labels(Match match, DateTime start) => new(
++        L["Share_Heading", MatchLabels.LongDate(start)],
++        L["Share_Details", MatchLabels.Time(start), L["Home_MatchFormat", match.PlayersPerSide].Value],
++        (side, name) => TeamLabels.Name(L, side, name),
++        code => L[SportLabels.PositionKey(code)].Value,
++        code => L[SportLabels.PositionShortKey(code)].Value,
++        L["Share_Substitutes"],
++        L["Share_OtherPlayers"],
++        L["Share_Unassigned"],
++        L["Share_Players"],
++        L["Teams_Empty"]);
++
++    private Task ShareTextAsync() => ShareAsync(
++        () => Share.ShareTextAsync(_text),
++        message => _textMessage = message,
++        L["Share_TextFailed"]);
++
++    private Task ShareImageAsync() => ShareAsync(
++        () => _image!.ShareAsync(),
++        message => _imageMessage = message,
++        L["Share_ImageShareFailed"]);
++
++    private async Task ShareAsync(Func<Task<ShareOutcome>> share, Action<string?> show, string failure)
++    {
++        // Un second tap pendant que le partage est ouvert est ignoré.
++        if (_sharing)
++        {
++            return;
++        }
++
++        _sharing = true;
++        _textMessage = _imageMessage = null;
++        try
++        {
++            // Une annulation n'appelle aucun message.
++            if (await share() == ShareOutcome.Failed)
++            {
++                show(failure);
++            }
++        }
++        finally
++        {
++            _sharing = false;
++        }
++    }
++
++    private async Task CopyAsync()
++    {
++        _textMessage = _imageMessage = null;
++        var copied = await Share.CopyTextAsync(_text);
++        _textMessage = copied ? L["Share_Copied"] : L["Share_CopyFailed"];
++    }
++}
+diff --git a/src/AlFariq.UI/Pages/MatchTeams.razor b/src/AlFariq.UI/Pages/MatchTeams.razor
+index a298822..bab8022 100644
+--- a/src/AlFariq.UI/Pages/MatchTeams.razor
++++ b/src/AlFariq.UI/Pages/MatchTeams.razor
+@@ -54,6 +54,7 @@
+                     <a class="button button--ghost" href="matchs/@_match.Id/equipes/proposition">@L["Teams_Suggest"]</a>
+                 }
+                 <a class="button button--ghost" href="matchs/@_match.Id/equipes/terrain">@L["Pitch_Open"]</a>
++                <a class="button button--ghost" href="matchs/@_match.Id/partage">@L["Share_Open"]</a>
+             </div>
+ 
+             <div class="team-summary">
+diff --git a/src/AlFariq.UI/Resources/Strings.resx b/src/AlFariq.UI/Resources/Strings.resx
+index 253af6f..e8ce665 100644
+--- a/src/AlFariq.UI/Resources/Strings.resx
++++ b/src/AlFariq.UI/Resources/Strings.resx
+@@ -205,6 +205,29 @@
+   <data name="Pitch_NoCandidate" xml:space="preserve"><value>Aucun autre joueur disponible.</value></data>
+   <data name="Pitch_EveryonePlaced" xml:space="preserve"><value>Toute l'équipe est sur le terrain.</value></data>
+   <data name="Pitch_Positions" xml:space="preserve"><value>Postes</value></data>
++  <data name="Share_Open" xml:space="preserve"><value>Partager</value></data>
++  <data name="Share_Title" xml:space="preserve"><value>Partager la composition</value></data>
++  <data name="Share_TextTitle" xml:space="preserve"><value>Message</value></data>
++  <data name="Share_ImageTitle" xml:space="preserve"><value>Image</value></data>
++  <data name="Share_Text" xml:space="preserve"><value>Partager le texte</value></data>
++  <data name="Share_Copy" xml:space="preserve"><value>Copier le texte</value></data>
++  <data name="Share_Copied" xml:space="preserve"><value>Texte copié. Colle-le dans ta conversation.</value></data>
++  <data name="Share_CopyFailed" xml:space="preserve"><value>La copie a échoué. Sélectionne le message ci-dessus pour le copier.</value></data>
++  <data name="Share_TextFailed" xml:space="preserve"><value>Le partage a échoué. Utilise « Copier le texte ».</value></data>
++  <data name="Share_Image" xml:space="preserve"><value>Partager l'image</value></data>
++  <data name="Share_Download" xml:space="preserve"><value>Télécharger l'image</value></data>
++  <data name="Share_ImagePreparing" xml:space="preserve"><value>Préparation de l'image…</value></data>
++  <data name="Share_ImageFailed" xml:space="preserve"><value>L'image n'a pas pu être créée. Le message reste disponible.</value></data>
++  <data name="Share_ImageShareFailed" xml:space="preserve"><value>Le partage a échoué. Télécharge l'image puis envoie-la.</value></data>
++  <data name="Share_ImageAlt" xml:space="preserve"><value>Image de la composition ; son contenu est celui du message.</value></data>
++  <data name="Share_NotComposed" xml:space="preserve"><value>Les équipes ne sont pas encore composées : seuls les joueurs sont listés.</value></data>
++  <data name="Share_Privacy" xml:space="preserve"><value>Les niveaux et les notes ne sont jamais partagés.</value></data>
++  <data name="Share_Heading" xml:space="preserve"><value>Match du {0}</value></data>
++  <data name="Share_Details" xml:space="preserve"><value>{0} · {1}</value></data>
++  <data name="Share_Substitutes" xml:space="preserve"><value>Remplaçants :</value></data>
++  <data name="Share_OtherPlayers" xml:space="preserve"><value>Aussi dans l'équipe :</value></data>
++  <data name="Share_Unassigned" xml:space="preserve"><value>Non assignés :</value></data>
++  <data name="Share_Players" xml:space="preserve"><value>Joueurs</value></data>
+   <data name="Color_blue" xml:space="preserve"><value>Bleu</value></data>
+   <data name="Color_red" xml:space="preserve"><value>Rouge</value></data>
+   <data name="Color_green" xml:space="preserve"><value>Vert</value></data>
+diff --git a/src/AlFariq.UI/wwwroot/css/app.css b/src/AlFariq.UI/wwwroot/css/app.css
+index 76f6586..0945f2a 100644
+--- a/src/AlFariq.UI/wwwroot/css/app.css
++++ b/src/AlFariq.UI/wwwroot/css/app.css
+@@ -1011,6 +1011,35 @@ h1:focus {
+   font-size: 0.875rem;
+ }
+ 
++/* ---------- Partage ---------- */
++
++.share-text {
++  max-height: 18rem;
++  margin: 0;
++  padding: 0.75rem;
++  overflow: auto;
++  border: 1px solid var(--color-border);
++  border-radius: 10px;
++  background: var(--color-bg);
++  font: inherit;
++  font-size: 0.9375rem;
++  white-space: pre-wrap;
++  overflow-wrap: anywhere;
++}
++
++.share-image {
++  display: block;
++  width: 100%;
++  height: auto;
++  border: 1px solid var(--color-border);
++  border-radius: 10px;
++}
++
++.share-message {
++  margin: 0.75rem 0 0;
++  font-weight: 600;
++}
++
+ /* ---------- Bandeaux ---------- */
+ 
+ .banner {
+diff --git a/tests/AlFariq.Client.Core.Tests/LineupShareTests.cs b/tests/AlFariq.Client.Core.Tests/LineupShareTests.cs
+new file mode 100644
+index 0000000..c509c57
+--- /dev/null
++++ b/tests/AlFariq.Client.Core.Tests/LineupShareTests.cs
+@@ -0,0 +1,169 @@
++using AlFariq.Application;
++using AlFariq.Domain;
++using Microsoft.Extensions.DependencyInjection;
++
++namespace AlFariq.Client.Core.Tests;
++
++/// <summary>La carte et le texte partagés (US-011).</summary>
++public sealed class LineupShareTests : IDisposable
++{
++    private static readonly MatchInput Evening = new(
++        new DateOnly(2026, 12, 2), new TimeOnly(20, 0), 5, Location: "Stade municipal", Notes: "Code du portail 1234");
++
++    private static readonly LineupCardLabels Labels = new(
++        "Match du mercredi 2 décembre 2026",
++        "20:00 · 5 contre 5",
++        (side, name) => name ?? $"Équipe {side}",
++        code => $"poste:{code}",
++        code => "P",
++        "Remplaçants :",
++        "Aussi dans l'équipe :",
++        "Non assignés :",
++        "Joueurs",
++        "Aucun joueur.");
++
++    private readonly ServiceProvider _app = MatchTestHost.Create(new FakeClock());
++
++    public void Dispose() => _app.Dispose();
++
++    private LineupService Lineups => _app.GetRequiredService<LineupService>();
++
++    private async Task<Guid> NewMatchAsync(MatchInput? input = null) =>
++        (await _app.GetRequiredService<MatchService>().CreateAsync(input ?? Evening)).Id;
++
++    private async Task<Guid> JoinAsync(Guid match, string name, TeamSide? side = null)
++    {
++        var player = (await _app.GetRequiredService<SquadService>().AddNewPlayerAsync(match, name)).Id;
++        await Lineups.AssignAsync(match, player, side);
++        return player;
++    }
++
++    private async Task<LineupCard> CardAsync(Guid match) =>
++        LineupCardBuilder.Build((await Lineups.GetAsync(match))!, Labels);
++
++    [Fact]
++    public async Task The_text_gives_date_time_place_teams_and_players()
++    {
++        var match = await NewMatchAsync();
++        await JoinAsync(match, "Sami", TeamSide.A);
++        await JoinAsync(match, "Alice", TeamSide.B);
++        await JoinAsync(match, "Tom");
++        await Lineups.SetTeamAsync(match, TeamSide.A, "Les Verts", "green");
++
++        var text = LineupText.Compose(await CardAsync(match));
++
++        Assert.Equal(
++            string.Join('\n',
++                "⚽ *Match du mercredi 2 décembre 2026*",
++                "🕒 20:00 · 5 contre 5",
++                "📍 Stade municipal",
++                "",
++                "🟢 *Les Verts*",
++                "• Sami",
++                "",
++                "🔴 *Équipe B*",
++                "• Alice",
++                "",
++                "Non assignés : Tom"),
++            text);
++    }
++
++    [Fact]
++    public async Task Without_teams_the_players_are_listed()
++    {
++        var match = await NewMatchAsync(Evening with { Location = null });
++        await JoinAsync(match, "Sami");
++        await JoinAsync(match, "Alice");
++
++        var card = await CardAsync(match);
++        var text = LineupText.Compose(card);
++
++        Assert.Empty(card.Teams);
++        Assert.DoesNotContain("📍", text);
++        Assert.EndsWith("👥 *Joueurs*\n• Alice\n• Sami", text);
++    }
++
++    [Fact]
++    public async Task Levels_and_notes_are_never_shared()
++    {
++        var match = await NewMatchAsync();
++        var player = await _app.GetRequiredService<PlayerService>().AddAsync(new PlayerInput("Sami", Level: 5));
++        await _app.GetRequiredService<SquadService>().SetSelectedAsync(match, player.Id, selected: true);
++        await Lineups.AssignAsync(match, player.Id, TeamSide.A);
++
++        var text = LineupText.Compose(await CardAsync(match));
++
++        Assert.Contains("• Sami\n", text);
++        Assert.DoesNotContain("1234", text);
++    }
++
++    [Fact]
++    public async Task An_empty_team_is_said_empty_and_asterisks_do_not_break_the_bold()
++    {
++        var match = await NewMatchAsync();
++        await JoinAsync(match, "Sami", TeamSide.A);
++        await Lineups.SetTeamAsync(match, TeamSide.B, "*Stars*", "white");
++
++        var text = LineupText.Compose(await CardAsync(match));
++
++        Assert.Contains("⚪ *Stars*\nAucun joueur.", text);
++    }
++
++    [Fact]
++    public async Task A_formation_with_players_gives_a_pitch_with_the_goalkeeper_first()
++    {
++        var match = await NewMatchAsync();
++        var sami = await JoinAsync(match, "Sami", TeamSide.A);
++        var alice = await JoinAsync(match, "Alice", TeamSide.A);
++        await JoinAsync(match, "Tom", TeamSide.A);
++        await Lineups.SetFormationAsync(match, TeamSide.A, "2-1-1");
++        await Lineups.PlaceAsync(match, TeamSide.A, 4, alice);
++        await Lineups.PlaceAsync(match, TeamSide.A, 0, sami);
++
++        var card = await CardAsync(match);
++        var team = card.Teams[0];
++
++        Assert.Equal("2-1-1", team.Formation);
++        Assert.Equal(new[] { 1, 2, 1, 1 }, team.Lines.Select(line => line.Count));
++        Assert.Equal("Sami", team.Lines[0][0].Name);
++        Assert.Null(team.Lines[1][0].Name);
++        Assert.Equal(new[] { "Sami", "Alice" }, team.Players.Select(player => player.Name));
++        Assert.Contains(
++            "(2-1-1)\n• Sami (poste:football.goalkeeper)\n• Alice (poste:football.forward)\nAussi dans l'équipe : Tom",
++            LineupText.Compose(card));
++    }
++
++    [Fact]
++    public async Task Players_off_a_full_pitch_are_substitutes()
++    {
++        var match = await NewMatchAsync();
++        await Lineups.SetFormationAsync(match, TeamSide.A, "2-1-1");
++        for (var slot = 0; slot < 5; slot++)
++        {
++            var player = await JoinAsync(match, $"Joueur {slot}", TeamSide.A);
++            await Lineups.PlaceAsync(match, TeamSide.A, slot, player);
++        }
++
++        await JoinAsync(match, "Tom", TeamSide.A);
++
++        var team = (await CardAsync(match)).Teams[0];
++
++        Assert.Equal("Remplaçants :", team.OthersTitle);
++        Assert.Equal(new[] { "Tom" }, team.Others.Select(player => player.Name));
++    }
++
++    [Fact]
++    public async Task A_formation_without_placed_players_gives_a_plain_list()
++    {
++        var match = await NewMatchAsync();
++        await JoinAsync(match, "Sami", TeamSide.A);
++        await Lineups.SetFormationAsync(match, TeamSide.A, "2-1-1");
++
++        var team = (await CardAsync(match)).Teams[0];
++
++        Assert.Null(team.Formation);
++        Assert.Empty(team.Lines);
++        Assert.Equal(new[] { "Sami" }, team.Players.Select(player => player.Name));
++        Assert.Null(team.OthersTitle);
++    }
++}
+diff --git a/tests/share/test_share.py b/tests/share/test_share.py
+new file mode 100644
+index 0000000..34f9c09
+--- /dev/null
++++ b/tests/share/test_share.py
+@@ -0,0 +1,232 @@
++"""Test des modules share.js et lineup-image.js dans un vrai Chromium (Playwright).
++
++Vérifie : image PNG de la composition (listes et terrain, grande composition, noms très longs), partage natif
++(simulé : réussite, annulation, échec, absence), partage d'un fichier, copie du texte et son repli.
++
++Usage : python3 tests/share/test_share.py [dossier_pour_les_images]
++(dépendance : playwright ; chromium installé). Il charge les VRAIS fichiers JavaScript et la feuille de style du dépôt.
++"""
++import base64, http.server, pathlib, socketserver, sys, threading
++from playwright.sync_api import sync_playwright
++
++REPO = pathlib.Path(__file__).resolve().parents[2]
++CLIENT_JS = REPO / "src/AlFariq.Client.Core/wwwroot/js"
++FILES = {
++    "/share.js": (CLIENT_JS / "share.js", "text/javascript"),
++    "/lineup-image.js": (CLIENT_JS / "lineup-image.js", "text/javascript"),
++    "/app.css": (REPO / "src/AlFariq.UI/wwwroot/css/app.css", "text/css"),
++}
++
++
++class Handler(http.server.BaseHTTPRequestHandler):
++    def do_GET(self):
++        path = self.path.split("?")[0]
++        if path in FILES:
++            file, kind = FILES[path]
++            body = file.read_bytes()
++        else:
++            kind = "text/html; charset=utf-8"
++            body = b'<!doctype html><title>t</title><link rel="stylesheet" href="/app.css"><button id="b">b</button>'
++        self.send_response(200)
++        self.send_header("Content-Type", kind)
++        self.end_headers()
++        self.wfile.write(body)
++
++    def log_message(self, *args):
++        pass
++
++
++failures = []
++
++
++def check(name, condition, detail=""):
++    print(("OK   " if condition else "FAIL ") + name + (f"  [{detail}]" if detail and not condition else ""))
++    if not condition:
++        failures.append(name)
++
++
++def player(name, position=None):
++    return {"name": name, "position": position}
++
++
++def team(name, color, players, lines=(), formation=None, others=(), others_title=None):
++    return {"name": name, "colorCode": color, "formation": formation, "lines": list(lines),
++            "players": players, "others": list(others), "othersTitle": others_title}
++
++
++def card(teams, unassigned=(), location="Stade municipal"):
++    return {"sportCode": "football", "title": "Match du mercredi 2 décembre 2026", "details": "20:00 · 11 contre 11",
++            "location": location, "teams": teams, "unassigned": list(unassigned),
++            "unassignedTitle": "Non assignés :", "emptyTeam": "Aucun joueur dans cette équipe."}
++
++
++NAMES = ["Sami", "Alexandre Dubois", "Mohamed-Amine", "Zoé", "Karim", "Jean-Christophe", "Léa", "Nicolas",
++         "Yassine Benabdallah", "محمد الأمين", "Abderrahmane"]
++
++
++def pitch(layout, free=()):
++    lines, index = [], 0
++    for codes in layout:
++        line = []
++        for code in codes:
++            line.append({"position": code, "name": None if index in free else NAMES[index % len(NAMES)]})
++            index += 1
++        lines.append(line)
++    return lines
++
++
++LISTS = card([
++    team("Les Verts", "green", [player(n, "Milieu défensif" if i % 2 else None) for i, n in enumerate(NAMES[:5])]),
++    team("Équipe B", "white", []),
++], unassigned=["Tom", "Nadia"])
++
++PITCHES = card([
++    team("Les Invincibles du jeudi soir", "yellow", [player(n) for n in NAMES],
++         pitch([["G"], ["DC", "DC", "DC"], ["MG", "MC", "MDF", "MC", "MD"], ["BU", "BU"]]), "3-5-2",
++         others=[player("Tom"), player("Nadia", "Attaquant")], others_title="Remplaçants :"),
++    team("Équipe B", "black", [player(n) for n in NAMES[:9]],
++         pitch([["G"], ["DG", "DC", "DC", "DD"], ["MDF", "MDF"], ["MG", "MOF", "MD"], ["BU"]], free=(6, 10)),
++         "4-2-3-1"),
++])
++
++EXTREME = card([
++    team("W" * 30, "blue", [player("M" * 60, "Réceptionneur-attaquant")] * 30),
++    team("Équipe B", "red", [player(f"Joueur {i}") for i in range(30)]),
++], unassigned=[f"Remplaçant {i}" for i in range(40)], location="L" * 100)
++
++DRAW = """async ([card]) => {
++  const m = await import('/share.js');
++  const image = await m.createImage(card, 'alfariq-2026-12-02.png');
++  const info = image.info();
++  const blob = await (await fetch(info.url)).blob();
++  const bitmap = await createImageBitmap(blob);
++  const data = await new Promise(done => { const r = new FileReader(); r.onload = () => done(r.result); r.readAsDataURL(blob); });
++  image.dispose();
++  let released = false;
++  try { await fetch(info.url); } catch { released = true; }
++  return { type: blob.type, size: blob.size, width: bitmap.width, height: bitmap.height, data, released };
++}"""
++
++SHARE = """async ([card, behaviour]) => {
++  const calls = [];
++  const fail = name => () => Promise.reject(new DOMException('x', name));
++  const share = { ok: () => Promise.resolve(), abort: fail('AbortError'), error: fail('NotAllowedError') }[behaviour];
++  Object.defineProperty(navigator, 'share', { configurable: true, value: share && (data => { calls.push(data); return share(); }) });
++  Object.defineProperty(navigator, 'canShare', { configurable: true, value: share && (() => true) });
++  const m = await import('/share.js');
++  const image = await m.createImage(card, 'match.png');
++  const result = { available: m.canShare(), shareable: image.info().canShare };
++  if (share) {
++    const pending = image.share();
++    result.immediate = calls.length === 1;   // navigator.share part sans attente
++    result.image = await pending;
++    result.file = calls[0].files[0].name + ' ' + calls[0].files[0].type;
++    result.text = await m.shareText('Bonjour');
++    result.sent = calls[1].text;
++  }
++  image.dispose();
++  return result;
++}"""
++
++with socketserver.TCPServer(("127.0.0.1", 0), Handler) as server:
++    threading.Thread(target=server.serve_forever, daemon=True).start()
++    url = f"http://127.0.0.1:{server.server_address[1]}/"
++    output = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else None
++
++    with sync_playwright() as p:
++        browser = p.chromium.launch()
++        context = browser.new_context()
++        context.grant_permissions(["clipboard-read", "clipboard-write"], origin=url.rstrip("/"))
++        page = context.new_page()
++        errors = []
++        page.on("pageerror", lambda e: errors.append(str(e)))
++        page.goto(url)
++
++        # --- Image ---
++        for name, content in (("listes", LISTS), ("terrain", PITCHES), ("extreme", EXTREME)):
++            r = page.evaluate(DRAW, [content])
++            check(f"image « {name} » : PNG de 1080 px de large", r["type"] == "image/png" and r["width"] == 1080 and r["size"] > 10000,
++                  (r["type"], r["width"], r["size"]))
++            check(f"image « {name} » : hauteur raisonnable", 400 < r["height"] < 8000, r["height"])
++            check(f"image « {name} » : mémoire libérée", r["released"])
++            if output:
++                output.mkdir(parents=True, exist_ok=True)
++                (output / f"{name}.png").write_bytes(base64.b64decode(r["data"].split(",", 1)[1]))
++
++        colors = page.evaluate("""async ([card]) => {
++          const { renderLineup } = await import('/lineup-image.js');
++          const bitmap = await createImageBitmap(await renderLineup(card));
++          const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
++          const context = canvas.getContext('2d');
++          context.drawImage(bitmap, 0, 0);
++          const pixels = context.getImageData(0, 0, bitmap.width, bitmap.height).data;
++          const found = new Set();
++          for (let i = 0; i < pixels.length; i += 4) found.add(`${pixels[i]},${pixels[i + 1]},${pixels[i + 2]}`);
++          return { green: found.has('27,122,52'), spare: document.querySelectorAll('span').length };
++        }""", [LISTS])
++        check("la couleur d'équipe vient de la feuille de style", colors["green"])
++        check("aucun élément de mesure ne reste dans la page", colors["spare"] == 0, colors["spare"])
++
++        wrapped = page.evaluate("""async () => {
++          const { wrap } = await import('/lineup-image.js');
++          const context = document.createElement('canvas').getContext('2d');
++          context.font = '28px sans-serif';
++          const lines = wrap(context, 'Abcdefghij'.repeat(8) + ' ⚽⚽⚽', 150, 2);
++          return { count: lines.length, widest: Math.max(...lines.map(l => context.measureText(l).width)), last: lines.at(-1) };
++        }""")
++        check("un nom très long tient en deux lignes avec « … »",
++              wrapped["count"] == 2 and wrapped["widest"] <= 150 and wrapped["last"].endswith("…"), wrapped)
++
++        hyphen = page.evaluate("""async () => {
++          const { wrap } = await import('/lineup-image.js');
++          const context = document.createElement('canvas').getContext('2d');
++          context.font = '28px sans-serif';
++          const width = context.measureText('Christophe').width + 2;
++          return [wrap(context, 'Jean-Christophe', width), wrap(context, 'Jean-Christophe', 600), wrap(context, 'A - B', 600)];
++        }""")
++        check("un nom composé revient à la ligne après le trait d'union",
++              hyphen == [["Jean-", "Christophe"], ["Jean-Christophe"], ["A - B"]], hyphen)
++
++        # --- Partage natif (simulé) ---
++        for behaviour, expected in (("ok", "shared"), ("abort", "cancelled"), ("error", "failed")):
++            page.reload()
++            r = page.evaluate(SHARE, [LISTS, behaviour])
++            check(f"partage ({behaviour}) : résultat « {expected} »", r["image"] == expected and r["text"] == expected, r)
++            check(f"partage ({behaviour}) : fichier PNG et texte transmis sans attente",
++                  r["immediate"] and r["file"] == "match.png image/png" and r["sent"] == "Bonjour", r)
++
++        page.reload()
++        r = page.evaluate(SHARE, [LISTS, "absent"])
++        check("sans partage natif : ni texte ni image à partager", r == {"available": False, "shareable": False}, r)
++
++        # --- Copie ---
++        page.reload()
++        text = "⚽ *Match*\n• Zoé"
++        r = page.evaluate("""async ([text]) => {
++          const m = await import('/share.js');
++          const ok = await m.copyText(text);
++          return { ok, read: await navigator.clipboard.readText() };
++        }""", [text])
++        check("copie du texte (emoji et retours à la ligne)", r["ok"] and r["read"].replace("\r\n", "\n") == text, r)
++
++        page.evaluate("""() => {
++          window.copied = null;
++          document.addEventListener('copy', () => { window.copied = document.activeElement.value; });
++        }""")
++        page.evaluate("""() => {
++          Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
++          document.getElementById('b').onclick = async () => { window.result = await (await import('/share.js')).copyText('repli'); };
++        }""")
++        page.click("#b")
++        page.wait_for_function("window.result !== undefined")
++        r = page.evaluate("() => ({ ok: window.result, copied: window.copied, left: document.querySelectorAll('textarea').length, focus: document.activeElement.id })")
++        check("sans presse-papiers moderne : repli, puis retour du focus",
++              r == {"ok": True, "copied": "repli", "left": 0, "focus": "b"}, r)
++
++        check("aucune erreur JavaScript", not errors, errors)
++        browser.close()
++
++    server.shutdown()
++
++print(f"\n{len(failures)} échec(s)")
++sys.exit(1 if failures else 0)

@@ -190,6 +190,8 @@ Critères d'acceptation :
 - Le texte contient date, heure, lieu, équipes et joueurs, lisible dans WhatsApp.
 - Une image de la composition est générée localement.
 
+**Note (US-011)** : l'écran `/matchs/{id}/partage` montre le message et l'image avant l'envoi. La même carte (`LineupCardBuilder`) donne les deux ; elle ne contient ni les niveaux (RG-JOU-06) ni les notes du match. Le partage passe par `IShareService` (navigateur : `share.js`) ; l'image est dessinée sur un canevas (`lineup-image.js`), avec le terrain pour une équipe qui a une formation et des joueurs placés. « Copier le texte » reste proposé même quand le partage natif existe ; sans partage de fichiers, l'image se télécharge. Texte et image se partagent séparément. La page de match en ligne est l'US-030.
+
 ### US-012 — Saisir le résultat d'un match
 En tant qu'organisateur, je veux saisir le score et, si je le souhaite, les buteurs afin de garder une trace des résultats.
 Priorité : M — Taille : M — Dépend de : US-008
