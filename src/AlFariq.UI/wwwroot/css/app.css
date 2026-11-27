@@ -627,7 +627,8 @@ h1:focus {
 .lineup__details {
   display: flex;
   flex-basis: 100%;
-  gap: 0.75rem;
+  flex-wrap: wrap;
+  gap: 0 0.75rem;
   color: var(--color-muted);
   font-size: 0.875rem;
 }
@@ -763,6 +764,47 @@ h1:focus {
 
 .team-columns .squad-names {
   margin-top: 0.25rem;
+}
+
+/* ---------- Proposition d'équipes ---------- */
+
+.team-toggle--lock[aria-pressed="true"]::after {
+  content: "🔒";
+}
+
+.suggest-gap {
+  font-weight: 600;
+}
+
+.suggest-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.suggest-actions .button {
+  flex: 1 1 auto;
+  padding: 0 1rem;
+}
+
+.suggest-actions .button:disabled {
+  cursor: default;
+}
+
+.suggest-default {
+  font-weight: 600;
+}
+
+.field__warning.suggest-grouped {
+  margin-bottom: 0.75rem;
+}
+
+/* Sur un écran bas (téléphone à l'horizontale), le résumé figé cacherait la liste. */
+@media (max-height: 520px) {
+  .team-summary.suggest-summary {
+    position: static;
+  }
 }
 
 /* ---------- Bandeaux ---------- */

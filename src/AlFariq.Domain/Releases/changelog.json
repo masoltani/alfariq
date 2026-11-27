@@ -1,6 +1,28 @@
 {
   "entries": [
     {
+      "version": "0.10.0",
+      "date": "2026-11-27",
+      "changes": [
+        {
+          "type": "added",
+          "text": {
+            "fr": "Fais-toi proposer deux équipes équilibrées selon les niveaux, même hors ligne : rien ne change sans ta validation.",
+            "en": "Get two teams balanced by skill level, even offline: nothing changes until you approve.",
+            "ar": "احصل على اقتراح بفريقين متوازنين حسب المستوى، حتى دون اتصال: لا يتغير شيء قبل موافقتك."
+          }
+        },
+        {
+          "type": "added",
+          "text": {
+            "fr": "Impose l'équipe de certains joueurs, puis demande une autre proposition aussi équilibrée.",
+            "en": "Lock some players into a team, then ask for another equally balanced suggestion.",
+            "ar": "ثبّت بعض اللاعبين في فريق، ثم اطلب اقتراحاً آخر بنفس التوازن."
+          }
+        }
+      ]
+    },
+    {
       "version": "0.9.0",
       "date": "2026-11-26",
       "changes": [

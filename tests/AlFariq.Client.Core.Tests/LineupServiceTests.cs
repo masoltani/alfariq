@@ -130,6 +130,38 @@ public sealed class LineupServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task A_validated_proposal_replaces_the_teams()
+    {
+        var match = await NewMatchAsync();
+        var sami = await JoinAsync(match, "Sami");
+        var alice = await JoinAsync(match, "Alice");
+        await _lineups.AssignAsync(match, sami, TeamSide.A);
+
+        await _lineups.ApplyAsync(
+            match, new Dictionary<Guid, TeamSide> { [sami] = TeamSide.B, [alice] = TeamSide.A });
+
+        var lineup = (await _lineups.GetAsync(match))!;
+        Assert.Equal(new[] { "Alice" }, Names(lineup.TeamA.Players));
+        Assert.Equal(new[] { "Sami" }, Names(lineup.TeamB.Players));
+        Assert.Empty(lineup.Unassigned);
+    }
+
+    [Fact]
+    public async Task A_proposal_computed_for_other_players_changes_nothing()
+    {
+        var match = await NewMatchAsync();
+        var sami = await JoinAsync(match, "Sami");
+        var proposal = new Dictionary<Guid, TeamSide> { [sami] = TeamSide.A };
+        await JoinAsync(match, "Alice");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _lineups.ApplyAsync(match, proposal));
+        await Assert.ThrowsAsync<KeyNotFoundException>(
+            () => _lineups.ApplyAsync(Guid.CreateVersion7(), proposal));
+
+        Assert.Equal(2, (await _lineups.GetAsync(match))!.Unassigned.Count);
+    }
+
+    [Fact]
     public async Task A_duplicated_match_keeps_the_players_but_not_the_teams()
     {
         var source = await NewMatchAsync();

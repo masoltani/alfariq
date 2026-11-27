@@ -48,6 +48,13 @@
         }
         else
         {
+            if (_players.Count >= 2)
+            {
+                <div class="actions">
+                    <a class="button button--ghost" href="matchs/@_match.Id/equipes/proposition">@L["Teams_Suggest"]</a>
+                </div>
+            }
+
             <div class="team-summary">
                 <div class="team-summary__counts" role="status">
                     @foreach (var team in _teams)

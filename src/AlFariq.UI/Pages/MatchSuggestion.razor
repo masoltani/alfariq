@@ -1,0 +1,327 @@
+@page "/matchs/{Id:guid}/equipes/proposition"
+@using AlFariq.Application
+@inject IStringLocalizer<Strings> L
+@inject LineupService Service
+@inject IStoragePersistence StoragePersistence
+@inject TimeProvider Clock
+@inject NavigationManager Navigation
+
+<PageTitle>@L["Suggest_Title"] · @L["App_Name"]</PageTitle>
+
+<section class="page">
+    <h1>@L["Suggest_Title"]</h1>
+
+    @if (_loadFailed)
+    {
+        <div class="card" role="alert">
+            <p>@L["Storage_Unavailable"]</p>
+        </div>
+    }
+    else if (_notFound)
+    {
+        <div class="card card--empty">
+            <p>@L["Match_NotFound"]</p>
+        </div>
+        <div class="actions">
+            <a class="button button--ghost" href="matchs">@L["Match_Back"]</a>
+        </div>
+    }
+    else if (_lineup is not null)
+    {
+        var start = MatchSchedule.ToLocal(_lineup.Match.StartsAt, Clock.LocalTimeZone);
+
+        <p class="lead squad-lead">
+            @L["Home_MatchDate", MatchLabels.LongDate(start), MatchLabels.Time(start)]<br />
+            @L["Home_MatchFormat", _lineup.Match.PlayersPerSide]
+        </p>
+
+        if (_squadChanged)
+        {
+            <p class="field__warning" role="alert">@L["Suggest_SquadChanged"]</p>
+        }
+
+        if (_balancer is null || _proposal is null)
+        {
+            <div class="card card--empty">
+                <p>@L["Suggest_TooFew"]</p>
+            </div>
+            <div class="actions">
+                <a class="button" href="matchs/@Id/joueurs">@L["Squad_Choose"]</a>
+            </div>
+        }
+        else
+        {
+            var stale = !_balancer.Accepts(_proposal.Sides);
+            var teams = new[] { _lineup.TeamA, _lineup.TeamB };
+            var buttons = teams
+                .Select(team => new TeamButton(team.Side, Label(team), team.ColorCode))
+                .ToList();
+            var withoutLevel = _players.Where(player => player.Level is null).ToList();
+
+            <p class="hint">
+                @(_lineup.TeamA.Players.Count + _lineup.TeamB.Players.Count > 0
+                    ? L["Suggest_KeepsCurrent"]
+                    : L["Suggest_NotSaved"])
+            </p>
+
+            if (withoutLevel.Count > 0)
+            {
+                <p class="field__warning user-text">
+                    @L["Suggest_NoLevel", TeamBalancer.DefaultLevel, string.Join(", ", withoutLevel.Select(player => player.Name))]
+                </p>
+            }
+
+            <div class="team-summary suggest-summary">
+                <div class="team-summary__counts" role="status">
+                    @foreach (var team in teams)
+                    {
+                        <p @key="team.Side" class="team-heading team-color--@team.ColorCode">
+                            <span class="team-dot" aria-hidden="true"></span>
+                            <span class="team-heading__name" dir="auto">@team.Side · @Label(team)</span>
+                            <span>
+                                @L["Suggest_TeamTotals", PlayersOn(team.Side).Count, team.Side == TeamSide.A ? _proposal.LevelA : _proposal.LevelB]
+                            </span>
+                        </p>
+                    }
+                </div>
+                <div role="status">
+                    @if (!_balancer.IsPossible)
+                    {
+                        var crowded = teams[_locks.Values.Count(side => side == TeamSide.A) > _balancer.MaxPerSide ? 0 : 1];
+                        <p class="field__warning">@L["Suggest_TooManyLocked", Label(crowded), _balancer.MaxPerSide]</p>
+                    }
+                    else if (stale)
+                    {
+                        <p class="field__warning">@L["Suggest_Stale"]</p>
+                    }
+                    else
+                    {
+                        <p class="suggest-gap">@L["Suggest_Gap", _proposal.Gap]</p>
+                        if (_onlyOne)
+                        {
+                            <p class="field__warning">@L["Suggest_OnlyOne"]</p>
+                        }
+                    }
+                </div>
+                @if (_applyFailed)
+                {
+                    <p class="field__error" role="alert">@L["Suggest_ApplyFailed"]</p>
+                }
+                <div class="suggest-actions">
+                    @if (stale)
+                    {
+                        <button type="button" class="button" disabled="@(!_balancer.IsPossible)" @onclick="Recompute">
+                            @L["Suggest_Recompute"]
+                        </button>
+                    }
+                    else
+                    {
+                        <button type="button" class="button" disabled="@_applying" @onclick="ApplyAsync">
+                            @L["Suggest_Apply"]
+                        </button>
+                        <button type="button" class="button button--ghost" disabled="@(_applying || _onlyOne)" @onclick="Another">
+                            @L["Suggest_Another"]
+                        </button>
+                    }
+                </div>
+            </div>
+
+            <div role="status">
+                @if (!stale && _proposal.GroupedPositions.Count > 0)
+                {
+                    <p class="field__warning suggest-grouped">
+                        @L["Suggest_Grouped", string.Join(", ", _proposal.GroupedPositions.Select(code => L[SportLabels.PositionKey(code)].Value))]
+                    </p>
+                }
+            </div>
+
+            <p class="sr-only" role="status">@_announcement</p>
+            <p class="hint">@L["Suggest_LockHint"]</p>
+
+            foreach (var team in teams)
+            {
+                var members = PlayersOn(team.Side);
+
+                <section @key="team.Side">
+                    <h2 class="lineup__title team-heading team-color--@team.ColorCode">
+                        <span class="team-dot" aria-hidden="true"></span>
+                        <span class="team-heading__name" dir="auto">@Label(team)</span>
+                        <span>@L["Teams_Count", members.Count]</span>
+                    </h2>
+                    <ul class="card lineup">
+                        @foreach (var player in members)
+                        {
+                            <SuggestionRow @key="player.Id" Player="player" LockedSide="LockOf(player.Id)" Teams="buttons"
+                                           OnLock="side => ToggleLock(player, side)" />
+                        }
+                    </ul>
+                </section>
+            }
+        }
+
+        <div class="actions">
+            <a class="button button--ghost" href="matchs/@Id/equipes">@L["Match_Cancel"]</a>
+        </div>
+    }
+</section>
+
+@code {
+    // Les verrous et la proposition ne vivent que sur cette page : rien n'est enregistré avant « Appliquer ».
+    private readonly Dictionary<Guid, TeamSide> _locks = [];
+
+    private MatchLineup? _lineup;
+    private List<Player> _players = [];
+    private TeamBalancer? _balancer;
+    private BalanceProposal? _proposal;
+    private Guid _loadedId;
+    private string _announcement = "";
+    private bool _loadFailed;
+    private bool _notFound;
+    private bool _onlyOne;
+    private bool _applying;
+    private bool _applyFailed;
+    private bool _squadChanged;
+
+    [Parameter] public Guid Id { get; set; }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedId == Id)
+        {
+            return;
+        }
+
+        _loadedId = Id;
+        _squadChanged = false;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _lineup = null;
+        _balancer = null;
+        _proposal = null;
+        _locks.Clear();
+        _announcement = "";
+        _loadFailed = _notFound = _onlyOne = _applyFailed = false;
+
+        try
+        {
+            var lineup = await Service.GetAsync(Id);
+            if (lineup is null)
+            {
+                _notFound = true;
+                return;
+            }
+
+            _players = PlayerDirectory.Search(
+                lineup.Unassigned.Concat(lineup.TeamA.Players).Concat(lineup.TeamB.Players), query: null).ToList();
+            _lineup = lineup;
+
+            if (_players.Count >= 2)
+            {
+                _balancer = CreateBalancer(lineup);
+                _proposal = _balancer.Propose();
+            }
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _loadFailed = true;
+        }
+    }
+
+    private TeamBalancer CreateBalancer(MatchLineup lineup)
+    {
+        var sport = SportCatalog.Find(lineup.Match.SportCode);
+        var players = _players.Select(player => BalancePlayer.From(player, sport, LockOf(player.Id))).ToList();
+        return new TeamBalancer(players, Random.Shared);
+    }
+
+    private string Label(TeamLineup team) => TeamLabels.Name(L, team.Side, team.Name);
+
+    private TeamSide? LockOf(Guid playerId) => _locks.TryGetValue(playerId, out var side) ? side : null;
+
+    private List<Player> PlayersOn(TeamSide side) =>
+        _players.Where(player => _proposal!.Sides[player.Id] == side).ToList();
+
+    private void ToggleLock(Player player, TeamSide side)
+    {
+        if (LockOf(player.Id) == side)
+        {
+            _locks.Remove(player.Id);
+            _announcement = L["Suggest_Unlocked", player.Name];
+        }
+        else
+        {
+            _locks[player.Id] = side;
+            _announcement = L["Suggest_LockedAnnouncement", player.Name, side];
+        }
+
+        // La proposition affichée reste ; l'écran demande de relancer le calcul si elle ne convient plus.
+        _onlyOne = _applyFailed = false;
+        _balancer = CreateBalancer(_lineup!);
+    }
+
+    private void Recompute() => Show(_balancer!.Propose());
+
+    private void Another()
+    {
+        var next = _balancer!.Propose(_proposal!.Sides);
+        if (next is null)
+        {
+            _onlyOne = true;
+        }
+        else
+        {
+            Show(next);
+        }
+    }
+
+    private void Show(BalanceProposal? proposal)
+    {
+        if (proposal is null)
+        {
+            return;
+        }
+
+        _proposal = proposal;
+        _applyFailed = false;
+        _announcement = L["Suggest_NewProposal", proposal.Gap];
+    }
+
+    private async Task ApplyAsync()
+    {
+        if (_applying || _proposal is null || _balancer?.Accepts(_proposal.Sides) != true)
+        {
+            return;
+        }
+
+        _applying = true;
+        _applyFailed = _squadChanged = false;
+        try
+        {
+            await Service.ApplyAsync(Id, _proposal.Sides);
+
+            // US-002 : des données ont été saisies, on demande au navigateur de les conserver.
+            await StoragePersistence.RequestAsync();
+            Navigation.NavigateTo($"matchs/{Id}/equipes", replace: true);
+        }
+        catch (InvalidOperationException exception)
+        {
+            // Les joueurs du match ont changé (autre onglet) : on repart d'une proposition à jour.
+            Console.Error.WriteLine(exception);
+            await LoadAsync();
+            _squadChanged = true;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _applyFailed = true;
+        }
+        finally
+        {
+            _applying = false;
+        }
+    }
+}

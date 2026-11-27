@@ -15,7 +15,7 @@ public sealed record MatchLineup(Match Match, TeamLineup TeamA, TeamLineup TeamB
     public int PlayerCount => TeamA.Players.Count + TeamB.Players.Count + Unassigned.Count;
 }
 
-/// <summary>Composition manuelle des équipes (US-008).</summary>
+/// <summary>Composition des équipes : à la main (US-008) ou d'après une proposition validée (US-009).</summary>
 public sealed class LineupService
 {
     private readonly IRepository<Match> _matches;
@@ -97,6 +97,51 @@ public sealed class LineupService
             {
                 participant.Side = side;
                 await _participants.UpdateAsync(participant, cancellationToken);
+            }
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
+    /// <summary>Enregistre une répartition proposée, une fois validée par l'organisateur (US-009).</summary>
+    /// <param name="matchId">Le match.</param>
+    /// <param name="sides">Le côté de chacun des joueurs inscrits.</param>
+    /// <param name="cancellationToken">Annulation.</param>
+    /// <exception cref="KeyNotFoundException">Le match est introuvable.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// Les joueurs du match ne sont plus ceux de la proposition ; rien n'est alors enregistré.
+    /// </exception>
+    public async Task ApplyAsync(
+        Guid matchId, IReadOnlyDictionary<Guid, TeamSide> sides, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(sides);
+        if (sides.Values.Any(side => !Enum.IsDefined(side)))
+        {
+            throw new ArgumentOutOfRangeException(nameof(sides));
+        }
+
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
+            var squad = await _squads.GetAsync(matchId, cancellationToken)
+                ?? throw new KeyNotFoundException($"Aucun match actif avec l'identifiant {matchId}.");
+            if (squad.Selected.Count != sides.Count || !squad.Selected.All(player => sides.ContainsKey(player.Id)))
+            {
+                throw new InvalidOperationException("Les joueurs du match ont changé depuis la proposition.");
+            }
+
+            var registrations = (await _participants.ListAsync(cancellationToken: cancellationToken))
+                .Where(participant => participant.MatchId == matchId)
+                .ToList();
+            foreach (var participant in registrations)
+            {
+                if (sides.TryGetValue(participant.PlayerId, out var side) && participant.Side != side)
+                {
+                    participant.Side = side;
+                    await _participants.UpdateAsync(participant, cancellationToken);
+                }
             }
         }
         finally

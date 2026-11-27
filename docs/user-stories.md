@@ -167,6 +167,8 @@ Critères d'acceptation :
 - Un bouton « Autre proposition » donne une répartition différente d'un score équivalent.
 - La suggestion n'est jamais appliquée sans validation.
 
+**Note (US-009)** : le calcul est dans le domaine (`TeamBalancer`), exact et local ; l'écran `/matchs/{id}/equipes/proposition` n'enregistre rien avant « Appliquer ». Il cherche d'abord le plus petit écart de niveau, puis, à écart égal, sépare les joueurs d'un même poste (RG-EQU-07, étendue à tous les postes du sport du match, gardiens d'abord). « Autre proposition » garde la tolérance de 1 point (RG-EQU-05) : le niveau total étant fixe, les écarts possibles vont de 2 en 2, l'écart reste donc identique. Échanger les deux équipes ne compte pas comme une autre proposition. Les verrous valent pour la visite de l'écran et ne sont pas enregistrés. Le niveau combiné aux évaluations (RG-EQU-01, à partir de R3) n'est pas dans cette US.
+
 ### US-010 — Attribuer des postes et visualiser la composition
 En tant qu'organisateur, je veux affecter un poste à chaque joueur et voir la composition sur un terrain schématique afin d'avoir une vue claire de l'équipe.
 Priorité : S — Taille : L — Dépend de : US-008

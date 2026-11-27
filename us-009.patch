@@ -1,0 +1,1498 @@
+diff --git a/Directory.Build.props b/Directory.Build.props
+index 4e732dd..3b730fd 100644
+--- a/Directory.Build.props
++++ b/Directory.Build.props
+@@ -6,7 +6,7 @@
+     <Nullable>enable</Nullable>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <AnalysisLevel>latest</AnalysisLevel>
+-    <Version>0.9.0</Version>
++    <Version>0.10.0</Version>
+     <Deterministic>true</Deterministic>
+   </PropertyGroup>
+ 
+diff --git a/docs/user-stories.md b/docs/user-stories.md
+index d256eaf..a7ae9a3 100644
+--- a/docs/user-stories.md
++++ b/docs/user-stories.md
+@@ -167,6 +167,8 @@ Critères d'acceptation :
+ - Un bouton « Autre proposition » donne une répartition différente d'un score équivalent.
+ - La suggestion n'est jamais appliquée sans validation.
+ 
++**Note (US-009)** : le calcul est dans le domaine (`TeamBalancer`), exact et local ; l'écran `/matchs/{id}/equipes/proposition` n'enregistre rien avant « Appliquer ». Il cherche d'abord le plus petit écart de niveau, puis, à écart égal, sépare les joueurs d'un même poste (RG-EQU-07, étendue à tous les postes du sport du match, gardiens d'abord). « Autre proposition » garde la tolérance de 1 point (RG-EQU-05) : le niveau total étant fixe, les écarts possibles vont de 2 en 2, l'écart reste donc identique. Échanger les deux équipes ne compte pas comme une autre proposition. Les verrous valent pour la visite de l'écran et ne sont pas enregistrés. Le niveau combiné aux évaluations (RG-EQU-01, à partir de R3) n'est pas dans cette US.
++
+ ### US-010 — Attribuer des postes et visualiser la composition
+ En tant qu'organisateur, je veux affecter un poste à chaque joueur et voir la composition sur un terrain schématique afin d'avoir une vue claire de l'équipe.
+ Priorité : S — Taille : L — Dépend de : US-008
+diff --git a/src/AlFariq.Application/LineupService.cs b/src/AlFariq.Application/LineupService.cs
+index b250d27..a9b980e 100644
+--- a/src/AlFariq.Application/LineupService.cs
++++ b/src/AlFariq.Application/LineupService.cs
+@@ -15,7 +15,7 @@ public sealed record MatchLineup(Match Match, TeamLineup TeamA, TeamLineup TeamB
+     public int PlayerCount => TeamA.Players.Count + TeamB.Players.Count + Unassigned.Count;
+ }
+ 
+-/// <summary>Composition manuelle des équipes (US-008).</summary>
++/// <summary>Composition des équipes : à la main (US-008) ou d'après une proposition validée (US-009).</summary>
+ public sealed class LineupService
+ {
+     private readonly IRepository<Match> _matches;
+@@ -105,6 +105,51 @@ public sealed class LineupService
+         }
+     }
+ 
++    /// <summary>Enregistre une répartition proposée, une fois validée par l'organisateur (US-009).</summary>
++    /// <param name="matchId">Le match.</param>
++    /// <param name="sides">Le côté de chacun des joueurs inscrits.</param>
++    /// <param name="cancellationToken">Annulation.</param>
++    /// <exception cref="KeyNotFoundException">Le match est introuvable.</exception>
++    /// <exception cref="InvalidOperationException">
++    /// Les joueurs du match ne sont plus ceux de la proposition ; rien n'est alors enregistré.
++    /// </exception>
++    public async Task ApplyAsync(
++        Guid matchId, IReadOnlyDictionary<Guid, TeamSide> sides, CancellationToken cancellationToken = default)
++    {
++        ArgumentNullException.ThrowIfNull(sides);
++        if (sides.Values.Any(side => !Enum.IsDefined(side)))
++        {
++            throw new ArgumentOutOfRangeException(nameof(sides));
++        }
++
++        await _writeGate.WaitAsync(cancellationToken);
++        try
++        {
++            var squad = await _squads.GetAsync(matchId, cancellationToken)
++                ?? throw new KeyNotFoundException($"Aucun match actif avec l'identifiant {matchId}.");
++            if (squad.Selected.Count != sides.Count || !squad.Selected.All(player => sides.ContainsKey(player.Id)))
++            {
++                throw new InvalidOperationException("Les joueurs du match ont changé depuis la proposition.");
++            }
++
++            var registrations = (await _participants.ListAsync(cancellationToken: cancellationToken))
++                .Where(participant => participant.MatchId == matchId)
++                .ToList();
++            foreach (var participant in registrations)
++            {
++                if (sides.TryGetValue(participant.PlayerId, out var side) && participant.Side != side)
++                {
++                    participant.Side = side;
++                    await _participants.UpdateAsync(participant, cancellationToken);
++                }
++            }
++        }
++        finally
++        {
++            _writeGate.Release();
++        }
++    }
++
+     /// <summary>Enregistre le nom et la couleur d'une équipe. Un nom vide revient au nom par défaut.</summary>
+     /// <exception cref="ArgumentException">Nom trop long ou couleur inconnue.</exception>
+     /// <exception cref="KeyNotFoundException">Le match est introuvable.</exception>
+diff --git a/src/AlFariq.Domain/Matches/BalancePlayer.cs b/src/AlFariq.Domain/Matches/BalancePlayer.cs
+new file mode 100644
+index 0000000..09c1cf4
+--- /dev/null
++++ b/src/AlFariq.Domain/Matches/BalancePlayer.cs
+@@ -0,0 +1,18 @@
++namespace AlFariq.Domain;
++
++/// <summary>Un joueur à répartir par <see cref="TeamBalancer"/>.</summary>
++/// <param name="Id">Identifiant du joueur.</param>
++/// <param name="Level">Niveau perçu ; null pour compter <see cref="TeamBalancer.DefaultLevel"/>.</param>
++/// <param name="PositionCode">Poste à répartir entre les équipes ; null s'il n'y en a pas.</param>
++/// <param name="LockedSide">Côté imposé par l'organisateur ; null si le joueur est libre.</param>
++public sealed record BalancePlayer(Guid Id, int? Level, string? PositionCode = null, TeamSide? LockedSide = null)
++{
++    /// <summary>Un joueur du répertoire pour un match de ce sport : un poste d'un autre sport est ignoré.</summary>
++    public static BalancePlayer From(Player player, Sport? sport, TeamSide? lockedSide = null)
++    {
++        ArgumentNullException.ThrowIfNull(player);
++
++        var position = sport?.HasPosition(player.PreferredPositionCode) == true ? player.PreferredPositionCode : null;
++        return new BalancePlayer(player.Id, player.Level, position, lockedSide);
++    }
++}
+diff --git a/src/AlFariq.Domain/Matches/BalanceProposal.cs b/src/AlFariq.Domain/Matches/BalanceProposal.cs
+new file mode 100644
+index 0000000..8c35328
+--- /dev/null
++++ b/src/AlFariq.Domain/Matches/BalanceProposal.cs
+@@ -0,0 +1,16 @@
++namespace AlFariq.Domain;
++
++/// <summary>Une répartition proposée. Ce n'est qu'une proposition : rien n'est enregistré.</summary>
++/// <param name="Sides">Le côté de chaque joueur.</param>
++/// <param name="LevelA">Niveau total de l'équipe A.</param>
++/// <param name="LevelB">Niveau total de l'équipe B.</param>
++/// <param name="GroupedPositions">Postes tenus par au moins deux joueurs, tous placés dans la même équipe.</param>
++public sealed record BalanceProposal(
++    IReadOnlyDictionary<Guid, TeamSide> Sides,
++    int LevelA,
++    int LevelB,
++    IReadOnlyList<string> GroupedPositions)
++{
++    /// <summary>Écart de niveau total entre les deux équipes.</summary>
++    public int Gap => Math.Abs(LevelA - LevelB);
++}
+diff --git a/src/AlFariq.Domain/Matches/TeamBalancer.cs b/src/AlFariq.Domain/Matches/TeamBalancer.cs
+new file mode 100644
+index 0000000..3c7c393
+--- /dev/null
++++ b/src/AlFariq.Domain/Matches/TeamBalancer.cs
+@@ -0,0 +1,456 @@
++namespace AlFariq.Domain;
++
++/// <summary>
++/// Répartit des joueurs en deux équipes équilibrées (US-009, RG-EQU-01 à 07). Calcul exact, local et sans réseau.
++/// </summary>
++/// <remarks>
++/// <para>Contraintes : les effectifs diffèrent d'au plus un joueur et les joueurs verrouillés gardent leur côté.</para>
++/// <para>
++/// Priorités : d'abord le plus petit écart de niveau total ; ensuite, à écart égal, éviter que tous les joueurs
++/// d'un même poste soient dans la même équipe, les gardiens avant les autres postes.
++/// </para>
++/// <para>
++/// Méthode : programmation dynamique sur (joueurs placés, effectif de A, niveau de A, poste en cours). Les joueurs
++/// sont parcourus poste par poste, ce qui évite d'avoir à retenir la répartition des postes déjà traités.
++/// Les niveaux étant entiers et leur total fixe, deux répartitions ont des écarts de même parité : avec la
++/// tolérance par défaut (1), une autre proposition a donc exactement le même écart.
++/// </para>
++/// <para>Une instance correspond à un jeu de verrous et mémorise les propositions déjà faites.</para>
++/// </remarks>
++public sealed class TeamBalancer
++{
++    /// <summary>Niveau compté pour un joueur qui n'en a pas (RG-EQU-03).</summary>
++    public const int DefaultLevel = 3;
++
++    /// <summary>Écart de niveau supplémentaire admis pour une autre proposition (RG-EQU-05).</summary>
++    public const int DefaultTolerance = 1;
++
++    // Séparer les gardiens compte plus que séparer tous les autres postes réunis.
++    private const int GoalkeeperWeight = 16;
++
++    private const byte Unknown = byte.MaxValue;
++    private const byte Impossible = byte.MaxValue - 1;
++
++    private const int OnA = 1;
++    private const int OnB = 2;
++    private const int BothSides = OnA | OnB;
++
++    private static readonly TeamSide[] OnlyA = [TeamSide.A];
++    private static readonly TeamSide[] OnlyB = [TeamSide.B];
++    private static readonly TeamSide[] AOrB = [TeamSide.A, TeamSide.B];
++
++    private readonly Slot[] _slots;
++    private readonly Random _random;
++    private readonly int _totalLevel;
++    private readonly int _maxExcess;
++    private readonly bool _mirrorsAreEqual;
++    private readonly HashSet<string> _seen = [];
++    private readonly Solver? _best;
++    private readonly int _bestPenalty;
++    private Solver? _equivalent;
++
++    /// <param name="players">Les joueurs à répartir.</param>
++    /// <param name="random">Hasard qui choisit parmi les répartitions de même qualité.</param>
++    /// <param name="tolerance">Écart de niveau supplémentaire admis pour une autre proposition.</param>
++    /// <exception cref="ArgumentException">Un joueur figure deux fois.</exception>
++    public TeamBalancer(IReadOnlyList<BalancePlayer> players, Random random, int tolerance = DefaultTolerance)
++    {
++        ArgumentNullException.ThrowIfNull(players);
++        ArgumentNullException.ThrowIfNull(random);
++        ArgumentOutOfRangeException.ThrowIfNegative(tolerance);
++        if (players.Select(player => player.Id).Distinct().Count() != players.Count)
++        {
++            throw new ArgumentException("Un joueur ne peut figurer qu'une fois.", nameof(players));
++        }
++
++        _random = random;
++        Tolerance = tolerance;
++        MaxPerSide = (players.Count + 1) / 2;
++
++        // Sans aucun verrou, échanger les deux équipes donne la même répartition.
++        _mirrorsAreEqual = players.All(player => player.LockedSide is null);
++        _slots = BuildSlots(players);
++        _totalLevel = players.Sum(player => LevelOf(player));
++        _maxExcess = Math.Min(
++            _slots.Sum(slot => slot.Excess), (Player.MaxLevel - Player.MinLevel) * MaxPerSide);
++
++        // Pour que chaque répartition ne soit comptée qu'une fois, le premier joueur est alors toujours en A.
++        if (_mirrorsAreEqual && _slots.Length > 0)
++        {
++            _slots[0] = _slots[0] with { Fixed = TeamSide.A };
++        }
++
++        if (FindMinimumGap() is { } gap)
++        {
++            MinimumGap = gap;
++            _best = new Solver(this, gap);
++            _bestPenalty = _best.Cost(0, 0, 0, 0);
++            IsPossible = true;
++        }
++    }
++
++    public int Tolerance { get; }
++
++    /// <summary>Effectif maximal d'une équipe : la moitié des joueurs, arrondie au-dessus.</summary>
++    public int MaxPerSide { get; }
++
++    /// <summary>Faux quand les verrous placent plus de <see cref="MaxPerSide"/> joueurs d'un même côté.</summary>
++    public bool IsPossible { get; }
++
++    /// <summary>Le plus petit écart de niveau total possible avec ces verrous.</summary>
++    public int MinimumGap { get; }
++
++    /// <summary>Vrai si cette répartition respecte les verrous et reste d'une qualité équivalente à la meilleure.</summary>
++    public bool Accepts(IReadOnlyDictionary<Guid, TeamSide> sides)
++    {
++        ArgumentNullException.ThrowIfNull(sides);
++        if (!IsPossible || sides.Count != _slots.Length)
++        {
++            return false;
++        }
++
++        var countA = 0;
++        var excessA = 0;
++        var flags = 0;
++        var penalty = 0;
++        for (var index = 0; index < _slots.Length; index++)
++        {
++            var slot = _slots[index];
++            if (!sides.TryGetValue(slot.Id, out var side) || (slot.Locked is { } locked && locked != side))
++            {
++                return false;
++            }
++
++            if (side == TeamSide.A)
++            {
++                countA++;
++                excessA += slot.Excess;
++                flags |= OnA;
++            }
++            else
++            {
++                flags |= OnB;
++            }
++
++            if (slot.EndsGroup)
++            {
++                penalty += flags == BothSides ? 0 : slot.GroupWeight;
++                flags = 0;
++            }
++        }
++
++        return countA <= MaxPerSide
++            && _slots.Length - countA <= MaxPerSide
++            && GapOf(countA, excessA) <= MinimumGap + Tolerance
++            && penalty <= _bestPenalty;
++    }
++
++    /// <summary>
++    /// Sans <paramref name="current"/> : une des meilleures répartitions. Avec <paramref name="current"/> : une
++    /// répartition différente de celle-là et de qualité équivalente, pas encore proposée ; quand toutes l'ont été,
++    /// le tour recommence.
++    /// </summary>
++    /// <returns>
++    /// Null si les verrous rendent la répartition impossible, ou s'il n'existe aucune autre répartition équivalente.
++    /// </returns>
++    public BalanceProposal? Propose(IReadOnlyDictionary<Guid, TeamSide>? current = null)
++    {
++        if (_best is null)
++        {
++            return null;
++        }
++
++        var solver = current is null ? _best : (_equivalent ??= new Solver(this, MinimumGap + Tolerance));
++        var currentKey = current is null ? null : KeyOf(current);
++        if (currentKey is not null)
++        {
++            _seen.Add(currentKey);
++        }
++
++        var proposal = Pick(solver);
++        if (proposal is null)
++        {
++            // Tout a déjà été proposé : on oublie, sauf la répartition affichée.
++            _seen.Clear();
++            if (currentKey is not null)
++            {
++                _seen.Add(currentKey);
++            }
++
++            proposal = Pick(solver);
++        }
++
++        return proposal;
++    }
++
++    private static int LevelOf(BalancePlayer player) =>
++        Math.Clamp(player.Level ?? DefaultLevel, Player.MinLevel, Player.MaxLevel);
++
++    /// <summary>Range les joueurs poste par poste et note ce que coûte un poste regroupé d'un seul côté.</summary>
++    private static Slot[] BuildSlots(IReadOnlyList<BalancePlayer> players)
++    {
++        var slots = new List<Slot>(players.Count);
++        foreach (var group in players
++            .GroupBy(player => player.PositionCode ?? "")
++            .OrderBy(group => group.Key, StringComparer.Ordinal))
++        {
++            var members = group.ToList();
++            var weight = group.Key.Length == 0 || members.Count < 2 ? 0
++                : group.Key.EndsWith(".goalkeeper", StringComparison.Ordinal) ? GoalkeeperWeight
++                : 1;
++
++            for (var index = 0; index < members.Count; index++)
++            {
++                var player = members[index];
++                slots.Add(new Slot(
++                    player.Id,
++                    LevelOf(player) - Player.MinLevel,
++                    group.Key,
++                    weight,
++                    EndsGroup: index == members.Count - 1,
++                    Locked: player.LockedSide,
++                    Fixed: player.LockedSide));
++            }
++        }
++
++        return slots.ToArray();
++    }
++
++    // L'« excédent » est le niveau au-delà du minimum : il garde les tables petites.
++    private int GapOf(int countA, int excessA) => Math.Abs((2 * (excessA + (countA * Player.MinLevel))) - _totalLevel);
++
++    /// <summary>Le plus petit écart parmi tous les couples (effectif, niveau) que l'équipe A peut atteindre.</summary>
++    private int? FindMinimumGap()
++    {
++        var reachable = new bool[MaxPerSide + 1, _maxExcess + 1];
++        reachable[0, 0] = true;
++
++        for (var index = 0; index < _slots.Length; index++)
++        {
++            var next = new bool[MaxPerSide + 1, _maxExcess + 1];
++            for (var countA = 0; countA <= Math.Min(index, MaxPerSide); countA++)
++            {
++                for (var excessA = 0; excessA <= _maxExcess; excessA++)
++                {
++                    if (!reachable[countA, excessA])
++                    {
++                        continue;
++                    }
++
++                    foreach (var side in ChoicesAt(index))
++                    {
++                        if (TryPlace(index, countA, excessA, side, out var newCount, out var newExcess))
++                        {
++                            next[newCount, newExcess] = true;
++                        }
++                    }
++                }
++            }
++
++            reachable = next;
++        }
++
++        int? minimum = null;
++        for (var countA = 0; countA <= MaxPerSide; countA++)
++        {
++            for (var excessA = 0; excessA <= _maxExcess; excessA++)
++            {
++                if (reachable[countA, excessA] && (minimum is null || GapOf(countA, excessA) < minimum))
++                {
++                    minimum = GapOf(countA, excessA);
++                }
++            }
++        }
++
++        return minimum;
++    }
++
++    private TeamSide[] ChoicesAt(int index) => _slots[index].Fixed switch
++    {
++        TeamSide.A => OnlyA,
++        TeamSide.B => OnlyB,
++        _ => AOrB,
++    };
++
++    /// <summary>Ajoute le joueur au côté demandé ; faux si ce côté est complet.</summary>
++    private bool TryPlace(int index, int countA, int excessA, TeamSide side, out int newCount, out int newExcess)
++    {
++        var onA = side == TeamSide.A;
++        newCount = onA ? countA + 1 : countA;
++        newExcess = onA ? excessA + _slots[index].Excess : excessA;
++
++        return newCount <= MaxPerSide
++            && index + 1 - newCount <= MaxPerSide
++            && newExcess <= _maxExcess;
++    }
++
++    /// <summary>Le poste en cours : côtés déjà occupés après ce joueur, et pénalité si le poste se termine.</summary>
++    private (int Flags, int Penalty) Follow(int index, int flags, TeamSide side)
++    {
++        var slot = _slots[index];
++        var occupied = flags | (side == TeamSide.A ? OnA : OnB);
++
++        return slot.EndsGroup
++            ? (0, occupied == BothSides ? 0 : slot.GroupWeight)
++            : (occupied, 0);
++    }
++
++    /// <summary>Tire au hasard une répartition de cette qualité qui n'a pas encore été proposée.</summary>
++    private BalanceProposal? Pick(Solver solver)
++    {
++        var sides = new TeamSide[_slots.Length];
++        if (!Walk(0, 0, 0, 0, 0))
++        {
++            return null;
++        }
++
++        _seen.Add(Key(sides));
++        return Describe(sides);
++
++        // Parcours en profondeur, dans un ordre aléatoire, sans entrer dans les branches qui ne mènent à rien.
++        bool Walk(int index, int countA, int excessA, int flags, int penalty)
++        {
++            if (index == _slots.Length)
++            {
++                return !_seen.Contains(Key(sides));
++            }
++
++            var choices = ChoicesAt(index);
++            var first = _random.Next(choices.Length);
++            for (var offset = 0; offset < choices.Length; offset++)
++            {
++                var side = choices[(first + offset) % choices.Length];
++                if (!TryPlace(index, countA, excessA, side, out var newCount, out var newExcess))
++                {
++                    continue;
++                }
++
++                var (newFlags, cost) = Follow(index, flags, side);
++                var rest = solver.Cost(index + 1, newCount, newExcess, newFlags);
++                if (rest == Impossible || penalty + cost + rest > _bestPenalty)
++                {
++                    continue;
++                }
++
++                sides[index] = side;
++                if (Walk(index + 1, newCount, newExcess, newFlags, penalty + cost))
++                {
++                    return true;
++                }
++            }
++
++            return false;
++        }
++    }
++
++    private static string Key(IEnumerable<TeamSide> sides) =>
++        string.Concat(sides.Select(side => side == TeamSide.A ? 'A' : 'B'));
++
++    /// <summary>La clé d'une répartition venue de l'extérieur ; null si elle ne porte pas sur les mêmes joueurs.</summary>
++    private string? KeyOf(IReadOnlyDictionary<Guid, TeamSide> sides)
++    {
++        if (sides.Count != _slots.Length || !_slots.All(slot => sides.ContainsKey(slot.Id)))
++        {
++            return null;
++        }
++
++        var ordered = _slots.Select(slot => sides[slot.Id]).ToList();
++        if (_mirrorsAreEqual && ordered.Count > 0 && ordered[0] == TeamSide.B)
++        {
++            ordered = ordered.Select(side => side == TeamSide.A ? TeamSide.B : TeamSide.A).ToList();
++        }
++
++        return Key(ordered);
++    }
++
++    private BalanceProposal Describe(TeamSide[] sides)
++    {
++        var assignments = new Dictionary<Guid, TeamSide>(_slots.Length);
++        var grouped = new List<string>();
++        var levelA = 0;
++        var flags = 0;
++
++        for (var index = 0; index < _slots.Length; index++)
++        {
++            var slot = _slots[index];
++            assignments[slot.Id] = sides[index];
++            flags |= sides[index] == TeamSide.A ? OnA : OnB;
++            if (sides[index] == TeamSide.A)
++            {
++                levelA += slot.Excess + Player.MinLevel;
++            }
++
++            if (slot.EndsGroup)
++            {
++                if (slot.GroupWeight > 0 && flags != BothSides)
++                {
++                    grouped.Add(slot.Position);
++                }
++
++                flags = 0;
++            }
++        }
++
++        return new BalanceProposal(assignments, levelA, _totalLevel - levelA, grouped);
++    }
++
++    private readonly record struct Slot(
++        Guid Id, int Excess, string Position, int GroupWeight, bool EndsGroup, TeamSide? Locked, TeamSide? Fixed);
++
++    /// <summary>
++    /// Pour un écart maximal donné : la plus petite pénalité de postes qu'on peut encore obtenir depuis un état.
++    /// </summary>
++    private sealed class Solver
++    {
++        private readonly TeamBalancer _owner;
++        private readonly int _maxGap;
++        private readonly byte[] _memo;
++
++        public Solver(TeamBalancer owner, int maxGap)
++        {
++            _owner = owner;
++            _maxGap = maxGap;
++            _memo = new byte[(owner._slots.Length + 1) * (owner.MaxPerSide + 1) * (owner._maxExcess + 1) * 4];
++            Array.Fill(_memo, Unknown);
++        }
++
++        /// <returns><see cref="Impossible"/> si aucune répartition ne respecte l'écart depuis cet état.</returns>
++        public int Cost(int index, int countA, int excessA, int flags)
++        {
++            var key = (((((index * (_owner.MaxPerSide + 1)) + countA) * (_owner._maxExcess + 1)) + excessA) * 4) + flags;
++            if (_memo[key] != Unknown)
++            {
++                return _memo[key];
++            }
++
++            int best = Impossible;
++            if (index == _owner._slots.Length)
++            {
++                if (_owner.GapOf(countA, excessA) <= _maxGap)
++                {
++                    best = 0;
++                }
++            }
++            else
++            {
++                foreach (var side in _owner.ChoicesAt(index))
++                {
++                    if (!_owner.TryPlace(index, countA, excessA, side, out var newCount, out var newExcess))
++                    {
++                        continue;
++                    }
++
++                    var (newFlags, penalty) = _owner.Follow(index, flags, side);
++                    var rest = Cost(index + 1, newCount, newExcess, newFlags);
++                    if (rest != Impossible)
++                    {
++                        best = Math.Min(best, rest + penalty);
++                    }
++                }
++            }
++
++            _memo[key] = (byte)best;
++            return best;
++        }
++    }
++}
+diff --git a/src/AlFariq.Domain/Releases/changelog.json b/src/AlFariq.Domain/Releases/changelog.json
+index 3418e9e..9397d1a 100644
+--- a/src/AlFariq.Domain/Releases/changelog.json
++++ b/src/AlFariq.Domain/Releases/changelog.json
+@@ -1,5 +1,27 @@
+ {
+   "entries": [
++    {
++      "version": "0.10.0",
++      "date": "2026-11-27",
++      "changes": [
++        {
++          "type": "added",
++          "text": {
++            "fr": "Fais-toi proposer deux équipes équilibrées selon les niveaux, même hors ligne : rien ne change sans ta validation.",
++            "en": "Get two teams balanced by skill level, even offline: nothing changes until you approve.",
++            "ar": "احصل على اقتراح بفريقين متوازنين حسب المستوى، حتى دون اتصال: لا يتغير شيء قبل موافقتك."
++          }
++        },
++        {
++          "type": "added",
++          "text": {
++            "fr": "Impose l'équipe de certains joueurs, puis demande une autre proposition aussi équilibrée.",
++            "en": "Lock some players into a team, then ask for another equally balanced suggestion.",
++            "ar": "ثبّت بعض اللاعبين في فريق، ثم اطلب اقتراحاً آخر بنفس التوازن."
++          }
++        }
++      ]
++    },
+     {
+       "version": "0.9.0",
+       "date": "2026-11-26",
+diff --git a/src/AlFariq.UI/Components/SuggestionRow.razor b/src/AlFariq.UI/Components/SuggestionRow.razor
+new file mode 100644
+index 0000000..f6dbbaa
+--- /dev/null
++++ b/src/AlFariq.UI/Components/SuggestionRow.razor
+@@ -0,0 +1,49 @@
++@inject IStringLocalizer<Strings> L
++
++@* Un joueur de la proposition et ses deux verrous : un tap impose l'équipe, un tap sur le verrou actif le retire. *@
++<li class="lineup__player">
++    <span class="lineup__identity">
++        <span class="player-list__name" dir="auto">@Player.Name</span>
++        @if (Player.ProfileId is not null)
++        {
++            <span class="badge">@L["Players_Me"]</span>
++        }
++        <span class="lineup__details">
++            @if (Player.PreferredPositionCode is { } position)
++            {
++                <span>@L[SportLabels.PositionKey(position)]</span>
++            }
++            @if (Player.Level is { } level)
++            {
++                <span>@L["Players_LevelShort", level]</span>
++            }
++            else
++            {
++                <span class="suggest-default">@L["Suggest_LevelDefault", TeamBalancer.DefaultLevel]</span>
++            }
++        </span>
++    </span>
++    <span class="lineup__moves">
++        @foreach (var team in Teams)
++        {
++            <button @key="team.Side" type="button" class="team-toggle team-toggle--lock team-color--@team.ColorCode"
++                    aria-pressed="@(LockedSide == team.Side ? "true" : "false")"
++                    aria-label="@L["Suggest_LockLabel", Player.Name, team.Label]"
++                    @onclick="() => OnLock.InvokeAsync(team.Side)">
++                @team.Side
++            </button>
++        }
++    </span>
++</li>
++
++@code {
++    [Parameter, EditorRequired] public Player Player { get; set; } = default!;
++
++    /// <summary>Équipe imposée ; null si le joueur est libre.</summary>
++    [Parameter] public TeamSide? LockedSide { get; set; }
++
++    [Parameter, EditorRequired] public IReadOnlyList<TeamButton> Teams { get; set; } = [];
++
++    /// <summary>Le verrou d'une équipe a été touché.</summary>
++    [Parameter] public EventCallback<TeamSide> OnLock { get; set; }
++}
+diff --git a/src/AlFariq.UI/Pages/MatchSuggestion.razor b/src/AlFariq.UI/Pages/MatchSuggestion.razor
+new file mode 100644
+index 0000000..a432618
+--- /dev/null
++++ b/src/AlFariq.UI/Pages/MatchSuggestion.razor
+@@ -0,0 +1,327 @@
++@page "/matchs/{Id:guid}/equipes/proposition"
++@using AlFariq.Application
++@inject IStringLocalizer<Strings> L
++@inject LineupService Service
++@inject IStoragePersistence StoragePersistence
++@inject TimeProvider Clock
++@inject NavigationManager Navigation
++
++<PageTitle>@L["Suggest_Title"] · @L["App_Name"]</PageTitle>
++
++<section class="page">
++    <h1>@L["Suggest_Title"]</h1>
++
++    @if (_loadFailed)
++    {
++        <div class="card" role="alert">
++            <p>@L["Storage_Unavailable"]</p>
++        </div>
++    }
++    else if (_notFound)
++    {
++        <div class="card card--empty">
++            <p>@L["Match_NotFound"]</p>
++        </div>
++        <div class="actions">
++            <a class="button button--ghost" href="matchs">@L["Match_Back"]</a>
++        </div>
++    }
++    else if (_lineup is not null)
++    {
++        var start = MatchSchedule.ToLocal(_lineup.Match.StartsAt, Clock.LocalTimeZone);
++
++        <p class="lead squad-lead">
++            @L["Home_MatchDate", MatchLabels.LongDate(start), MatchLabels.Time(start)]<br />
++            @L["Home_MatchFormat", _lineup.Match.PlayersPerSide]
++        </p>
++
++        if (_squadChanged)
++        {
++            <p class="field__warning" role="alert">@L["Suggest_SquadChanged"]</p>
++        }
++
++        if (_balancer is null || _proposal is null)
++        {
++            <div class="card card--empty">
++                <p>@L["Suggest_TooFew"]</p>
++            </div>
++            <div class="actions">
++                <a class="button" href="matchs/@Id/joueurs">@L["Squad_Choose"]</a>
++            </div>
++        }
++        else
++        {
++            var stale = !_balancer.Accepts(_proposal.Sides);
++            var teams = new[] { _lineup.TeamA, _lineup.TeamB };
++            var buttons = teams
++                .Select(team => new TeamButton(team.Side, Label(team), team.ColorCode))
++                .ToList();
++            var withoutLevel = _players.Where(player => player.Level is null).ToList();
++
++            <p class="hint">
++                @(_lineup.TeamA.Players.Count + _lineup.TeamB.Players.Count > 0
++                    ? L["Suggest_KeepsCurrent"]
++                    : L["Suggest_NotSaved"])
++            </p>
++
++            if (withoutLevel.Count > 0)
++            {
++                <p class="field__warning user-text">
++                    @L["Suggest_NoLevel", TeamBalancer.DefaultLevel, string.Join(", ", withoutLevel.Select(player => player.Name))]
++                </p>
++            }
++
++            <div class="team-summary suggest-summary">
++                <div class="team-summary__counts" role="status">
++                    @foreach (var team in teams)
++                    {
++                        <p @key="team.Side" class="team-heading team-color--@team.ColorCode">
++                            <span class="team-dot" aria-hidden="true"></span>
++                            <span class="team-heading__name" dir="auto">@team.Side · @Label(team)</span>
++                            <span>
++                                @L["Suggest_TeamTotals", PlayersOn(team.Side).Count, team.Side == TeamSide.A ? _proposal.LevelA : _proposal.LevelB]
++                            </span>
++                        </p>
++                    }
++                </div>
++                <div role="status">
++                    @if (!_balancer.IsPossible)
++                    {
++                        var crowded = teams[_locks.Values.Count(side => side == TeamSide.A) > _balancer.MaxPerSide ? 0 : 1];
++                        <p class="field__warning">@L["Suggest_TooManyLocked", Label(crowded), _balancer.MaxPerSide]</p>
++                    }
++                    else if (stale)
++                    {
++                        <p class="field__warning">@L["Suggest_Stale"]</p>
++                    }
++                    else
++                    {
++                        <p class="suggest-gap">@L["Suggest_Gap", _proposal.Gap]</p>
++                        if (_onlyOne)
++                        {
++                            <p class="field__warning">@L["Suggest_OnlyOne"]</p>
++                        }
++                    }
++                </div>
++                @if (_applyFailed)
++                {
++                    <p class="field__error" role="alert">@L["Suggest_ApplyFailed"]</p>
++                }
++                <div class="suggest-actions">
++                    @if (stale)
++                    {
++                        <button type="button" class="button" disabled="@(!_balancer.IsPossible)" @onclick="Recompute">
++                            @L["Suggest_Recompute"]
++                        </button>
++                    }
++                    else
++                    {
++                        <button type="button" class="button" disabled="@_applying" @onclick="ApplyAsync">
++                            @L["Suggest_Apply"]
++                        </button>
++                        <button type="button" class="button button--ghost" disabled="@(_applying || _onlyOne)" @onclick="Another">
++                            @L["Suggest_Another"]
++                        </button>
++                    }
++                </div>
++            </div>
++
++            <div role="status">
++                @if (!stale && _proposal.GroupedPositions.Count > 0)
++                {
++                    <p class="field__warning suggest-grouped">
++                        @L["Suggest_Grouped", string.Join(", ", _proposal.GroupedPositions.Select(code => L[SportLabels.PositionKey(code)].Value))]
++                    </p>
++                }
++            </div>
++
++            <p class="sr-only" role="status">@_announcement</p>
++            <p class="hint">@L["Suggest_LockHint"]</p>
++
++            foreach (var team in teams)
++            {
++                var members = PlayersOn(team.Side);
++
++                <section @key="team.Side">
++                    <h2 class="lineup__title team-heading team-color--@team.ColorCode">
++                        <span class="team-dot" aria-hidden="true"></span>
++                        <span class="team-heading__name" dir="auto">@Label(team)</span>
++                        <span>@L["Teams_Count", members.Count]</span>
++                    </h2>
++                    <ul class="card lineup">
++                        @foreach (var player in members)
++                        {
++                            <SuggestionRow @key="player.Id" Player="player" LockedSide="LockOf(player.Id)" Teams="buttons"
++                                           OnLock="side => ToggleLock(player, side)" />
++                        }
++                    </ul>
++                </section>
++            }
++        }
++
++        <div class="actions">
++            <a class="button button--ghost" href="matchs/@Id/equipes">@L["Match_Cancel"]</a>
++        </div>
++    }
++</section>
++
++@code {
++    // Les verrous et la proposition ne vivent que sur cette page : rien n'est enregistré avant « Appliquer ».
++    private readonly Dictionary<Guid, TeamSide> _locks = [];
++
++    private MatchLineup? _lineup;
++    private List<Player> _players = [];
++    private TeamBalancer? _balancer;
++    private BalanceProposal? _proposal;
++    private Guid _loadedId;
++    private string _announcement = "";
++    private bool _loadFailed;
++    private bool _notFound;
++    private bool _onlyOne;
++    private bool _applying;
++    private bool _applyFailed;
++    private bool _squadChanged;
++
++    [Parameter] public Guid Id { get; set; }
++
++    protected override async Task OnParametersSetAsync()
++    {
++        if (_loadedId == Id)
++        {
++            return;
++        }
++
++        _loadedId = Id;
++        _squadChanged = false;
++        await LoadAsync();
++    }
++
++    private async Task LoadAsync()
++    {
++        _lineup = null;
++        _balancer = null;
++        _proposal = null;
++        _locks.Clear();
++        _announcement = "";
++        _loadFailed = _notFound = _onlyOne = _applyFailed = false;
++
++        try
++        {
++            var lineup = await Service.GetAsync(Id);
++            if (lineup is null)
++            {
++                _notFound = true;
++                return;
++            }
++
++            _players = PlayerDirectory.Search(
++                lineup.Unassigned.Concat(lineup.TeamA.Players).Concat(lineup.TeamB.Players), query: null).ToList();
++            _lineup = lineup;
++
++            if (_players.Count >= 2)
++            {
++                _balancer = CreateBalancer(lineup);
++                _proposal = _balancer.Propose();
++            }
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _loadFailed = true;
++        }
++    }
++
++    private TeamBalancer CreateBalancer(MatchLineup lineup)
++    {
++        var sport = SportCatalog.Find(lineup.Match.SportCode);
++        var players = _players.Select(player => BalancePlayer.From(player, sport, LockOf(player.Id))).ToList();
++        return new TeamBalancer(players, Random.Shared);
++    }
++
++    private string Label(TeamLineup team) => TeamLabels.Name(L, team.Side, team.Name);
++
++    private TeamSide? LockOf(Guid playerId) => _locks.TryGetValue(playerId, out var side) ? side : null;
++
++    private List<Player> PlayersOn(TeamSide side) =>
++        _players.Where(player => _proposal!.Sides[player.Id] == side).ToList();
++
++    private void ToggleLock(Player player, TeamSide side)
++    {
++        if (LockOf(player.Id) == side)
++        {
++            _locks.Remove(player.Id);
++            _announcement = L["Suggest_Unlocked", player.Name];
++        }
++        else
++        {
++            _locks[player.Id] = side;
++            _announcement = L["Suggest_LockedAnnouncement", player.Name, side];
++        }
++
++        // La proposition affichée reste ; l'écran demande de relancer le calcul si elle ne convient plus.
++        _onlyOne = _applyFailed = false;
++        _balancer = CreateBalancer(_lineup!);
++    }
++
++    private void Recompute() => Show(_balancer!.Propose());
++
++    private void Another()
++    {
++        var next = _balancer!.Propose(_proposal!.Sides);
++        if (next is null)
++        {
++            _onlyOne = true;
++        }
++        else
++        {
++            Show(next);
++        }
++    }
++
++    private void Show(BalanceProposal? proposal)
++    {
++        if (proposal is null)
++        {
++            return;
++        }
++
++        _proposal = proposal;
++        _applyFailed = false;
++        _announcement = L["Suggest_NewProposal", proposal.Gap];
++    }
++
++    private async Task ApplyAsync()
++    {
++        if (_applying || _proposal is null || _balancer?.Accepts(_proposal.Sides) != true)
++        {
++            return;
++        }
++
++        _applying = true;
++        _applyFailed = _squadChanged = false;
++        try
++        {
++            await Service.ApplyAsync(Id, _proposal.Sides);
++
++            // US-002 : des données ont été saisies, on demande au navigateur de les conserver.
++            await StoragePersistence.RequestAsync();
++            Navigation.NavigateTo($"matchs/{Id}/equipes", replace: true);
++        }
++        catch (InvalidOperationException exception)
++        {
++            // Les joueurs du match ont changé (autre onglet) : on repart d'une proposition à jour.
++            Console.Error.WriteLine(exception);
++            await LoadAsync();
++            _squadChanged = true;
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _applyFailed = true;
++        }
++        finally
++        {
++            _applying = false;
++        }
++    }
++}
+diff --git a/src/AlFariq.UI/Pages/MatchTeams.razor b/src/AlFariq.UI/Pages/MatchTeams.razor
+index 4bf1031..4a44cab 100644
+--- a/src/AlFariq.UI/Pages/MatchTeams.razor
++++ b/src/AlFariq.UI/Pages/MatchTeams.razor
+@@ -48,6 +48,13 @@
+         }
+         else
+         {
++            if (_players.Count >= 2)
++            {
++                <div class="actions">
++                    <a class="button button--ghost" href="matchs/@_match.Id/equipes/proposition">@L["Teams_Suggest"]</a>
++                </div>
++            }
++
+             <div class="team-summary">
+                 <div class="team-summary__counts" role="status">
+                     @foreach (var team in _teams)
+diff --git a/src/AlFariq.UI/Resources/Strings.resx b/src/AlFariq.UI/Resources/Strings.resx
+index 44ae253..7cf6d5f 100644
+--- a/src/AlFariq.UI/Resources/Strings.resx
++++ b/src/AlFariq.UI/Resources/Strings.resx
+@@ -166,6 +166,30 @@
+   <data name="Color_white" xml:space="preserve"><value>Blanc</value></data>
+   <data name="Color_black" xml:space="preserve"><value>Noir</value></data>
+ 
++  <data name="Teams_Suggest" xml:space="preserve"><value>Proposer des équipes équilibrées</value></data>
++  <data name="Suggest_Title" xml:space="preserve"><value>Équipes proposées</value></data>
++  <data name="Suggest_NotSaved" xml:space="preserve"><value>Rien n'est enregistré tant que tu n'as pas appliqué la proposition.</value></data>
++  <data name="Suggest_KeepsCurrent" xml:space="preserve"><value>Ta composition actuelle ne change pas tant que tu n'as pas appliqué la proposition.</value></data>
++  <data name="Suggest_NoLevel" xml:space="preserve"><value>Niveau non renseigné, compté {0} par défaut : {1}.</value></data>
++  <data name="Suggest_LevelDefault" xml:space="preserve"><value>Niv. {0} par défaut</value></data>
++  <data name="Suggest_TeamTotals" xml:space="preserve"><value>Joueurs : {0} · Niveau : {1}</value></data>
++  <data name="Suggest_Gap" xml:space="preserve"><value>Écart de niveau : {0}, le plus petit possible.</value></data>
++  <data name="Suggest_Grouped" xml:space="preserve"><value>Joueurs d'un même poste tous dans la même équipe, faute de mieux : {0}.</value></data>
++  <data name="Suggest_Apply" xml:space="preserve"><value>Appliquer</value></data>
++  <data name="Suggest_Another" xml:space="preserve"><value>Autre proposition</value></data>
++  <data name="Suggest_OnlyOne" xml:space="preserve"><value>Il n'existe pas d'autre répartition équivalente.</value></data>
++  <data name="Suggest_Recompute" xml:space="preserve"><value>Relancer le calcul</value></data>
++  <data name="Suggest_Stale" xml:space="preserve"><value>Les verrous ont changé : relance le calcul.</value></data>
++  <data name="Suggest_TooManyLocked" xml:space="preserve"><value>Trop de joueurs verrouillés dans « {0} » : {1} au maximum. Retire un verrou.</value></data>
++  <data name="Suggest_LockHint" xml:space="preserve"><value>Pour imposer l'équipe d'un joueur, touche A ou B sur sa ligne. Touche de nouveau pour retirer le verrou.</value></data>
++  <data name="Suggest_LockLabel" xml:space="preserve"><value>Verrouiller {0} dans « {1} »</value></data>
++  <data name="Suggest_LockedAnnouncement" xml:space="preserve"><value>{0} est verrouillé en {1}.</value></data>
++  <data name="Suggest_Unlocked" xml:space="preserve"><value>{0} n'est plus verrouillé.</value></data>
++  <data name="Suggest_NewProposal" xml:space="preserve"><value>Nouvelle proposition. Écart de niveau : {0}.</value></data>
++  <data name="Suggest_TooFew" xml:space="preserve"><value>Il faut au moins deux joueurs pour proposer des équipes.</value></data>
++  <data name="Suggest_ApplyFailed" xml:space="preserve"><value>L'application a échoué. Vérifie la composition puis réessaie.</value></data>
++  <data name="Suggest_SquadChanged" xml:space="preserve"><value>Les joueurs du match ont changé : voici une nouvelle proposition.</value></data>
++
+   <data name="Players_Title" xml:space="preserve"><value>Joueurs</value></data>
+   <data name="Players_Empty" xml:space="preserve"><value>Ton répertoire est vide. Un prénom ou un pseudo suffit pour ajouter un joueur.</value></data>
+   <data name="Players_Me" xml:space="preserve"><value>Moi</value></data>
+diff --git a/src/AlFariq.UI/wwwroot/css/app.css b/src/AlFariq.UI/wwwroot/css/app.css
+index c93f25c..e72b64c 100644
+--- a/src/AlFariq.UI/wwwroot/css/app.css
++++ b/src/AlFariq.UI/wwwroot/css/app.css
+@@ -627,7 +627,8 @@ h1:focus {
+ .lineup__details {
+   display: flex;
+   flex-basis: 100%;
+-  gap: 0.75rem;
++  flex-wrap: wrap;
++  gap: 0 0.75rem;
+   color: var(--color-muted);
+   font-size: 0.875rem;
+ }
+@@ -765,6 +766,47 @@ h1:focus {
+   margin-top: 0.25rem;
+ }
+ 
++/* ---------- Proposition d'équipes ---------- */
++
++.team-toggle--lock[aria-pressed="true"]::after {
++  content: "🔒";
++}
++
++.suggest-gap {
++  font-weight: 600;
++}
++
++.suggest-actions {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 0.5rem;
++  margin-top: 0.5rem;
++}
++
++.suggest-actions .button {
++  flex: 1 1 auto;
++  padding: 0 1rem;
++}
++
++.suggest-actions .button:disabled {
++  cursor: default;
++}
++
++.suggest-default {
++  font-weight: 600;
++}
++
++.field__warning.suggest-grouped {
++  margin-bottom: 0.75rem;
++}
++
++/* Sur un écran bas (téléphone à l'horizontale), le résumé figé cacherait la liste. */
++@media (max-height: 520px) {
++  .team-summary.suggest-summary {
++    position: static;
++  }
++}
++
+ /* ---------- Bandeaux ---------- */
+ 
+ .banner {
+diff --git a/tests/AlFariq.Client.Core.Tests/LineupServiceTests.cs b/tests/AlFariq.Client.Core.Tests/LineupServiceTests.cs
+index a2b4c2e..f573a40 100644
+--- a/tests/AlFariq.Client.Core.Tests/LineupServiceTests.cs
++++ b/tests/AlFariq.Client.Core.Tests/LineupServiceTests.cs
+@@ -129,6 +129,38 @@ public sealed class LineupServiceTests : IDisposable
+         Assert.Empty(await _app.GetRequiredService<IRepository<MatchSide>>().ListAsync());
+     }
+ 
++    [Fact]
++    public async Task A_validated_proposal_replaces_the_teams()
++    {
++        var match = await NewMatchAsync();
++        var sami = await JoinAsync(match, "Sami");
++        var alice = await JoinAsync(match, "Alice");
++        await _lineups.AssignAsync(match, sami, TeamSide.A);
++
++        await _lineups.ApplyAsync(
++            match, new Dictionary<Guid, TeamSide> { [sami] = TeamSide.B, [alice] = TeamSide.A });
++
++        var lineup = (await _lineups.GetAsync(match))!;
++        Assert.Equal(new[] { "Alice" }, Names(lineup.TeamA.Players));
++        Assert.Equal(new[] { "Sami" }, Names(lineup.TeamB.Players));
++        Assert.Empty(lineup.Unassigned);
++    }
++
++    [Fact]
++    public async Task A_proposal_computed_for_other_players_changes_nothing()
++    {
++        var match = await NewMatchAsync();
++        var sami = await JoinAsync(match, "Sami");
++        var proposal = new Dictionary<Guid, TeamSide> { [sami] = TeamSide.A };
++        await JoinAsync(match, "Alice");
++
++        await Assert.ThrowsAsync<InvalidOperationException>(() => _lineups.ApplyAsync(match, proposal));
++        await Assert.ThrowsAsync<KeyNotFoundException>(
++            () => _lineups.ApplyAsync(Guid.CreateVersion7(), proposal));
++
++        Assert.Equal(2, (await _lineups.GetAsync(match))!.Unassigned.Count);
++    }
++
+     [Fact]
+     public async Task A_duplicated_match_keeps_the_players_but_not_the_teams()
+     {
+diff --git a/tests/AlFariq.Domain.Tests/TeamBalancerTests.cs b/tests/AlFariq.Domain.Tests/TeamBalancerTests.cs
+new file mode 100644
+index 0000000..4c5b7a3
+--- /dev/null
++++ b/tests/AlFariq.Domain.Tests/TeamBalancerTests.cs
+@@ -0,0 +1,315 @@
++using AlFariq.Domain;
++
++namespace AlFariq.Domain.Tests;
++
++public class TeamBalancerTests
++{
++    private const string Keeper = "football.goalkeeper";
++    private const string Forward = "football.forward";
++
++    private static BalancePlayer Candidate(int? level, string? position = null, TeamSide? locked = null) =>
++        new(Guid.CreateVersion7(), level, position, locked);
++
++    private static List<BalancePlayer> Levels(params int[] levels) => levels.Select(level => Candidate(level)).ToList();
++
++    private static TeamBalancer Balancer(IReadOnlyList<BalancePlayer> players, int seed = 1) =>
++        new(players, new Random(seed));
++
++    private static int CountOn(BalanceProposal proposal, TeamSide side) =>
++        proposal.Sides.Values.Count(value => value == side);
++
++    /// <summary>La répartition vue comme deux groupes, sans tenir compte du nom des équipes.</summary>
++    private static string Groups(BalanceProposal proposal)
++    {
++        var teams = proposal.Sides
++            .GroupBy(pair => pair.Value)
++            .Select(team => string.Join(",", team.Select(pair => pair.Key).Order()));
++        return string.Join("|", teams.Order(StringComparer.Ordinal));
++    }
++
++    [Fact]
++    public void The_level_gap_is_as_small_as_possible()
++    {
++        // Prendre les meilleurs à tour de rôle donnerait 9 contre 7 ; 5+3 contre 4+4 fait mieux.
++        var players = Levels(5, 4, 4, 3);
++
++        var proposal = Balancer(players).Propose()!;
++
++        Assert.Equal(0, proposal.Gap);
++        Assert.Equal(8, proposal.LevelA);
++        Assert.Equal(8, proposal.LevelB);
++        Assert.Equal(proposal.Sides[players[1].Id], proposal.Sides[players[2].Id]);
++    }
++
++    [Theory]
++    [InlineData(2)]
++    [InlineData(7)]
++    [InlineData(22)]
++    [InlineData(61)]
++    public void Team_sizes_differ_by_at_most_one(int count)
++    {
++        var players = Enumerable.Range(0, count).Select(index => Candidate(1 + (index % 5))).ToList();
++
++        var proposal = Balancer(players).Propose()!;
++
++        Assert.Equal(count, proposal.Sides.Count);
++        Assert.InRange(Math.Abs(CountOn(proposal, TeamSide.A) - CountOn(proposal, TeamSide.B)), 0, 1);
++    }
++
++    [Fact]
++    public void Sizes_come_before_levels()
++    {
++        // 5 contre 1+1+1 serait plus équilibré, mais les effectifs différeraient de deux joueurs.
++        var proposal = Balancer(Levels(5, 1, 1, 1)).Propose()!;
++
++        Assert.Equal(2, CountOn(proposal, TeamSide.A));
++        Assert.Equal(4, proposal.Gap);
++    }
++
++    [Fact]
++    public void A_player_without_level_counts_as_three()
++    {
++        var players = new List<BalancePlayer> { Candidate(null), Candidate(3), Candidate(5), Candidate(1) };
++
++        var proposal = Balancer(players).Propose()!;
++
++        Assert.Equal(3, TeamBalancer.DefaultLevel);
++        Assert.Equal(12, proposal.LevelA + proposal.LevelB);
++        Assert.Equal(0, proposal.Gap);
++        Assert.Equal(proposal.Sides[players[0].Id], proposal.Sides[players[1].Id]);
++    }
++
++    [Fact]
++    public void Locked_players_keep_their_side()
++    {
++        var players = new List<BalancePlayer>
++        {
++            Candidate(5, locked: TeamSide.B), Candidate(5, locked: TeamSide.B), Candidate(1), Candidate(1), Candidate(3), Candidate(3),
++        };
++        var balancer = Balancer(players);
++
++        var proposal = balancer.Propose()!;
++
++        for (var attempt = 0; attempt < 20; attempt++)
++        {
++            Assert.Equal(TeamSide.B, proposal.Sides[players[0].Id]);
++            Assert.Equal(TeamSide.B, proposal.Sides[players[1].Id]);
++            Assert.Equal(3, CountOn(proposal, TeamSide.B));
++            Assert.Equal(4, proposal.Gap);
++            proposal = balancer.Propose(proposal.Sides) ?? proposal;
++        }
++    }
++
++    [Fact]
++    public void Too_many_locks_on_one_side_give_no_proposal()
++    {
++        var players = new List<BalancePlayer>
++        {
++            Candidate(3, locked: TeamSide.A), Candidate(3, locked: TeamSide.A), Candidate(3, locked: TeamSide.A), Candidate(3),
++        };
++
++        var balancer = Balancer(players);
++
++        Assert.False(balancer.IsPossible);
++        Assert.Equal(2, balancer.MaxPerSide);
++        Assert.Null(balancer.Propose());
++    }
++
++    [Fact]
++    public void Another_proposal_is_different_and_as_good_until_all_have_been_shown()
++    {
++        // Six joueurs de même niveau : C(6,3) / 2 = 10 répartitions possibles.
++        var balancer = Balancer(Levels(3, 3, 3, 3, 3, 3));
++        var proposal = balancer.Propose()!;
++        var seen = new HashSet<string> { Groups(proposal) };
++
++        for (var attempt = 1; attempt < 10; attempt++)
++        {
++            proposal = balancer.Propose(proposal.Sides)!;
++
++            Assert.Equal(0, proposal.Gap);
++            Assert.True(seen.Add(Groups(proposal)), "Répartition déjà proposée.");
++        }
++
++        // Le tour recommence, sans reproposer celle qui est affichée.
++        var next = balancer.Propose(proposal.Sides)!;
++
++        Assert.NotEqual(Groups(proposal), Groups(next));
++        Assert.Contains(Groups(next), seen.ToList());
++    }
++
++    [Fact]
++    public void Swapping_the_two_teams_is_not_another_proposal()
++    {
++        var balancer = Balancer(Levels(5, 1));
++        var proposal = balancer.Propose()!;
++
++        Assert.Null(balancer.Propose(proposal.Sides));
++
++        var mirrored = proposal.Sides.ToDictionary(
++            pair => pair.Key, pair => pair.Value == TeamSide.A ? TeamSide.B : TeamSide.A);
++        Assert.Null(balancer.Propose(mirrored));
++        Assert.True(balancer.Accepts(mirrored));
++        Assert.NotNull(balancer.Propose());
++    }
++
++    [Fact]
++    public void Goalkeepers_and_forwards_are_shared_between_the_teams()
++    {
++        var players = new List<BalancePlayer>
++        {
++            Candidate(3, Keeper), Candidate(3, Keeper), Candidate(3, Forward), Candidate(3, Forward), Candidate(3), Candidate(3),
++        };
++        var balancer = Balancer(players);
++        var proposal = balancer.Propose()!;
++
++        for (var attempt = 0; attempt < 20; attempt++)
++        {
++            Assert.NotEqual(proposal.Sides[players[0].Id], proposal.Sides[players[1].Id]);
++            Assert.NotEqual(proposal.Sides[players[2].Id], proposal.Sides[players[3].Id]);
++            Assert.Empty(proposal.GroupedPositions);
++            proposal = balancer.Propose(proposal.Sides)!;
++        }
++    }
++
++    [Fact]
++    public void The_level_gap_comes_before_positions()
++    {
++        // Les deux gardiens (5 et 1) doivent être ensemble pour que les équipes soient à égalité (6 contre 6).
++        var players = new List<BalancePlayer> { Candidate(5, Keeper), Candidate(1, Keeper), Candidate(3), Candidate(3) };
++
++        var proposal = Balancer(players).Propose()!;
++
++        Assert.Equal(0, proposal.Gap);
++        Assert.Equal(new[] { Keeper }, proposal.GroupedPositions);
++    }
++
++    [Fact]
++    public void Goalkeepers_are_separated_before_other_positions()
++    {
++        // Une seule place reste en A : il faut réunir en B soit les gardiens, soit les attaquants.
++        var players = new List<BalancePlayer>
++        {
++            Candidate(3, locked: TeamSide.A), Candidate(3, locked: TeamSide.A),
++            Candidate(3, Keeper), Candidate(3, Keeper), Candidate(3, Forward), Candidate(3, Forward),
++        };
++
++        var proposal = Balancer(players).Propose()!;
++
++        Assert.NotEqual(proposal.Sides[players[2].Id], proposal.Sides[players[3].Id]);
++        Assert.Equal(new[] { Forward }, proposal.GroupedPositions);
++    }
++
++    [Fact]
++    public void A_proposal_is_accepted_only_while_it_fits_the_locks()
++    {
++        var players = Levels(5, 4, 4, 3);
++        var proposal = Balancer(players).Propose()!;
++        var first = players[0].Id;
++
++        List<BalancePlayer> Locked(TeamSide side) =>
++            players.Select(player => player.Id == first ? player with { LockedSide = side } : player).ToList();
++
++        var other = proposal.Sides[first] == TeamSide.A ? TeamSide.B : TeamSide.A;
++
++        Assert.True(Balancer(Locked(proposal.Sides[first])).Accepts(proposal.Sides));
++        Assert.False(Balancer(Locked(other)).Accepts(proposal.Sides));
++        Assert.False(Balancer(Levels(5, 4)).Accepts(proposal.Sides));
++    }
++
++    [Fact]
++    public void Results_match_an_exhaustive_search()
++    {
++        var random = new Random(2026);
++        string?[] positions = [null, Keeper, Forward, "football.defender"];
++        TeamSide?[] locks = [null, null, null, null, TeamSide.A, TeamSide.B];
++
++        for (var round = 0; round < 300; round++)
++        {
++            var players = new List<BalancePlayer>();
++            for (var count = random.Next(2, 10); players.Count < count;)
++            {
++                var level = random.Next(0, 6);
++                players.Add(Candidate(
++                    level == 0 ? null : level,
++                    positions[random.Next(positions.Length)],
++                    locks[random.Next(locks.Length)]));
++            }
++            var expected = ExhaustiveSearch(players);
++            var balancer = Balancer(players, round);
++
++            Assert.Equal(expected.Count > 0, balancer.IsPossible);
++            if (expected.Count == 0)
++            {
++                continue;
++            }
++
++            var proposal = balancer.Propose()!;
++            var found = new HashSet<string> { Groups(proposal) };
++            Assert.Contains(Groups(proposal), expected.ToList());
++            while (balancer.Propose(proposal.Sides) is { } next && found.Add(Groups(next)))
++            {
++                proposal = next;
++            }
++
++            Assert.Equal(expected.Order(StringComparer.Ordinal).ToList(), found.Order(StringComparer.Ordinal).ToList());
++        }
++    }
++
++    [Fact]
++    public void A_player_cannot_appear_twice()
++    {
++        var player = Candidate(3);
++
++        Assert.Throws<ArgumentException>(() => Balancer([player, player]));
++    }
++
++    [Fact]
++    public void A_position_of_another_sport_is_ignored()
++    {
++        var player = new Player { Name = "Sami", Level = 4, PreferredPositionCode = Keeper };
++
++        Assert.Equal(Keeper, BalancePlayer.From(player, SportCatalog.Find("football")).PositionCode);
++        Assert.Null(BalancePlayer.From(player, SportCatalog.Find("basketball")).PositionCode);
++        Assert.Null(BalancePlayer.From(player, sport: null).PositionCode);
++    }
++
++    /// <summary>Toutes les meilleures répartitions, trouvées en les essayant toutes.</summary>
++    private static HashSet<string> ExhaustiveSearch(IReadOnlyList<BalancePlayer> players)
++    {
++        var candidates = new List<(int Gap, int Penalty, string Groups)>();
++        for (var mask = 0; mask < 1 << players.Count; mask++)
++        {
++            var sides = players
++                .Select((player, index) => (player, Side: (mask & (1 << index)) != 0 ? TeamSide.A : TeamSide.B))
++                .ToList();
++            var countA = sides.Count(entry => entry.Side == TeamSide.A);
++            if (Math.Abs((2 * countA) - players.Count) > 1
++                || sides.Any(entry => entry.player.LockedSide is { } locked && locked != entry.Side))
++            {
++                continue;
++            }
++
++            var gap = Math.Abs(sides.Sum(entry =>
++                (entry.Side == TeamSide.A ? 1 : -1) * (entry.player.Level ?? TeamBalancer.DefaultLevel)));
++            var penalty = sides
++                .Where(entry => entry.player.PositionCode is not null)
++                .GroupBy(entry => entry.player.PositionCode)
++                .Where(group => group.Count() > 1 && group.Select(entry => entry.Side).Distinct().Count() == 1)
++                .Sum(group => group.Key == Keeper ? 16 : 1);
++            var proposal = new BalanceProposal(sides.ToDictionary(e => e.player.Id, e => e.Side), 0, 0, []);
++            candidates.Add((gap, penalty, Groups(proposal)));
++        }
++
++        if (candidates.Count == 0)
++        {
++            return [];
++        }
++
++        var best = candidates.Min(candidate => (candidate.Gap, candidate.Penalty));
++        return candidates
++            .Where(candidate => (candidate.Gap, candidate.Penalty) == best)
++            .Select(candidate => candidate.Groups)
++            .ToHashSet();
++    }
++}

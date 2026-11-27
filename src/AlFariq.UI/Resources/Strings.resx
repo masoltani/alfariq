@@ -166,6 +166,30 @@
   <data name="Color_white" xml:space="preserve"><value>Blanc</value></data>
   <data name="Color_black" xml:space="preserve"><value>Noir</value></data>
 
+  <data name="Teams_Suggest" xml:space="preserve"><value>Proposer des équipes équilibrées</value></data>
+  <data name="Suggest_Title" xml:space="preserve"><value>Équipes proposées</value></data>
+  <data name="Suggest_NotSaved" xml:space="preserve"><value>Rien n'est enregistré tant que tu n'as pas appliqué la proposition.</value></data>
+  <data name="Suggest_KeepsCurrent" xml:space="preserve"><value>Ta composition actuelle ne change pas tant que tu n'as pas appliqué la proposition.</value></data>
+  <data name="Suggest_NoLevel" xml:space="preserve"><value>Niveau non renseigné, compté {0} par défaut : {1}.</value></data>
+  <data name="Suggest_LevelDefault" xml:space="preserve"><value>Niv. {0} par défaut</value></data>
+  <data name="Suggest_TeamTotals" xml:space="preserve"><value>Joueurs : {0} · Niveau : {1}</value></data>
+  <data name="Suggest_Gap" xml:space="preserve"><value>Écart de niveau : {0}, le plus petit possible.</value></data>
+  <data name="Suggest_Grouped" xml:space="preserve"><value>Joueurs d'un même poste tous dans la même équipe, faute de mieux : {0}.</value></data>
+  <data name="Suggest_Apply" xml:space="preserve"><value>Appliquer</value></data>
+  <data name="Suggest_Another" xml:space="preserve"><value>Autre proposition</value></data>
+  <data name="Suggest_OnlyOne" xml:space="preserve"><value>Il n'existe pas d'autre répartition équivalente.</value></data>
+  <data name="Suggest_Recompute" xml:space="preserve"><value>Relancer le calcul</value></data>
+  <data name="Suggest_Stale" xml:space="preserve"><value>Les verrous ont changé : relance le calcul.</value></data>
+  <data name="Suggest_TooManyLocked" xml:space="preserve"><value>Trop de joueurs verrouillés dans « {0} » : {1} au maximum. Retire un verrou.</value></data>
+  <data name="Suggest_LockHint" xml:space="preserve"><value>Pour imposer l'équipe d'un joueur, touche A ou B sur sa ligne. Touche de nouveau pour retirer le verrou.</value></data>
+  <data name="Suggest_LockLabel" xml:space="preserve"><value>Verrouiller {0} dans « {1} »</value></data>
+  <data name="Suggest_LockedAnnouncement" xml:space="preserve"><value>{0} est verrouillé en {1}.</value></data>
+  <data name="Suggest_Unlocked" xml:space="preserve"><value>{0} n'est plus verrouillé.</value></data>
+  <data name="Suggest_NewProposal" xml:space="preserve"><value>Nouvelle proposition. Écart de niveau : {0}.</value></data>
+  <data name="Suggest_TooFew" xml:space="preserve"><value>Il faut au moins deux joueurs pour proposer des équipes.</value></data>
+  <data name="Suggest_ApplyFailed" xml:space="preserve"><value>L'application a échoué. Vérifie la composition puis réessaie.</value></data>
+  <data name="Suggest_SquadChanged" xml:space="preserve"><value>Les joueurs du match ont changé : voici une nouvelle proposition.</value></data>
+
   <data name="Players_Title" xml:space="preserve"><value>Joueurs</value></data>
   <data name="Players_Empty" xml:space="preserve"><value>Ton répertoire est vide. Un prénom ou un pseudo suffit pour ajouter un joueur.</value></data>
   <data name="Players_Me" xml:space="preserve"><value>Moi</value></data>
