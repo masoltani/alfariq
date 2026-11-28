@@ -40,8 +40,11 @@ public static class LocalSchema
     /// <summary>Joueurs inscrits aux matchs (US-006, complété par US-007).</summary>
     public const string MatchParticipantsStore = "match_participants";
 
-    /// <summary>Réglages des équipes d'un match : nom et couleur (US-008).</summary>
+    /// <summary>Réglages des équipes d'un match : nom et couleur (US-008), formation (US-010), score (US-012).</summary>
     public const string MatchSidesStore = "match_sides";
+
+    /// <summary>Buts et passes décisives (US-012).</summary>
+    public const string MatchEventsStore = "match_events";
 
     public static IReadOnlyList<SchemaMigration> Migrations { get; } =
     [
@@ -49,6 +52,7 @@ public static class LocalSchema
         new SchemaMigration(2, [new StoreDefinition(ProfilesStore), new StoreDefinition(PlayersStore)]),
         new SchemaMigration(3, [new StoreDefinition(MatchesStore), new StoreDefinition(MatchParticipantsStore)]),
         new SchemaMigration(4, [new StoreDefinition(MatchSidesStore)]),
+        new SchemaMigration(5, [new StoreDefinition(MatchEventsStore)]),
     ];
 
     public static int CurrentVersion => Migrations[Migrations.Count - 1].Version;

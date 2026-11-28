@@ -58,7 +58,7 @@
 
             <div class="field">
                 <label for="match-sport">@L["Match_Sport"]</label>
-                <select id="match-sport" @bind="_sportCode" @bind:after="ApplySportFormat">
+                <select id="match-sport" @bind="_sportCode" @bind:after="ApplySportFormat" disabled="@_formatLocked">
                     @foreach (var sport in SportCatalog.All)
                     {
                         <option @key="sport.Code" value="@sport.Code">@L[SportLabels.SportKey(sport.Code)]</option>
@@ -73,18 +73,22 @@
                     {
                         var value = format.ToString(CultureInfo.InvariantCulture);
                         <button @key="format" type="button" class="chip" aria-pressed="@(_playersPerSide == value ? "true" : "false")"
-                                @onclick="() => _playersPerSide = value">
+                                disabled="@_formatLocked" @onclick="() => _playersPerSide = value">
                             @L["Home_MatchFormat", format]
                         </button>
                     }
                 </div>
-                <input id="match-format" type="number" inputmode="numeric" aria-required="true"
+                <input id="match-format" type="number" inputmode="numeric" aria-required="true" disabled="@_formatLocked"
                        min="@Match.MinPlayersPerSide" max="@Match.MaxPlayersPerSide"
                        aria-invalid="@(_formatError ? "true" : "false")"
                        value="@_playersPerSide" @oninput="e => _playersPerSide = e.Value as string ?? string.Empty" />
                 @if (_formatError)
                 {
                     <p class="field__error" role="alert">@L["Match_FormatInvalid", Match.MinPlayersPerSide, Match.MaxPlayersPerSide]</p>
+                }
+                @if (_formatLocked)
+                {
+                    <p class="hint">@L["Match_FormatLocked"]</p>
                 }
             </div>
 
@@ -146,6 +150,7 @@
     private bool _notFound;
     private bool _saving;
     private bool _saveFailed;
+    private bool _formatLocked;
     private bool _dateError;
     private bool _timeError;
     private bool _formatError;
@@ -178,7 +183,7 @@
         }
 
         _loadedFor = (Id, SourceId);
-        _loaded = _loadFailed = _notFound = _saveFailed = false;
+        _loaded = _loadFailed = _notFound = _saveFailed = _formatLocked = false;
         _dateError = _timeError = _formatError = _durationError = false;
 
         try
@@ -195,6 +200,9 @@
                 }
 
                 Fill(input);
+                // RG-MAT-02 : un match terminé garde son sport et son format (la duplication, elle, reste libre).
+                _formatLocked = Id is { } edited
+                    && (await Service.FindAsync(edited))?.Status == MatchStatus.Finished;
             }
             else
             {

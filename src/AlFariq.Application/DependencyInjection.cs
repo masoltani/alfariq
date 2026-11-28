@@ -15,6 +15,7 @@ public static class DependencyInjection
         services.TryAddSingleton<PlayerService>();
         services.TryAddSingleton<SquadService>();
         services.TryAddSingleton<LineupService>();
+        services.TryAddSingleton<ResultService>();
         return services;
     }
 }

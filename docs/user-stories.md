@@ -202,6 +202,8 @@ Critères d'acceptation :
 - Un match peut être « Annulé » avec un motif facultatif.
 - Les buts saisis par joueur sont cohérents avec le score (avertissement en cas d'écart).
 
+**Note (US-012)** : la saisie est sur `/matchs/{id}/resultat` (`ResultService`). Le match passe « Terminé » à la validation, pas au premier tap (RG-RES-05) ; le score est porté par `MatchSide.Score`. Les buts et passes sont des `MatchEvent` (magasin `match_events`, migration 5) désignés par match et joueur, sans minute pour l'instant ; seuls les joueurs d'une équipe comptent. Buteurs et passeurs ne sont proposés que pour le football, le futsal et le handball. L'écart est signalé par équipe dès qu'au moins un but y est attribué. Seul un match « Planifié » s'annule ; il peut être rétabli, et un résultat saisi par erreur peut être effacé. Le sport et le format d'un match terminé sont figés (RG-MAT-02).
+
 ### US-013 — Historique des matchs
 En tant qu'utilisateur, je veux consulter la liste de mes matchs passés et à venir, filtrer par statut et ouvrir le détail afin de retrouver une rencontre.
 Priorité : M — Taille : S — Dépend de : US-012

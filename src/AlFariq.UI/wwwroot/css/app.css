@@ -1205,6 +1205,170 @@ h1:focus {
   outline-offset: 2px;
 }
 
+/* ---------- Résultat (US-012) ---------- */
+
+.badge--cancelled {
+  background: var(--color-banner-offline-bg);
+  color: var(--color-banner-offline-text);
+}
+
+.match-list__status {
+  margin-block: 0.125rem;
+}
+
+.scoreboard {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.scoreboard__team {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  text-align: center;
+}
+
+.scoreboard__team .team-heading {
+  justify-content: center;
+  max-width: 100%;
+  margin: 0;
+  font-size: 1rem;
+}
+
+.scoreboard__team .team-heading__name {
+  flex: 0 1 auto;
+}
+
+.scoreboard__score {
+  margin: 0;
+  font-size: 2.75rem;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.scoreboard__outcome {
+  margin-top: 0.5rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.scorers__title {
+  margin: var(--gutter) 0 0.5rem;
+  font-size: 1rem;
+}
+
+.scorers__list {
+  margin-bottom: 0.75rem;
+}
+
+.scorers summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  margin-top: var(--gutter);
+  color: var(--color-primary);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.stepper__button {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--color-primary);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.stepper__button:disabled {
+  border-color: var(--color-border);
+  color: var(--color-muted);
+  cursor: default;
+}
+
+.stepper__value {
+  min-width: 2rem;
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.stepper--score {
+  flex-direction: column-reverse;
+  gap: 0.5rem;
+}
+
+.stepper--score .stepper__button {
+  width: 100%;
+  max-width: 120px;
+  height: 56px;
+  border-radius: 999px;
+  font-size: 2rem;
+}
+
+.stepper--score .stepper__button:last-child:not(:disabled) {
+  background: var(--color-primary);
+  color: var(--color-primary-contrast);
+}
+
+.stepper--score .stepper__value {
+  width: 100%;
+  max-width: 120px;
+  min-height: 72px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 2.75rem;
+  font-weight: 700;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.stepper--score .stepper__value::-webkit-inner-spin-button,
+.stepper--score .stepper__value::-webkit-outer-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+.tally {
+  padding: 0.75rem 0;
+}
+
+.tally p {
+  margin: 0;
+}
+
+.tally__counters {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.tally__label {
+  color: var(--color-muted);
+  font-size: 0.875rem;
+}
+
 /* ---------- Écran de démarrage et erreurs (avant / pendant le démarrage de Blazor) ---------- */
 
 .splash {

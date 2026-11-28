@@ -16,14 +16,14 @@ public static class MatchSchedule
 
     /// <summary>Les matchs en cours ou à venir, le plus proche d'abord.</summary>
     public static IReadOnlyList<Match> Upcoming(IEnumerable<Match> matches, DateTimeOffset now) =>
-        matches.Where(match => !match.IsOver(now))
+        matches.Where(match => !match.IsPast(now))
             .OrderBy(match => match.StartsAt)
             .ThenBy(match => match.CreatedAt)
             .ToList();
 
     /// <summary>Les matchs passés, le plus récent d'abord.</summary>
     public static IReadOnlyList<Match> Past(IEnumerable<Match> matches, DateTimeOffset now) =>
-        matches.Where(match => match.IsOver(now))
+        matches.Where(match => match.IsPast(now))
             .OrderByDescending(match => match.StartsAt)
             .ThenByDescending(match => match.CreatedAt)
             .ToList();

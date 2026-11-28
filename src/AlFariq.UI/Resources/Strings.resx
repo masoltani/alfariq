@@ -126,6 +126,9 @@
   <data name="Match_Create" xml:space="preserve"><value>Créer le match</value></data>
   <data name="Match_SaveFailed" xml:space="preserve"><value>L'enregistrement a échoué. Réessaie.</value></data>
   <data name="Match_StatusPlanned" xml:space="preserve"><value>Planifié</value></data>
+  <data name="Match_StatusFinished" xml:space="preserve"><value>Terminé</value></data>
+  <data name="Match_StatusCancelled" xml:space="preserve"><value>Annulé</value></data>
+  <data name="Match_FormatLocked" xml:space="preserve"><value>Le sport et le format d'un match terminé ne changent plus.</value></data>
   <data name="Match_DurationValue" xml:space="preserve"><value>{0} min</value></data>
   <data name="Match_Edit" xml:space="preserve"><value>Modifier</value></data>
   <data name="Match_Duplicate" xml:space="preserve"><value>Dupliquer</value></data>
@@ -318,4 +321,47 @@
   <data name="NotFound_Back" xml:space="preserve"><value>Retour à l'accueil</value></data>
 
   <data name="Loading_Message" xml:space="preserve"><value>Chargement...</value></data>
+
+  <data name="Result_Title" xml:space="preserve"><value>Résultat</value></data>
+  <data name="Result_Enter" xml:space="preserve"><value>Saisir le résultat</value></data>
+  <data name="Result_Edit" xml:space="preserve"><value>Modifier le résultat</value></data>
+  <data name="Result_NotEntered" xml:space="preserve"><value>Le score n'est pas encore saisi.</value></data>
+  <data name="Result_Winner" xml:space="preserve"><value>Victoire : {0}</value></data>
+  <data name="Result_Draw" xml:space="preserve"><value>Match nul</value></data>
+  <data name="Result_Updated" xml:space="preserve"><value>Dernière modification le {0} à {1}.</value></data>
+  <data name="Result_ScorersTitle" xml:space="preserve"><value>Buteurs et passeurs</value></data>
+  <data name="Result_GoalsCount" xml:space="preserve"><value>{0} buts</value></data>
+  <data name="Result_GoalsCountOne" xml:space="preserve"><value>1 but</value></data>
+  <data name="Result_AssistsCount" xml:space="preserve"><value>{0} passes</value></data>
+  <data name="Result_AssistsCountOne" xml:space="preserve"><value>1 passe</value></data>
+  <data name="Result_ScoreOf" xml:space="preserve"><value>Score : {0}</value></data>
+  <data name="Result_Less" xml:space="preserve"><value>{0}, un de moins</value></data>
+  <data name="Result_More" xml:space="preserve"><value>{0}, un de plus</value></data>
+  <data name="Result_NotStarted" xml:space="preserve"><value>Ce match n'a pas encore commencé.</value></data>
+  <data name="Result_Scorers" xml:space="preserve"><value>Buteurs et passeurs (facultatif)</value></data>
+  <data name="Result_Goals" xml:space="preserve"><value>Buts</value></data>
+  <data name="Result_Assists" xml:space="preserve"><value>Passes</value></data>
+  <data name="Result_StatOf" xml:space="preserve"><value>{0} : {1}</value></data>
+  <data name="Result_NoTeams" xml:space="preserve"><value>Répartis d'abord les joueurs en équipes pour désigner les buteurs.</value></data>
+  <data name="Result_Unlisted" xml:space="preserve"><value>Sans équipe, donc non listés : {0}</value></data>
+  <data name="Result_Mismatch" xml:space="preserve"><value>{0} : {1} buts attribués aux joueurs pour un score de {2}.</value></data>
+  <data name="Result_MismatchOne" xml:space="preserve"><value>{0} : 1 but attribué aux joueurs pour un score de {1}.</value></data>
+  <data name="Result_Save" xml:space="preserve"><value>Valider le résultat</value></data>
+  <data name="Result_SaveChanges" xml:space="preserve"><value>Enregistrer les modifications</value></data>
+  <data name="Result_SaveHint" xml:space="preserve"><value>Rien n'est enregistré avant validation. Le match passe alors à « Terminé » et reste modifiable.</value></data>
+  <data name="Result_SaveFailed" xml:space="preserve"><value>L'enregistrement a échoué. Réessaie.</value></data>
+  <data name="Result_Back" xml:space="preserve"><value>Retour au match</value></data>
+  <data name="Result_Clear" xml:space="preserve"><value>Effacer le résultat</value></data>
+  <data name="Result_ClearConfirm" xml:space="preserve"><value>Effacer le score et les buteurs ? Le match redevient « Planifié ».</value></data>
+  <data name="Result_ClearYes" xml:space="preserve"><value>Oui, effacer</value></data>
+  <data name="Result_ClearNo" xml:space="preserve"><value>Garder le résultat</value></data>
+  <data name="Result_Cancelled" xml:space="preserve"><value>Ce match est annulé : rétablis-le pour saisir un résultat.</value></data>
+
+  <data name="Cancel_Match" xml:space="preserve"><value>Annuler le match</value></data>
+  <data name="Cancel_Explain" xml:space="preserve"><value>Le match reste dans tes listes, marqué « Annulé ». Tu pourras le rétablir.</value></data>
+  <data name="Cancel_Reason" xml:space="preserve"><value>Motif (facultatif)</value></data>
+  <data name="Cancel_ReasonValue" xml:space="preserve"><value>Motif : {0}</value></data>
+  <data name="Cancel_Confirm" xml:space="preserve"><value>Confirmer l'annulation</value></data>
+  <data name="Cancel_Keep" xml:space="preserve"><value>Garder le match</value></data>
+  <data name="Cancel_Restore" xml:space="preserve"><value>Rétablir le match</value></data>
 </root>

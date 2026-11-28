@@ -12,7 +12,7 @@ public sealed record MatchInput(
     string? Location = null,
     string? Notes = null);
 
-/// <summary>Création, modification, duplication et suppression des matchs (US-006).</summary>
+/// <summary>Création, modification, duplication, suppression (US-006) et annulation (US-012) des matchs.</summary>
 public sealed class MatchService
 {
     private readonly IRepository<Match> _matches;
@@ -80,19 +80,64 @@ public sealed class MatchService
 
     /// <exception cref="ArgumentException">Saisie invalide.</exception>
     /// <exception cref="KeyNotFoundException">Le match n'existe pas ou est supprimé.</exception>
+    /// <exception cref="InvalidOperationException">Le sport ou le format d'un match terminé a changé.</exception>
     public async Task<Match> UpdateAsync(Guid id, MatchInput input, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(input);
 
-        var match = await FindAsync(id, cancellationToken)
-            ?? throw new KeyNotFoundException($"Aucun match actif avec l'identifiant {id}.");
+        var match = await RequireAsync(id, cancellationToken);
+        if (match.Status == MatchStatus.Finished
+            && (input.SportCode != match.SportCode || input.PlayersPerSide != match.PlayersPerSide))
+        {
+            // RG-MAT-02.
+            throw new InvalidOperationException("Le sport et le format d'un match terminé ne changent plus.");
+        }
+
         Apply(match, input);
+        return await _matches.UpdateAsync(match, cancellationToken);
+    }
+
+    /// <summary>Annule un match planifié, avec un motif facultatif. Il reste dans les listes.</summary>
+    /// <exception cref="ArgumentException">Motif trop long.</exception>
+    /// <exception cref="KeyNotFoundException">Le match n'existe pas ou est supprimé.</exception>
+    /// <exception cref="InvalidOperationException">Le match est déjà annulé ou terminé.</exception>
+    public async Task<Match> CancelAsync(Guid id, string? reason = null, CancellationToken cancellationToken = default)
+    {
+        var cleaned = Optional(reason, Match.MaxCancellationReasonLength, "Le motif");
+        var match = await RequireAsync(id, cancellationToken);
+        if (match.Status != MatchStatus.Planned)
+        {
+            throw new InvalidOperationException("Seul un match planifié peut être annulé.");
+        }
+
+        match.Status = MatchStatus.Cancelled;
+        match.CancellationReason = cleaned;
+        return await _matches.UpdateAsync(match, cancellationToken);
+    }
+
+    /// <summary>Rétablit un match annulé : il redevient « Planifié ».</summary>
+    /// <exception cref="KeyNotFoundException">Le match n'existe pas ou est supprimé.</exception>
+    /// <exception cref="InvalidOperationException">Le match n'est pas annulé.</exception>
+    public async Task<Match> ReinstateAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var match = await RequireAsync(id, cancellationToken);
+        if (match.Status != MatchStatus.Cancelled)
+        {
+            throw new InvalidOperationException("Ce match n'est pas annulé.");
+        }
+
+        match.Status = MatchStatus.Planned;
+        match.CancellationReason = null;
         return await _matches.UpdateAsync(match, cancellationToken);
     }
 
     /// <summary>Suppression logique. Renvoie false si le match n'existe pas ou est déjà supprimé.</summary>
     public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
         _matches.DeleteAsync(id, cancellationToken);
+
+    private async Task<Match> RequireAsync(Guid id, CancellationToken cancellationToken) =>
+        await FindAsync(id, cancellationToken)
+            ?? throw new KeyNotFoundException($"Aucun match actif avec l'identifiant {id}.");
 
     private MatchInput ToInput(Match match)
     {

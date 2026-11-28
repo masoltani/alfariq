@@ -1,0 +1,293 @@
+@page "/matchs/{Id:guid}/resultat"
+@using AlFariq.Application
+@inject IStringLocalizer<Strings> L
+@inject ResultService Results
+@inject IStoragePersistence StoragePersistence
+@inject TimeProvider Clock
+@inject NavigationManager Navigation
+
+<PageTitle>@L["Result_Title"] · @L["App_Name"]</PageTitle>
+
+<section class="page">
+    <h1>@L["Result_Title"]</h1>
+
+    @if (_loadFailed)
+    {
+        <div class="card" role="alert">
+            <p>@L["Storage_Unavailable"]</p>
+        </div>
+    }
+    else if (_notFound)
+    {
+        <div class="card card--empty">
+            <p>@L["Match_NotFound"]</p>
+        </div>
+        <div class="actions">
+            <a class="button button--ghost" href="matchs">@L["Match_Back"]</a>
+        </div>
+    }
+    else if (_sheet is not null)
+    {
+        var match = _sheet.Match;
+        var start = MatchSchedule.ToLocal(match.StartsAt, Clock.LocalTimeZone);
+
+        <p class="lead squad-lead">
+            @L["Home_MatchDate", MatchLabels.LongDate(start), MatchLabels.Time(start)]<br />
+            @L["Home_MatchFormat", match.PlayersPerSide]
+        </p>
+
+        if (match.Status == MatchStatus.Cancelled)
+        {
+            <div class="card card--empty">
+                <p>@L["Result_Cancelled"]</p>
+            </div>
+        }
+        else
+        {
+            TeamLineup[] teams = [_sheet.Lineup.TeamA, _sheet.Lineup.TeamB];
+            var score = new MatchScore(_scoreA, _scoreB);
+
+            if (match.StartsAt > Clock.GetUtcNow())
+            {
+                <p class="field__warning" role="status">@L["Result_NotStarted"]</p>
+            }
+
+            <div class="card scoreboard">
+                @foreach (var team in teams)
+                {
+                    <div @key="team.Side" class="scoreboard__team team-color--@team.ColorCode">
+                        <h2 class="team-heading">
+                            <span class="team-dot" aria-hidden="true"></span>
+                            <span class="team-heading__name" dir="auto">@Name(team)</span>
+                        </h2>
+                        <Stepper Typable="true" Value="score.For(team.Side)"
+                                 ValueChanged="value => SetScore(team.Side, value)"
+                                 Label="@(L["Result_ScoreOf", Name(team)].Value)" />
+                    </div>
+                }
+            </div>
+
+            <div role="status">
+                @foreach (var team in teams)
+                {
+                    <GoalMismatch @key="team.Side" Score="score" Side="team.Side" TeamName="@Name(team)"
+                                  PlayerGoals="team.Players.Sum(player => _tallies[player.Id].Goals)" />
+                }
+            </div>
+
+            if (SportCatalog.CountsGoals(match.SportCode))
+            {
+                <details class="scorers" open="@_scorersOpen">
+                    <summary>@L["Result_Scorers"]</summary>
+                    @if (_tallies.Count == 0)
+                    {
+                        <p class="hint">@L["Result_NoTeams"]</p>
+                        <div class="actions">
+                            <a class="button button--ghost" href="matchs/@Id/equipes">@L["Teams_Compose"]</a>
+                        </div>
+                    }
+                    else
+                    {
+                        foreach (var team in teams)
+                        {
+                            if (team.Players.Count > 0)
+                            {
+                                <section @key="team.Side">
+                                    <h2 class="lineup__title team-heading team-color--@team.ColorCode">
+                                        <span class="team-dot" aria-hidden="true"></span>
+                                        <span class="team-heading__name" dir="auto">@Name(team)</span>
+                                    </h2>
+                                    <ul class="card lineup">
+                                        @foreach (var player in team.Players)
+                                        {
+                                            var tally = _tallies[player.Id];
+                                            <li @key="player.Id" class="tally">
+                                                <p class="player-list__name" dir="auto">@player.Name</p>
+                                                <div class="tally__counters">
+                                                    <div>
+                                                        <p class="tally__label" aria-hidden="true">@L["Result_Goals"]</p>
+                                                        <Stepper Value="tally.Goals" ValueChanged="value => tally.Goals = value"
+                                                                 Label="@(L["Result_StatOf", player.Name, L["Result_Goals"].Value].Value)" />
+                                                    </div>
+                                                    <div>
+                                                        <p class="tally__label" aria-hidden="true">@L["Result_Assists"]</p>
+                                                        <Stepper Value="tally.Assists" ValueChanged="value => tally.Assists = value"
+                                                                 Label="@(L["Result_StatOf", player.Name, L["Result_Assists"].Value].Value)" />
+                                                    </div>
+                                                </div>
+                                            </li>
+                                        }
+                                    </ul>
+                                </section>
+                            }
+                        }
+                        if (_sheet.Lineup.Unassigned.Count > 0)
+                        {
+                            <p class="hint user-text">
+                                @L["Result_Unlisted", string.Join(", ", _sheet.Lineup.Unassigned.Select(player => player.Name))]
+                            </p>
+                        }
+                    }
+                </details>
+            }
+
+            <p class="hint squad-hint">@L["Result_SaveHint"]</p>
+            if (_saveFailed)
+            {
+                <p class="field__error" role="alert">@L["Result_SaveFailed"]</p>
+            }
+            <div class="actions">
+                <button type="button" class="button" disabled="@_saving" @onclick="SaveAsync">
+                    @(_sheet.Score is null ? L["Result_Save"] : L["Result_SaveChanges"])
+                </button>
+                @if (_sheet.Score is not null && !_confirmingClear)
+                {
+                    <button type="button" class="button button--ghost button--danger" disabled="@_saving"
+                            @onclick="() => _confirmingClear = true">
+                        @L["Result_Clear"]
+                    </button>
+                }
+            </div>
+
+            if (_confirmingClear)
+            {
+                <div class="card" role="alert">
+                    <p>@L["Result_ClearConfirm"]</p>
+                    <div class="actions">
+                        <button type="button" class="button button--ghost button--danger" disabled="@_saving" @onclick="ClearAsync">
+                            @L["Result_ClearYes"]
+                        </button>
+                        <button type="button" class="button button--ghost" disabled="@_saving"
+                                @onclick="() => _confirmingClear = false">
+                            @L["Result_ClearNo"]
+                        </button>
+                    </div>
+                </div>
+            }
+        }
+
+        <div class="actions">
+            <a class="button button--ghost" href="matchs/@Id">@L["Result_Back"]</a>
+        </div>
+    }
+</section>
+
+@code {
+    private sealed class TallyForm
+    {
+        public int Goals { get; set; }
+
+        public int Assists { get; set; }
+    }
+
+    private MatchSheet? _sheet;
+
+    /// <summary>La saisie en cours, pour chaque joueur d'une équipe.</summary>
+    private Dictionary<Guid, TallyForm> _tallies = [];
+
+    private Guid _loadedId;
+    private int _scoreA;
+    private int _scoreB;
+    private bool _scorersOpen;
+    private bool _loadFailed;
+    private bool _notFound;
+    private bool _saving;
+    private bool _saveFailed;
+    private bool _confirmingClear;
+
+    [Parameter] public Guid Id { get; set; }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedId == Id)
+        {
+            return;
+        }
+
+        _loadedId = Id;
+        _sheet = null;
+        _loadFailed = _notFound = _saveFailed = _confirmingClear = false;
+
+        try
+        {
+            var sheet = await Results.GetAsync(Id);
+            if (sheet is null)
+            {
+                _notFound = true;
+                return;
+            }
+
+            _scoreA = sheet.Score?.A ?? 0;
+            _scoreB = sheet.Score?.B ?? 0;
+            _tallies = sheet.Lineup.TeamA.Players.Concat(sheet.Lineup.TeamB.Players).ToDictionary(
+                player => player.Id,
+                player => sheet.Players.TryGetValue(player.Id, out var saved)
+                    ? new TallyForm { Goals = saved.Goals, Assists = saved.Assists }
+                    : new TallyForm());
+            // Replié au départ : les buteurs sont facultatifs.
+            _scorersOpen = sheet.Players.Count > 0;
+            _sheet = sheet;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _loadFailed = true;
+        }
+    }
+
+    private string Name(TeamLineup team) => TeamLabels.Name(L, team.Side, team.Name);
+
+    private void SetScore(TeamSide side, int value)
+    {
+        if (side == TeamSide.A)
+        {
+            _scoreA = value;
+        }
+        else
+        {
+            _scoreB = value;
+        }
+    }
+
+    private Task SaveAsync()
+    {
+        var players = _tallies
+            .Select(entry => new PlayerTally(entry.Key, entry.Value.Goals, entry.Value.Assists))
+            .ToList();
+        // Les buteurs ne concernent que les sports qui comptent des buts : ailleurs, tout reste à zéro.
+        var input = new ResultInput(_scoreA, _scoreB, players);
+
+        return WriteThenReturnAsync(() => Results.SaveAsync(Id, input));
+    }
+
+    private Task ClearAsync() => WriteThenReturnAsync(() => Results.ClearAsync(Id));
+
+    /// <summary>Enregistre puis revient au match ; en cas d'échec, la saisie reste à l'écran avec un message.</summary>
+    private async Task WriteThenReturnAsync(Func<Task> write)
+    {
+        if (_saving)
+        {
+            return;
+        }
+
+        _saving = true;
+        _saveFailed = false;
+        try
+        {
+            await write();
+
+            // US-002 : des données viennent d'être saisies, on redemande au navigateur de les conserver.
+            await StoragePersistence.RequestAsync();
+            Navigation.NavigateTo($"matchs/{Id}", replace: true);
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _saveFailed = true;
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}

@@ -1,0 +1,100 @@
+@using AlFariq.Application
+@inject IStringLocalizer<Strings> L
+@inject TimeProvider Clock
+
+@* Le résultat sur la fiche d'un match (US-012) : le score et les buteurs, ou l'accès à la saisie. *@
+<div class="card">
+    <h2>@L["Result_Title"]</h2>
+    @if (Sheet.Score is { } score)
+    {
+        TeamLineup[] teams = [Sheet.Lineup.TeamA, Sheet.Lineup.TeamB];
+
+        <div class="scoreboard">
+            @foreach (var team in teams)
+            {
+                <div @key="team.Side" class="scoreboard__team team-color--@team.ColorCode">
+                    <p class="team-heading">
+                        <span class="team-dot" aria-hidden="true"></span>
+                        <span class="team-heading__name" dir="auto">@Name(team)</span>
+                    </p>
+                    <p class="scoreboard__score">@score.For(team.Side)</p>
+                </div>
+            }
+        </div>
+        <p class="scoreboard__outcome user-text">
+            @(score.Winner is { } winner ? L["Result_Winner", Name(Sheet.Lineup.Team(winner))] : L["Result_Draw"])
+        </p>
+
+        if (Sheet.Players.Count > 0)
+        {
+            <h3 class="scorers__title">@L["Result_ScorersTitle"]</h3>
+            foreach (var team in teams)
+            {
+                var cited = team.Players.Where(player => Sheet.Players.ContainsKey(player.Id))
+                    .OrderByDescending(player => Sheet.Players[player.Id].Goals)
+                    .ToList();
+                if (cited.Count > 0)
+                {
+                    <div @key="team.Side" class="team-color--@team.ColorCode">
+                        <p class="team-heading">
+                            <span class="team-dot" aria-hidden="true"></span>
+                            <span class="team-heading__name" dir="auto">@Name(team)</span>
+                        </p>
+                        <ul class="squad-names scorers__list">
+                            @foreach (var player in cited)
+                            {
+                                <li @key="player.Id">
+                                    <span dir="auto">@player.Name</span>
+                                    <span class="hint">@Describe(Sheet.Players[player.Id])</span>
+                                </li>
+                            }
+                        </ul>
+                    </div>
+                }
+            }
+        }
+
+        foreach (var team in teams)
+        {
+            <GoalMismatch @key="team.Side" Score="score" Side="team.Side" TeamName="@Name(team)"
+                          PlayerGoals="Sheet.PlayerGoals(team.Side)" />
+        }
+
+        var updated = MatchSchedule.ToLocal(Sheet.Match.UpdatedAt, Clock.LocalTimeZone);
+        <p class="hint">@L["Result_Updated", MatchLabels.LongDate(updated), MatchLabels.Time(updated)]</p>
+        <div class="actions">
+            <a class="button button--ghost" href="matchs/@Sheet.Match.Id/resultat">@L["Result_Edit"]</a>
+        </div>
+    }
+    else
+    {
+        <p class="hint">@L["Result_NotEntered"]</p>
+        @* Bouton principal une fois le match commencé : c'est alors l'action attendue. *@
+        <div class="actions">
+            <a class="button @(Sheet.Match.StartsAt <= Clock.GetUtcNow() ? "" : "button--ghost")"
+               href="matchs/@Sheet.Match.Id/resultat">@L["Result_Enter"]</a>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public MatchSheet Sheet { get; set; } = default!;
+
+    private string Name(TeamLineup team) => TeamLabels.Name(L, team.Side, team.Name);
+
+    private string Describe(PlayerTally tally)
+    {
+        var parts = new List<string>();
+        if (tally.Goals > 0)
+        {
+            parts.Add(tally.Goals > 1 ? L["Result_GoalsCount", tally.Goals] : L["Result_GoalsCountOne"]);
+        }
+
+        if (tally.Assists > 0)
+        {
+            parts.Add(tally.Assists > 1 ? L["Result_AssistsCount", tally.Assists] : L["Result_AssistsCountOne"]);
+        }
+
+        return string.Join(" · ", parts);
+    }
+}

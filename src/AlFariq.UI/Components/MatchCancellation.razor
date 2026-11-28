@@ -1,0 +1,90 @@
+@using AlFariq.Application
+@inject IStringLocalizer<Strings> L
+@inject MatchService Service
+
+@* Annuler un match planifié, avec un motif facultatif, ou rétablir un match annulé (US-012). *@
+@if (Match.Status == MatchStatus.Planned)
+{
+    if (!_confirming)
+    {
+        <button type="button" class="button button--ghost button--danger" @onclick="() => _confirming = true">
+            @L["Cancel_Match"]
+        </button>
+    }
+    else
+    {
+        <div class="card">
+            <p>@L["Cancel_Explain"]</p>
+            <div class="field">
+                <label for="cancel-reason">@L["Cancel_Reason"]</label>
+                <input id="cancel-reason" type="text" dir="auto" autocomplete="off" enterkeyhint="done"
+                       maxlength="@Match.MaxCancellationReasonLength" @bind="_reason" @bind:event="oninput" />
+            </div>
+            <div class="actions">
+                <button type="button" class="button button--ghost button--danger" disabled="@_saving" @onclick="CancelAsync">
+                    @L["Cancel_Confirm"]
+                </button>
+                <button type="button" class="button button--ghost" disabled="@_saving" @onclick="Close">
+                    @L["Cancel_Keep"]
+                </button>
+            </div>
+        </div>
+    }
+}
+else if (Match.Status == MatchStatus.Cancelled)
+{
+    <button type="button" class="button" disabled="@_saving" @onclick="ReinstateAsync">@L["Cancel_Restore"]</button>
+}
+
+@if (_failed)
+{
+    <p class="field__error" role="alert">@L["Result_SaveFailed"]</p>
+}
+
+@code {
+    private bool _confirming;
+    private bool _saving;
+    private bool _failed;
+    private string _reason = "";
+
+    [Parameter, EditorRequired] public Match Match { get; set; } = default!;
+
+    /// <summary>L'état du match a changé : la page se recharge.</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private void Close()
+    {
+        _confirming = _failed = false;
+        _reason = "";
+    }
+
+    private Task CancelAsync() => SaveAsync(() => Service.CancelAsync(Match.Id, _reason));
+
+    private Task ReinstateAsync() => SaveAsync(() => Service.ReinstateAsync(Match.Id));
+
+    private async Task SaveAsync(Func<Task> write)
+    {
+        if (_saving)
+        {
+            return;
+        }
+
+        _saving = true;
+        _failed = false;
+        try
+        {
+            await write();
+            Close();
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _failed = true;
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}

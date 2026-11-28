@@ -1,0 +1,40 @@
+@using System.Globalization
+@inject IStringLocalizer<Strings> L
+
+@* Compteur à boutons − et + (US-012) ; le nombre peut aussi se taper, pour les grands scores. *@
+<div class="stepper @(Typable ? "stepper--score" : "")" role="group" aria-label="@Label">
+    <button type="button" class="stepper__button" aria-label="@L["Result_Less", Label]"
+            disabled="@(Value <= 0)" @onclick="() => SetAsync(Value - 1)">−</button>
+    @if (Typable)
+    {
+        <input class="stepper__value" type="number" inputmode="numeric" min="0" max="@Max" aria-label="@Label"
+               @bind:get="Value.ToString(CultureInfo.InvariantCulture)" @bind:set="TypeAsync" />
+    }
+    else
+    {
+        <output class="stepper__value">@Value</output>
+    }
+    <button type="button" class="stepper__button" aria-label="@L["Result_More", Label]"
+            disabled="@(Value >= Max)" @onclick="() => SetAsync(Value + 1)">+</button>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public int Value { get; set; }
+
+    [Parameter] public EventCallback<int> ValueChanged { get; set; }
+
+    /// <summary>Ce qui est compté, pour les lecteurs d'écran.</summary>
+    [Parameter, EditorRequired] public string Label { get; set; } = "";
+
+    [Parameter] public int Max { get; set; } = MatchSide.MaxScore;
+
+    [Parameter] public bool Typable { get; set; }
+
+    private Task SetAsync(int value) => ValueChanged.InvokeAsync(Math.Clamp(value, 0, Max));
+
+    // Un champ vidé ou illisible garde la valeur précédente.
+    private Task TypeAsync(string? text) =>
+        int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var typed)
+            ? SetAsync(typed)
+            : Task.CompletedTask;
+}

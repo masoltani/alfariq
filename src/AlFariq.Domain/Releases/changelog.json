@@ -1,6 +1,36 @@
 {
   "entries": [
     {
+      "version": "0.13.0",
+      "date": "2026-11-28",
+      "changes": [
+        {
+          "type": "added",
+          "text": {
+            "fr": "Saisis le résultat d'un match : le score avec les boutons + et −, puis valide. Il reste modifiable.",
+            "en": "Enter a match result: set the score with the + and − buttons, then confirm. You can still edit it.",
+            "ar": "سجّل نتيجة المباراة: حدّد النتيجة بزري + و − ثم أكّدها. ويمكنك تعديلها لاحقاً."
+          }
+        },
+        {
+          "type": "added",
+          "text": {
+            "fr": "Ajoute si tu veux les buteurs et les passeurs : un avertissement signale un écart avec le score.",
+            "en": "Optionally add scorers and assists: a warning points out any gap with the score.",
+            "ar": "أضف إن شئت الهدافين وصانعي الأهداف: ينبهك تحذير إلى أي اختلاف مع النتيجة."
+          }
+        },
+        {
+          "type": "added",
+          "text": {
+            "fr": "Annule un match, avec un motif facultatif, et rétablis-le si besoin.",
+            "en": "Cancel a match, with an optional reason, and restore it if needed.",
+            "ar": "ألغِ مباراة مع سبب اختياري، وأعدها عند الحاجة."
+          }
+        }
+      ]
+    },
+    {
       "version": "0.12.0",
       "date": "2026-11-27",
       "changes": [

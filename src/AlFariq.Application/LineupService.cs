@@ -437,6 +437,22 @@ public sealed class LineupService
         }
     }
 
+    /// <summary>Enregistre, ou efface (null), le score des deux équipes pour <see cref="ResultService"/>.</summary>
+    internal async Task SetScoresAsync(
+        Guid matchId, int? scoreA, int? scoreB, CancellationToken cancellationToken)
+    {
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
+            await SaveSideAsync(matchId, TeamSide.A, settings => settings.Score = scoreA, cancellationToken);
+            await SaveSideAsync(matchId, TeamSide.B, settings => settings.Score = scoreB, cancellationToken);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
     private async Task<List<MatchParticipant>> RegistrationsAsync(Guid matchId, CancellationToken cancellationToken) =>
         (await _participants.ListAsync(cancellationToken: cancellationToken))
             .Where(participant => participant.MatchId == matchId)
@@ -461,7 +477,7 @@ public sealed class LineupService
         await _participants.UpdateAsync(participant, cancellationToken);
     }
 
-    /// <summary>Modifie les réglages d'une équipe, en les créant à la première personnalisation.</summary>
+    /// <summary>Modifie les réglages d'une équipe, en les créant au premier enregistrement.</summary>
     private async Task SaveSideAsync(
         Guid matchId, TeamSide side, Action<MatchSide> change, CancellationToken cancellationToken)
     {

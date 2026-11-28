@@ -46,6 +46,9 @@ public static class SportCatalog
     /// <summary>Le poste général d'une variante (« arrière gauche » → « défenseur ») ; sinon le poste lui-même.</summary>
     public static string BaseOf(string positionCode) => BasePositions.GetValueOrDefault(positionCode, positionCode);
 
+    /// <summary>Vrai si le score se compte en buts : on peut alors désigner les buteurs (US-012).</summary>
+    public static bool CountsGoals(string? sportCode) => sportCode is FootballCode or "futsal" or "handball";
+
     /// <summary>Le sport portant ce code, ou null s'il est inconnu.</summary>
     public static Sport? Find(string? code) => All.FirstOrDefault(sport => sport.Code == code);
 

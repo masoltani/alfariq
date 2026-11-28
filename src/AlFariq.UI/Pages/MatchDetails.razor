@@ -2,7 +2,7 @@
 @using AlFariq.Application
 @inject IStringLocalizer<Strings> L
 @inject MatchService Service
-@inject LineupService Lineups
+@inject ResultService Results
 @inject TimeProvider Clock
 @inject NavigationManager Navigation
 
@@ -29,7 +29,15 @@
 
         <article class="card">
             <p class="next-match__date">@L["Home_MatchDate", MatchLabels.LongDate(start), MatchLabels.Time(start)]</p>
-            <p><span class="badge">@L["Match_StatusPlanned"]</span></p>
+            <p>
+                <span class="badge @(_match.Status == MatchStatus.Cancelled ? "badge--cancelled" : "")">
+                    @L[MatchLabels.StatusKey(_match.Status)]
+                </span>
+            </p>
+            @if (_match.CancellationReason is not null)
+            {
+                <p class="user-text" dir="auto">@L["Cancel_ReasonValue", _match.CancellationReason]</p>
+            }
             <dl class="facts">
                 <dt>@L["Match_Sport"]</dt>
                 <dd>@L[SportLabels.SportKey(_match.SportCode)]</dd>
@@ -50,7 +58,12 @@
             </dl>
         </article>
 
-        var lineup = _lineup!;
+        if (_match.Status != MatchStatus.Cancelled)
+        {
+            <MatchResultCard Sheet="_sheet!" />
+        }
+
+        var lineup = _sheet!.Lineup;
         var assigned = lineup.TeamA.Players.Count + lineup.TeamB.Players.Count;
 
         <div class="card">
@@ -123,6 +136,7 @@
         <div class="actions">
             <a class="button button--ghost" href="matchs/@_match.Id/modifier">@L["Match_Edit"]</a>
             <a class="button button--ghost" href="matchs/@_match.Id/dupliquer">@L["Match_Duplicate"]</a>
+            <MatchCancellation Match="_match" OnChanged="ReloadAsync" />
             @if (!_confirmingDeletion)
             {
                 <button type="button" class="button button--ghost button--danger" @onclick="() => _confirmingDeletion = true">
@@ -159,7 +173,7 @@
 
 @code {
     private Match? _match;
-    private MatchLineup? _lineup;
+    private MatchSheet? _sheet;
     private Guid _loadedId;
     private bool _loadFailed;
     private bool _notFound;
@@ -178,14 +192,20 @@
 
         _loadedId = Id;
         _match = null;
-        _lineup = null;
+        _sheet = null;
         _loadFailed = _notFound = _confirmingDeletion = _deleteFailed = false;
 
+        await ReloadAsync();
+    }
+
+    /// <summary>Lit le match, au premier affichage et après une annulation ou un rétablissement.</summary>
+    private async Task ReloadAsync()
+    {
         try
         {
-            _lineup = await Lineups.GetAsync(Id);
-            _match = _lineup?.Match;
-            _notFound = _lineup is null;
+            _sheet = await Results.GetAsync(Id);
+            _match = _sheet?.Match;
+            _notFound = _sheet is null;
         }
         catch (Exception exception)
         {

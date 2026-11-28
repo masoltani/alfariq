@@ -1,0 +1,21 @@
+@inject IStringLocalizer<Strings> L
+
+@* Avertissement non bloquant quand les buts des joueurs ne correspondent pas au score (US-012, RG-RES-03). *@
+@if (Score.DiffersFrom(Side, PlayerGoals))
+{
+    <p class="field__warning user-text">
+        @(PlayerGoals > 1
+            ? L["Result_Mismatch", TeamName, PlayerGoals, Score.For(Side)]
+            : L["Result_MismatchOne", TeamName, Score.For(Side)])
+    </p>
+}
+
+@code {
+    [Parameter, EditorRequired] public MatchScore Score { get; set; } = default!;
+
+    [Parameter, EditorRequired] public TeamSide Side { get; set; }
+
+    [Parameter, EditorRequired] public string TeamName { get; set; } = "";
+
+    [Parameter, EditorRequired] public int PlayerGoals { get; set; }
+}

@@ -59,6 +59,14 @@
                         <li @key="match.Id">
                             <a class="match-list__link" href="matchs/@match.Id">
                                 <span class="match-list__date">@L["Home_MatchDate", MatchLabels.LongDate(start), MatchLabels.Time(start)]</span>
+                                @if (match.Status != MatchStatus.Planned)
+                                {
+                                    <span class="match-list__status">
+                                        <span class="badge @(match.Status == MatchStatus.Cancelled ? "badge--cancelled" : "")">
+                                            @L[MatchLabels.StatusKey(match.Status)]
+                                        </span>
+                                    </span>
+                                }
                                 <span class="match-list__details">@L[SportLabels.SportKey(match.SportCode)] · @L["Home_MatchFormat", match.PlayersPerSide]</span>
                                 @if (match.Location is not null)
                                 {

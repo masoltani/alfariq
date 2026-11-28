@@ -2,7 +2,7 @@ using AlFariq.Domain;
 
 namespace AlFariq.Application;
 
-/// <summary>Lit le prochain match (en cours ou à venir) dans le dépôt des matchs.</summary>
+/// <summary>Lit le prochain match planifié (en cours ou à venir) dans le dépôt des matchs.</summary>
 public sealed class UpcomingMatchQuery : IUpcomingMatchQuery
 {
     private readonly IRepository<Match> _matches;
@@ -17,7 +17,8 @@ public sealed class UpcomingMatchQuery : IUpcomingMatchQuery
     public async Task<UpcomingMatch?> GetNextAsync(CancellationToken cancellationToken = default)
     {
         var matches = await _matches.ListAsync(cancellationToken: cancellationToken);
-        var upcoming = MatchSchedule.Upcoming(matches, _clock.GetUtcNow());
+        var planned = matches.Where(match => match.Status == MatchStatus.Planned);
+        var upcoming = MatchSchedule.Upcoming(planned, _clock.GetUtcNow());
         if (upcoming.Count == 0)
         {
             return null;

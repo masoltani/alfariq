@@ -1,0 +1,2089 @@
+diff --git a/Directory.Build.props b/Directory.Build.props
+index 4de57c3..105cf09 100644
+--- a/Directory.Build.props
++++ b/Directory.Build.props
+@@ -6,7 +6,7 @@
+     <Nullable>enable</Nullable>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <AnalysisLevel>latest</AnalysisLevel>
+-    <Version>0.12.0</Version>
++    <Version>0.13.0</Version>
+     <Deterministic>true</Deterministic>
+   </PropertyGroup>
+ 
+diff --git a/docs/user-stories.md b/docs/user-stories.md
+index a0cd5d7..225a04d 100644
+--- a/docs/user-stories.md
++++ b/docs/user-stories.md
+@@ -202,6 +202,8 @@ Critères d'acceptation :
+ - Un match peut être « Annulé » avec un motif facultatif.
+ - Les buts saisis par joueur sont cohérents avec le score (avertissement en cas d'écart).
+ 
++**Note (US-012)** : la saisie est sur `/matchs/{id}/resultat` (`ResultService`). Le match passe « Terminé » à la validation, pas au premier tap (RG-RES-05) ; le score est porté par `MatchSide.Score`. Les buts et passes sont des `MatchEvent` (magasin `match_events`, migration 5) désignés par match et joueur, sans minute pour l'instant ; seuls les joueurs d'une équipe comptent. Buteurs et passeurs ne sont proposés que pour le football, le futsal et le handball. L'écart est signalé par équipe dès qu'au moins un but y est attribué. Seul un match « Planifié » s'annule ; il peut être rétabli, et un résultat saisi par erreur peut être effacé. Le sport et le format d'un match terminé sont figés (RG-MAT-02).
++
+ ### US-013 — Historique des matchs
+ En tant qu'utilisateur, je veux consulter la liste de mes matchs passés et à venir, filtrer par statut et ouvrir le détail afin de retrouver une rencontre.
+ Priorité : M — Taille : S — Dépend de : US-012
+diff --git a/src/AlFariq.Application/DependencyInjection.cs b/src/AlFariq.Application/DependencyInjection.cs
+index e00ce0e..6071015 100644
+--- a/src/AlFariq.Application/DependencyInjection.cs
++++ b/src/AlFariq.Application/DependencyInjection.cs
+@@ -15,6 +15,7 @@ public static class DependencyInjection
+         services.TryAddSingleton<PlayerService>();
+         services.TryAddSingleton<SquadService>();
+         services.TryAddSingleton<LineupService>();
++        services.TryAddSingleton<ResultService>();
+         return services;
+     }
+ }
+diff --git a/src/AlFariq.Application/LineupService.cs b/src/AlFariq.Application/LineupService.cs
+index c8dd372..2fd95ae 100644
+--- a/src/AlFariq.Application/LineupService.cs
++++ b/src/AlFariq.Application/LineupService.cs
+@@ -437,6 +437,22 @@ public sealed class LineupService
+         }
+     }
+ 
++    /// <summary>Enregistre, ou efface (null), le score des deux équipes pour <see cref="ResultService"/>.</summary>
++    internal async Task SetScoresAsync(
++        Guid matchId, int? scoreA, int? scoreB, CancellationToken cancellationToken)
++    {
++        await _writeGate.WaitAsync(cancellationToken);
++        try
++        {
++            await SaveSideAsync(matchId, TeamSide.A, settings => settings.Score = scoreA, cancellationToken);
++            await SaveSideAsync(matchId, TeamSide.B, settings => settings.Score = scoreB, cancellationToken);
++        }
++        finally
++        {
++            _writeGate.Release();
++        }
++    }
++
+     private async Task<List<MatchParticipant>> RegistrationsAsync(Guid matchId, CancellationToken cancellationToken) =>
+         (await _participants.ListAsync(cancellationToken: cancellationToken))
+             .Where(participant => participant.MatchId == matchId)
+@@ -461,7 +477,7 @@ public sealed class LineupService
+         await _participants.UpdateAsync(participant, cancellationToken);
+     }
+ 
+-    /// <summary>Modifie les réglages d'une équipe, en les créant à la première personnalisation.</summary>
++    /// <summary>Modifie les réglages d'une équipe, en les créant au premier enregistrement.</summary>
+     private async Task SaveSideAsync(
+         Guid matchId, TeamSide side, Action<MatchSide> change, CancellationToken cancellationToken)
+     {
+diff --git a/src/AlFariq.Application/MatchService.cs b/src/AlFariq.Application/MatchService.cs
+index 3cbc3a4..96bf155 100644
+--- a/src/AlFariq.Application/MatchService.cs
++++ b/src/AlFariq.Application/MatchService.cs
+@@ -12,7 +12,7 @@ public sealed record MatchInput(
+     string? Location = null,
+     string? Notes = null);
+ 
+-/// <summary>Création, modification, duplication et suppression des matchs (US-006).</summary>
++/// <summary>Création, modification, duplication, suppression (US-006) et annulation (US-012) des matchs.</summary>
+ public sealed class MatchService
+ {
+     private readonly IRepository<Match> _matches;
+@@ -80,20 +80,65 @@ public sealed class MatchService
+ 
+     /// <exception cref="ArgumentException">Saisie invalide.</exception>
+     /// <exception cref="KeyNotFoundException">Le match n'existe pas ou est supprimé.</exception>
++    /// <exception cref="InvalidOperationException">Le sport ou le format d'un match terminé a changé.</exception>
+     public async Task<Match> UpdateAsync(Guid id, MatchInput input, CancellationToken cancellationToken = default)
+     {
+         ArgumentNullException.ThrowIfNull(input);
+ 
+-        var match = await FindAsync(id, cancellationToken)
+-            ?? throw new KeyNotFoundException($"Aucun match actif avec l'identifiant {id}.");
++        var match = await RequireAsync(id, cancellationToken);
++        if (match.Status == MatchStatus.Finished
++            && (input.SportCode != match.SportCode || input.PlayersPerSide != match.PlayersPerSide))
++        {
++            // RG-MAT-02.
++            throw new InvalidOperationException("Le sport et le format d'un match terminé ne changent plus.");
++        }
++
+         Apply(match, input);
+         return await _matches.UpdateAsync(match, cancellationToken);
+     }
+ 
++    /// <summary>Annule un match planifié, avec un motif facultatif. Il reste dans les listes.</summary>
++    /// <exception cref="ArgumentException">Motif trop long.</exception>
++    /// <exception cref="KeyNotFoundException">Le match n'existe pas ou est supprimé.</exception>
++    /// <exception cref="InvalidOperationException">Le match est déjà annulé ou terminé.</exception>
++    public async Task<Match> CancelAsync(Guid id, string? reason = null, CancellationToken cancellationToken = default)
++    {
++        var cleaned = Optional(reason, Match.MaxCancellationReasonLength, "Le motif");
++        var match = await RequireAsync(id, cancellationToken);
++        if (match.Status != MatchStatus.Planned)
++        {
++            throw new InvalidOperationException("Seul un match planifié peut être annulé.");
++        }
++
++        match.Status = MatchStatus.Cancelled;
++        match.CancellationReason = cleaned;
++        return await _matches.UpdateAsync(match, cancellationToken);
++    }
++
++    /// <summary>Rétablit un match annulé : il redevient « Planifié ».</summary>
++    /// <exception cref="KeyNotFoundException">Le match n'existe pas ou est supprimé.</exception>
++    /// <exception cref="InvalidOperationException">Le match n'est pas annulé.</exception>
++    public async Task<Match> ReinstateAsync(Guid id, CancellationToken cancellationToken = default)
++    {
++        var match = await RequireAsync(id, cancellationToken);
++        if (match.Status != MatchStatus.Cancelled)
++        {
++            throw new InvalidOperationException("Ce match n'est pas annulé.");
++        }
++
++        match.Status = MatchStatus.Planned;
++        match.CancellationReason = null;
++        return await _matches.UpdateAsync(match, cancellationToken);
++    }
++
+     /// <summary>Suppression logique. Renvoie false si le match n'existe pas ou est déjà supprimé.</summary>
+     public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
+         _matches.DeleteAsync(id, cancellationToken);
+ 
++    private async Task<Match> RequireAsync(Guid id, CancellationToken cancellationToken) =>
++        await FindAsync(id, cancellationToken)
++            ?? throw new KeyNotFoundException($"Aucun match actif avec l'identifiant {id}.");
++
+     private MatchInput ToInput(Match match)
+     {
+         var local = MatchSchedule.ToLocal(match.StartsAt, _clock.LocalTimeZone);
+diff --git a/src/AlFariq.Application/ResultService.cs b/src/AlFariq.Application/ResultService.cs
+new file mode 100644
+index 0000000..40129ef
+--- /dev/null
++++ b/src/AlFariq.Application/ResultService.cs
+@@ -0,0 +1,227 @@
++using AlFariq.Domain;
++
++namespace AlFariq.Application;
++
++/// <summary>Les buts et les passes décisives d'un joueur dans un match.</summary>
++public sealed record PlayerTally(Guid PlayerId, int Goals = 0, int Assists = 0)
++{
++    public bool IsEmpty => Goals == 0 && Assists == 0;
++}
++
++/// <summary>Un résultat saisi.</summary>
++/// <param name="ScoreA">Score de l'équipe A.</param>
++/// <param name="ScoreB">Score de l'équipe B.</param>
++/// <param name="Players">Les buteurs et les passeurs, facultatifs ; un joueur des équipes absent n'en a aucun.</param>
++public sealed record ResultInput(int ScoreA, int ScoreB, IReadOnlyList<PlayerTally>? Players = null);
++
++/// <summary>Un match, sa composition et son résultat.</summary>
++/// <param name="Lineup">La composition.</param>
++/// <param name="Score">Le score ; null tant que le match n'est pas terminé.</param>
++/// <param name="Players">Les joueurs d'une équipe qui ont marqué ou fait une passe, par identifiant.</param>
++public sealed record MatchSheet(
++    MatchLineup Lineup, MatchScore? Score, IReadOnlyDictionary<Guid, PlayerTally> Players)
++{
++    public Match Match => Lineup.Match;
++
++    /// <summary>Le total des buts attribués aux joueurs d'une équipe.</summary>
++    public int PlayerGoals(TeamSide side) =>
++        Lineup.Team(side).Players.Sum(player => Players.TryGetValue(player.Id, out var tally) ? tally.Goals : 0);
++}
++
++/// <summary>
++/// Résultat d'un match (US-012) : le score de chaque équipe et, si on le souhaite, les buteurs et les passeurs.
++/// Valider un score rend le match « Terminé » (RG-RES-05) ; il reste modifiable (RG-MAT-05).
++/// </summary>
++public sealed class ResultService
++{
++    private readonly IRepository<Match> _matches;
++    private readonly IRepository<MatchSide> _sides;
++    private readonly IRepository<MatchEvent> _events;
++    private readonly LineupService _lineups;
++
++    // Un résultat s'écrit en plusieurs documents : un seul enregistrement à la fois.
++    private readonly SemaphoreSlim _writeGate = new(1, 1);
++
++    public ResultService(
++        IRepository<Match> matches,
++        IRepository<MatchSide> sides,
++        IRepository<MatchEvent> events,
++        LineupService lineups)
++    {
++        _matches = matches;
++        _sides = sides;
++        _events = events;
++        _lineups = lineups;
++    }
++
++    /// <summary>La feuille d'un match ; null si le match est introuvable.</summary>
++    public async Task<MatchSheet?> GetAsync(Guid matchId, CancellationToken cancellationToken = default)
++    {
++        var lineup = await _lineups.GetAsync(matchId, cancellationToken);
++        if (lineup is null)
++        {
++            return null;
++        }
++
++        if (lineup.Match.Status != MatchStatus.Finished)
++        {
++            return new MatchSheet(lineup, null, new Dictionary<Guid, PlayerTally>());
++        }
++
++        var sides = (await _sides.ListAsync(cancellationToken: cancellationToken))
++            .Where(side => side.MatchId == matchId)
++            .ToList();
++        int ScoreOf(TeamSide side) => sides.FirstOrDefault(candidate => candidate.Side == side)?.Score ?? 0;
++
++        // Les buts d'un joueur retiré des équipes ne comptent plus.
++        var onTeam = TeamPlayers(lineup);
++        var tallies = (await EventsAsync(matchId, cancellationToken))
++            .Where(item => onTeam.Contains(item.PlayerId))
++            .GroupBy(item => item.PlayerId)
++            .ToDictionary(
++                group => group.Key,
++                group => new PlayerTally(
++                    group.Key,
++                    group.Count(item => item.Type == MatchEventType.Goal),
++                    group.Count(item => item.Type == MatchEventType.Assist)));
++
++        return new MatchSheet(lineup, new MatchScore(ScoreOf(TeamSide.A), ScoreOf(TeamSide.B)), tallies);
++    }
++
++    /// <summary>Enregistre ou corrige un résultat ; le match devient « Terminé ».</summary>
++    /// <exception cref="ArgumentException">
++    /// Score ou nombre hors limites, joueur cité deux fois, ou buteurs pour un sport sans buts.
++    /// </exception>
++    /// <exception cref="KeyNotFoundException">Le match est introuvable.</exception>
++    /// <exception cref="InvalidOperationException">
++    /// Le match est annulé, ou un buteur ou un passeur ne joue dans aucune équipe ; rien n'est alors enregistré.
++    /// </exception>
++    public async Task SaveAsync(Guid matchId, ResultInput input, CancellationToken cancellationToken = default)
++    {
++        ArgumentNullException.ThrowIfNull(input);
++        RequireCount(input.ScoreA);
++        RequireCount(input.ScoreB);
++        var wanted = (input.Players ?? []).ToDictionary(tally => tally.PlayerId);
++        foreach (var tally in wanted.Values)
++        {
++            RequireCount(tally.Goals);
++            RequireCount(tally.Assists);
++        }
++
++        await _writeGate.WaitAsync(cancellationToken);
++        try
++        {
++            var lineup = await _lineups.GetAsync(matchId, cancellationToken)
++                ?? throw new KeyNotFoundException($"Aucun match actif avec l'identifiant {matchId}.");
++            if (lineup.Match.Status == MatchStatus.Cancelled)
++            {
++                throw new InvalidOperationException("Un match annulé n'a pas de résultat.");
++            }
++
++            var onTeam = TeamPlayers(lineup);
++            var cited = wanted.Values.Where(tally => !tally.IsEmpty).ToList();
++            if (cited.Count > 0 && !SportCatalog.CountsGoals(lineup.Match.SportCode))
++            {
++                throw new ArgumentException("Ce sport ne compte pas de buteurs.", nameof(input));
++            }
++
++            if (cited.Any(tally => !onTeam.Contains(tally.PlayerId)))
++            {
++                throw new InvalidOperationException("Un buteur ou un passeur doit jouer dans une des équipes.");
++            }
++
++            foreach (var player in await EventsByPlayerAsync(matchId, onTeam, cancellationToken))
++            {
++                var tally = wanted.GetValueOrDefault(player.PlayerId) ?? new PlayerTally(player.PlayerId);
++                await ResizeAsync(matchId, player, MatchEventType.Goal, tally.Goals, cancellationToken);
++                await ResizeAsync(matchId, player, MatchEventType.Assist, tally.Assists, cancellationToken);
++            }
++
++            await _lineups.SetScoresAsync(matchId, input.ScoreA, input.ScoreB, cancellationToken);
++
++            // Le statut change en dernier : un match n'est jamais « Terminé » sans son score. Le match est réécrit à
++            // chaque correction, ce qui date la dernière modification (RG-MAT-05).
++            lineup.Match.Status = MatchStatus.Finished;
++            await _matches.UpdateAsync(lineup.Match, cancellationToken);
++        }
++        finally
++        {
++            _writeGate.Release();
++        }
++    }
++
++    /// <summary>Efface un résultat saisi par erreur : le match redevient « Planifié ».</summary>
++    /// <exception cref="KeyNotFoundException">Le match est introuvable.</exception>
++    /// <exception cref="InvalidOperationException">Le match n'est pas terminé.</exception>
++    public async Task ClearAsync(Guid matchId, CancellationToken cancellationToken = default)
++    {
++        await _writeGate.WaitAsync(cancellationToken);
++        try
++        {
++            var match = await _matches.GetAsync(matchId, cancellationToken: cancellationToken)
++                ?? throw new KeyNotFoundException($"Aucun match actif avec l'identifiant {matchId}.");
++            if (match.Status != MatchStatus.Finished)
++            {
++                throw new InvalidOperationException("Ce match n'a pas de résultat.");
++            }
++
++            match.Status = MatchStatus.Planned;
++            await _matches.UpdateAsync(match, cancellationToken);
++            await _lineups.SetScoresAsync(matchId, null, null, cancellationToken);
++
++            foreach (var item in await EventsAsync(matchId, cancellationToken))
++            {
++                await _events.DeleteAsync(item.Id, cancellationToken);
++            }
++        }
++        finally
++        {
++            _writeGate.Release();
++        }
++    }
++
++    private static HashSet<Guid> TeamPlayers(MatchLineup lineup) =>
++        lineup.TeamA.Players.Concat(lineup.TeamB.Players).Select(player => player.Id).ToHashSet();
++
++    private static void RequireCount(int value)
++    {
++        if (value is < 0 or > MatchSide.MaxScore)
++        {
++            throw new ArgumentOutOfRangeException(nameof(value), value, $"De 0 à {MatchSide.MaxScore}.");
++        }
++    }
++
++    private async Task<List<MatchEvent>> EventsAsync(Guid matchId, CancellationToken cancellationToken) =>
++        (await _events.ListAsync(cancellationToken: cancellationToken))
++            .Where(item => item.MatchId == matchId)
++            .ToList();
++
++    /// <summary>Les événements enregistrés de chaque joueur des équipes.</summary>
++    private async Task<List<PlayerEvents>> EventsByPlayerAsync(
++        Guid matchId, HashSet<Guid> players, CancellationToken cancellationToken)
++    {
++        var events = await EventsAsync(matchId, cancellationToken);
++        return players
++            .Select(id => new PlayerEvents(id, events.Where(item => item.PlayerId == id).ToList()))
++            .ToList();
++    }
++
++    /// <summary>Ajoute ou supprime des événements d'un type jusqu'au nombre voulu.</summary>
++    private async Task ResizeAsync(
++        Guid matchId, PlayerEvents player, MatchEventType type, int count, CancellationToken cancellationToken)
++    {
++        var existing = player.Events.Where(item => item.Type == type).ToList();
++        foreach (var extra in existing.Skip(count))
++        {
++            await _events.DeleteAsync(extra.Id, cancellationToken);
++        }
++
++        for (var i = existing.Count; i < count; i++)
++        {
++            await _events.AddAsync(
++                new MatchEvent { MatchId = matchId, PlayerId = player.PlayerId, Type = type }, cancellationToken);
++        }
++    }
++
++    private sealed record PlayerEvents(Guid PlayerId, IReadOnlyList<MatchEvent> Events);
++}
+diff --git a/src/AlFariq.Application/UpcomingMatchQuery.cs b/src/AlFariq.Application/UpcomingMatchQuery.cs
+index 8d7803b..145ce66 100644
+--- a/src/AlFariq.Application/UpcomingMatchQuery.cs
++++ b/src/AlFariq.Application/UpcomingMatchQuery.cs
+@@ -2,7 +2,7 @@ using AlFariq.Domain;
+ 
+ namespace AlFariq.Application;
+ 
+-/// <summary>Lit le prochain match (en cours ou à venir) dans le dépôt des matchs.</summary>
++/// <summary>Lit le prochain match planifié (en cours ou à venir) dans le dépôt des matchs.</summary>
+ public sealed class UpcomingMatchQuery : IUpcomingMatchQuery
+ {
+     private readonly IRepository<Match> _matches;
+@@ -17,7 +17,8 @@ public sealed class UpcomingMatchQuery : IUpcomingMatchQuery
+     public async Task<UpcomingMatch?> GetNextAsync(CancellationToken cancellationToken = default)
+     {
+         var matches = await _matches.ListAsync(cancellationToken: cancellationToken);
+-        var upcoming = MatchSchedule.Upcoming(matches, _clock.GetUtcNow());
++        var planned = matches.Where(match => match.Status == MatchStatus.Planned);
++        var upcoming = MatchSchedule.Upcoming(planned, _clock.GetUtcNow());
+         if (upcoming.Count == 0)
+         {
+             return null;
+diff --git a/src/AlFariq.Client.Core/Storage/LocalSchema.cs b/src/AlFariq.Client.Core/Storage/LocalSchema.cs
+index db0753b..1418627 100644
+--- a/src/AlFariq.Client.Core/Storage/LocalSchema.cs
++++ b/src/AlFariq.Client.Core/Storage/LocalSchema.cs
+@@ -40,15 +40,19 @@ public static class LocalSchema
+     /// <summary>Joueurs inscrits aux matchs (US-006, complété par US-007).</summary>
+     public const string MatchParticipantsStore = "match_participants";
+ 
+-    /// <summary>Réglages des équipes d'un match : nom et couleur (US-008).</summary>
++    /// <summary>Réglages des équipes d'un match : nom et couleur (US-008), formation (US-010), score (US-012).</summary>
+     public const string MatchSidesStore = "match_sides";
+ 
++    /// <summary>Buts et passes décisives (US-012).</summary>
++    public const string MatchEventsStore = "match_events";
++
+     public static IReadOnlyList<SchemaMigration> Migrations { get; } =
+     [
+         new SchemaMigration(1, [new StoreDefinition(MetaStore)]),
+         new SchemaMigration(2, [new StoreDefinition(ProfilesStore), new StoreDefinition(PlayersStore)]),
+         new SchemaMigration(3, [new StoreDefinition(MatchesStore), new StoreDefinition(MatchParticipantsStore)]),
+         new SchemaMigration(4, [new StoreDefinition(MatchSidesStore)]),
++        new SchemaMigration(5, [new StoreDefinition(MatchEventsStore)]),
+     ];
+ 
+     public static int CurrentVersion => Migrations[Migrations.Count - 1].Version;
+diff --git a/src/AlFariq.Domain/Matches/Match.cs b/src/AlFariq.Domain/Matches/Match.cs
+index ffd4811..2f08550 100644
+--- a/src/AlFariq.Domain/Matches/Match.cs
++++ b/src/AlFariq.Domain/Matches/Match.cs
+@@ -2,14 +2,19 @@ using System.Text.Json.Serialization;
+ 
+ namespace AlFariq.Domain;
+ 
+-/// <summary>État enregistré d'un match, stocké en texte. US-012 ajoutera « Terminé » et « Annulé ».</summary>
++/// <summary>État enregistré d'un match, stocké en texte (« En cours » se déduit de l'heure, il n'est pas saisi).</summary>
+ [JsonConverter(typeof(JsonStringEnumConverter<MatchStatus>))]
+ public enum MatchStatus
+ {
+     Planned,
++
++    /// <summary>Un score est validé (US-012).</summary>
++    Finished,
++
++    Cancelled,
+ }
+ 
+-/// <summary>Rencontre planifiée (US-006).</summary>
++/// <summary>Une rencontre (US-006).</summary>
+ public sealed class Match : Entity
+ {
+     public const int MinPlayersPerSide = 1;
+@@ -19,6 +24,7 @@ public sealed class Match : Entity
+     public const int DefaultDurationMinutes = 60;
+     public const int MaxLocationLength = 100;
+     public const int MaxNotesLength = 500;
++    public const int MaxCancellationReasonLength = 200;
+     public const int MinYear = 2000;
+     public const int MaxYear = 2100;
+ 
+@@ -39,6 +45,9 @@ public sealed class Match : Entity
+ 
+     public MatchStatus Status { get; set; } = MatchStatus.Planned;
+ 
++    /// <summary>Motif facultatif d'un match annulé ; null dans les autres états.</summary>
++    public string? CancellationReason { get; set; }
++
+     /// <summary>Nombre de joueurs attendus : les deux équipes au format du match.</summary>
+     [JsonIgnore]
+     public int ExpectedPlayers => 2 * PlayersPerSide;
+@@ -46,6 +55,12 @@ public sealed class Match : Entity
+     [JsonIgnore]
+     public DateTimeOffset EndsAt => StartsAt.AddMinutes(DurationMinutes);
+ 
+-    /// <summary>Un match en cours n'est pas encore passé.</summary>
++    /// <summary>Vrai une fois l'heure de fin atteinte.</summary>
+     public bool IsOver(DateTimeOffset now) => EndsAt <= now;
++
++    /// <summary>
++    /// Un match passé : terminé (même si le score est saisi avant la fin prévue) ou à l'heure de fin dépassée. Un
++    /// match en cours n'est pas encore passé.
++    /// </summary>
++    public bool IsPast(DateTimeOffset now) => Status == MatchStatus.Finished || IsOver(now);
+ }
+diff --git a/src/AlFariq.Domain/Matches/MatchEvent.cs b/src/AlFariq.Domain/Matches/MatchEvent.cs
+new file mode 100644
+index 0000000..bf4a468
+--- /dev/null
++++ b/src/AlFariq.Domain/Matches/MatchEvent.cs
+@@ -0,0 +1,27 @@
++using System.Text.Json.Serialization;
++
++namespace AlFariq.Domain;
++
++/// <summary>Nature d'un événement de match, stockée en texte.</summary>
++[JsonConverter(typeof(JsonStringEnumConverter<MatchEventType>))]
++public enum MatchEventType
++{
++    Goal,
++    Assist,
++}
++
++/// <summary>
++/// Un but ou une passe décisive (US-012, RG-RES-02), facultatif. Le participant est désigné par le couple match et
++/// joueur : ses buts le suivent s'il change d'équipe, ou s'il est retiré du match puis réinscrit.
++/// </summary>
++public sealed class MatchEvent : Entity
++{
++    public Guid MatchId { get; set; }
++
++    public Guid PlayerId { get; set; }
++
++    public MatchEventType Type { get; set; }
++
++    /// <summary>Minute de jeu, si elle est connue ; pas encore saisie.</summary>
++    public int? Minute { get; set; }
++}
+diff --git a/src/AlFariq.Domain/Matches/MatchSchedule.cs b/src/AlFariq.Domain/Matches/MatchSchedule.cs
+index aa2c6be..695e59f 100644
+--- a/src/AlFariq.Domain/Matches/MatchSchedule.cs
++++ b/src/AlFariq.Domain/Matches/MatchSchedule.cs
+@@ -16,14 +16,14 @@ public static class MatchSchedule
+ 
+     /// <summary>Les matchs en cours ou à venir, le plus proche d'abord.</summary>
+     public static IReadOnlyList<Match> Upcoming(IEnumerable<Match> matches, DateTimeOffset now) =>
+-        matches.Where(match => !match.IsOver(now))
++        matches.Where(match => !match.IsPast(now))
+             .OrderBy(match => match.StartsAt)
+             .ThenBy(match => match.CreatedAt)
+             .ToList();
+ 
+     /// <summary>Les matchs passés, le plus récent d'abord.</summary>
+     public static IReadOnlyList<Match> Past(IEnumerable<Match> matches, DateTimeOffset now) =>
+-        matches.Where(match => match.IsOver(now))
++        matches.Where(match => match.IsPast(now))
+             .OrderByDescending(match => match.StartsAt)
+             .ThenByDescending(match => match.CreatedAt)
+             .ToList();
+diff --git a/src/AlFariq.Domain/Matches/MatchScore.cs b/src/AlFariq.Domain/Matches/MatchScore.cs
+new file mode 100644
+index 0000000..54beae9
+--- /dev/null
++++ b/src/AlFariq.Domain/Matches/MatchScore.cs
+@@ -0,0 +1,16 @@
++namespace AlFariq.Domain;
++
++/// <summary>Le score d'un match terminé : un entier positif ou nul par côté (RG-RES-01).</summary>
++public sealed record MatchScore(int A, int B)
++{
++    /// <summary>L'équipe gagnante ; null pour un match nul (RG-RES-04).</summary>
++    public TeamSide? Winner => A > B ? TeamSide.A : B > A ? TeamSide.B : null;
++
++    public int For(TeamSide side) => side == TeamSide.A ? A : B;
++
++    /// <summary>
++    /// Vrai si des buts sont attribués aux joueurs d'une équipe et que leur total diffère de son score : à signaler
++    /// sans bloquer (RG-RES-03). Sans aucun buteur saisi, il n'y a rien à comparer.
++    /// </summary>
++    public bool DiffersFrom(TeamSide side, int playerGoals) => playerGoals > 0 && playerGoals != For(side);
++}
+diff --git a/src/AlFariq.Domain/Matches/MatchSide.cs b/src/AlFariq.Domain/Matches/MatchSide.cs
+index 50c7931..2b67bbe 100644
+--- a/src/AlFariq.Domain/Matches/MatchSide.cs
++++ b/src/AlFariq.Domain/Matches/MatchSide.cs
+@@ -1,12 +1,13 @@
+ namespace AlFariq.Domain;
+ 
+ /// <summary>
+-/// Réglages d'une équipe pour un match (US-008, US-010). Ils ne sont enregistrés qu'une fois personnalisés :
+-/// sans eux, le nom et la couleur par défaut s'appliquent, sans formation.
++/// Réglages et score d'une équipe pour un match (US-008, US-010, US-012). Ils ne sont enregistrés qu'une fois
++/// personnalisés ou le score saisi : sans eux, le nom et la couleur par défaut s'appliquent, sans formation.
+ /// </summary>
+ public sealed class MatchSide : Entity
+ {
+     public const int MaxNameLength = 30;
++    public const int MaxScore = 999;
+ 
+     public Guid MatchId { get; set; }
+ 
+@@ -20,4 +21,7 @@ public sealed class MatchSide : Entity
+ 
+     /// <summary>Code d'une formation de <see cref="FormationCatalog"/> ; null sans formation (US-010).</summary>
+     public string? FormationCode { get; set; }
++
++    /// <summary>Score de l'équipe ; null tant qu'aucun résultat n'est saisi.</summary>
++    public int? Score { get; set; }
+ }
+diff --git a/src/AlFariq.Domain/Releases/changelog.json b/src/AlFariq.Domain/Releases/changelog.json
+index e033e09..cd21e2f 100644
+--- a/src/AlFariq.Domain/Releases/changelog.json
++++ b/src/AlFariq.Domain/Releases/changelog.json
+@@ -1,5 +1,35 @@
+ {
+   "entries": [
++    {
++      "version": "0.13.0",
++      "date": "2026-11-28",
++      "changes": [
++        {
++          "type": "added",
++          "text": {
++            "fr": "Saisis le résultat d'un match : le score avec les boutons + et −, puis valide. Il reste modifiable.",
++            "en": "Enter a match result: set the score with the + and − buttons, then confirm. You can still edit it.",
++            "ar": "سجّل نتيجة المباراة: حدّد النتيجة بزري + و − ثم أكّدها. ويمكنك تعديلها لاحقاً."
++          }
++        },
++        {
++          "type": "added",
++          "text": {
++            "fr": "Ajoute si tu veux les buteurs et les passeurs : un avertissement signale un écart avec le score.",
++            "en": "Optionally add scorers and assists: a warning points out any gap with the score.",
++            "ar": "أضف إن شئت الهدافين وصانعي الأهداف: ينبهك تحذير إلى أي اختلاف مع النتيجة."
++          }
++        },
++        {
++          "type": "added",
++          "text": {
++            "fr": "Annule un match, avec un motif facultatif, et rétablis-le si besoin.",
++            "en": "Cancel a match, with an optional reason, and restore it if needed.",
++            "ar": "ألغِ مباراة مع سبب اختياري، وأعدها عند الحاجة."
++          }
++        }
++      ]
++    },
+     {
+       "version": "0.12.0",
+       "date": "2026-11-27",
+diff --git a/src/AlFariq.Domain/Sports/SportCatalog.cs b/src/AlFariq.Domain/Sports/SportCatalog.cs
+index 9fad859..2db9be5 100644
+--- a/src/AlFariq.Domain/Sports/SportCatalog.cs
++++ b/src/AlFariq.Domain/Sports/SportCatalog.cs
+@@ -46,6 +46,9 @@ public static class SportCatalog
+     /// <summary>Le poste général d'une variante (« arrière gauche » → « défenseur ») ; sinon le poste lui-même.</summary>
+     public static string BaseOf(string positionCode) => BasePositions.GetValueOrDefault(positionCode, positionCode);
+ 
++    /// <summary>Vrai si le score se compte en buts : on peut alors désigner les buteurs (US-012).</summary>
++    public static bool CountsGoals(string? sportCode) => sportCode is FootballCode or "futsal" or "handball";
++
+     /// <summary>Le sport portant ce code, ou null s'il est inconnu.</summary>
+     public static Sport? Find(string? code) => All.FirstOrDefault(sport => sport.Code == code);
+ 
+diff --git a/src/AlFariq.UI/Components/GoalMismatch.razor b/src/AlFariq.UI/Components/GoalMismatch.razor
+new file mode 100644
+index 0000000..9239e7b
+--- /dev/null
++++ b/src/AlFariq.UI/Components/GoalMismatch.razor
+@@ -0,0 +1,21 @@
++@inject IStringLocalizer<Strings> L
++
++@* Avertissement non bloquant quand les buts des joueurs ne correspondent pas au score (US-012, RG-RES-03). *@
++@if (Score.DiffersFrom(Side, PlayerGoals))
++{
++    <p class="field__warning user-text">
++        @(PlayerGoals > 1
++            ? L["Result_Mismatch", TeamName, PlayerGoals, Score.For(Side)]
++            : L["Result_MismatchOne", TeamName, Score.For(Side)])
++    </p>
++}
++
++@code {
++    [Parameter, EditorRequired] public MatchScore Score { get; set; } = default!;
++
++    [Parameter, EditorRequired] public TeamSide Side { get; set; }
++
++    [Parameter, EditorRequired] public string TeamName { get; set; } = "";
++
++    [Parameter, EditorRequired] public int PlayerGoals { get; set; }
++}
+diff --git a/src/AlFariq.UI/Components/MatchCancellation.razor b/src/AlFariq.UI/Components/MatchCancellation.razor
+new file mode 100644
+index 0000000..1cb2a2c
+--- /dev/null
++++ b/src/AlFariq.UI/Components/MatchCancellation.razor
+@@ -0,0 +1,90 @@
++@using AlFariq.Application
++@inject IStringLocalizer<Strings> L
++@inject MatchService Service
++
++@* Annuler un match planifié, avec un motif facultatif, ou rétablir un match annulé (US-012). *@
++@if (Match.Status == MatchStatus.Planned)
++{
++    if (!_confirming)
++    {
++        <button type="button" class="button button--ghost button--danger" @onclick="() => _confirming = true">
++            @L["Cancel_Match"]
++        </button>
++    }
++    else
++    {
++        <div class="card">
++            <p>@L["Cancel_Explain"]</p>
++            <div class="field">
++                <label for="cancel-reason">@L["Cancel_Reason"]</label>
++                <input id="cancel-reason" type="text" dir="auto" autocomplete="off" enterkeyhint="done"
++                       maxlength="@Match.MaxCancellationReasonLength" @bind="_reason" @bind:event="oninput" />
++            </div>
++            <div class="actions">
++                <button type="button" class="button button--ghost button--danger" disabled="@_saving" @onclick="CancelAsync">
++                    @L["Cancel_Confirm"]
++                </button>
++                <button type="button" class="button button--ghost" disabled="@_saving" @onclick="Close">
++                    @L["Cancel_Keep"]
++                </button>
++            </div>
++        </div>
++    }
++}
++else if (Match.Status == MatchStatus.Cancelled)
++{
++    <button type="button" class="button" disabled="@_saving" @onclick="ReinstateAsync">@L["Cancel_Restore"]</button>
++}
++
++@if (_failed)
++{
++    <p class="field__error" role="alert">@L["Result_SaveFailed"]</p>
++}
++
++@code {
++    private bool _confirming;
++    private bool _saving;
++    private bool _failed;
++    private string _reason = "";
++
++    [Parameter, EditorRequired] public Match Match { get; set; } = default!;
++
++    /// <summary>L'état du match a changé : la page se recharge.</summary>
++    [Parameter] public EventCallback OnChanged { get; set; }
++
++    private void Close()
++    {
++        _confirming = _failed = false;
++        _reason = "";
++    }
++
++    private Task CancelAsync() => SaveAsync(() => Service.CancelAsync(Match.Id, _reason));
++
++    private Task ReinstateAsync() => SaveAsync(() => Service.ReinstateAsync(Match.Id));
++
++    private async Task SaveAsync(Func<Task> write)
++    {
++        if (_saving)
++        {
++            return;
++        }
++
++        _saving = true;
++        _failed = false;
++        try
++        {
++            await write();
++            Close();
++            await OnChanged.InvokeAsync();
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _failed = true;
++        }
++        finally
++        {
++            _saving = false;
++        }
++    }
++}
+diff --git a/src/AlFariq.UI/Components/MatchResultCard.razor b/src/AlFariq.UI/Components/MatchResultCard.razor
+new file mode 100644
+index 0000000..e1a6c69
+--- /dev/null
++++ b/src/AlFariq.UI/Components/MatchResultCard.razor
+@@ -0,0 +1,100 @@
++@using AlFariq.Application
++@inject IStringLocalizer<Strings> L
++@inject TimeProvider Clock
++
++@* Le résultat sur la fiche d'un match (US-012) : le score et les buteurs, ou l'accès à la saisie. *@
++<div class="card">
++    <h2>@L["Result_Title"]</h2>
++    @if (Sheet.Score is { } score)
++    {
++        TeamLineup[] teams = [Sheet.Lineup.TeamA, Sheet.Lineup.TeamB];
++
++        <div class="scoreboard">
++            @foreach (var team in teams)
++            {
++                <div @key="team.Side" class="scoreboard__team team-color--@team.ColorCode">
++                    <p class="team-heading">
++                        <span class="team-dot" aria-hidden="true"></span>
++                        <span class="team-heading__name" dir="auto">@Name(team)</span>
++                    </p>
++                    <p class="scoreboard__score">@score.For(team.Side)</p>
++                </div>
++            }
++        </div>
++        <p class="scoreboard__outcome user-text">
++            @(score.Winner is { } winner ? L["Result_Winner", Name(Sheet.Lineup.Team(winner))] : L["Result_Draw"])
++        </p>
++
++        if (Sheet.Players.Count > 0)
++        {
++            <h3 class="scorers__title">@L["Result_ScorersTitle"]</h3>
++            foreach (var team in teams)
++            {
++                var cited = team.Players.Where(player => Sheet.Players.ContainsKey(player.Id))
++                    .OrderByDescending(player => Sheet.Players[player.Id].Goals)
++                    .ToList();
++                if (cited.Count > 0)
++                {
++                    <div @key="team.Side" class="team-color--@team.ColorCode">
++                        <p class="team-heading">
++                            <span class="team-dot" aria-hidden="true"></span>
++                            <span class="team-heading__name" dir="auto">@Name(team)</span>
++                        </p>
++                        <ul class="squad-names scorers__list">
++                            @foreach (var player in cited)
++                            {
++                                <li @key="player.Id">
++                                    <span dir="auto">@player.Name</span>
++                                    <span class="hint">@Describe(Sheet.Players[player.Id])</span>
++                                </li>
++                            }
++                        </ul>
++                    </div>
++                }
++            }
++        }
++
++        foreach (var team in teams)
++        {
++            <GoalMismatch @key="team.Side" Score="score" Side="team.Side" TeamName="@Name(team)"
++                          PlayerGoals="Sheet.PlayerGoals(team.Side)" />
++        }
++
++        var updated = MatchSchedule.ToLocal(Sheet.Match.UpdatedAt, Clock.LocalTimeZone);
++        <p class="hint">@L["Result_Updated", MatchLabels.LongDate(updated), MatchLabels.Time(updated)]</p>
++        <div class="actions">
++            <a class="button button--ghost" href="matchs/@Sheet.Match.Id/resultat">@L["Result_Edit"]</a>
++        </div>
++    }
++    else
++    {
++        <p class="hint">@L["Result_NotEntered"]</p>
++        @* Bouton principal une fois le match commencé : c'est alors l'action attendue. *@
++        <div class="actions">
++            <a class="button @(Sheet.Match.StartsAt <= Clock.GetUtcNow() ? "" : "button--ghost")"
++               href="matchs/@Sheet.Match.Id/resultat">@L["Result_Enter"]</a>
++        </div>
++    }
++</div>
++
++@code {
++    [Parameter, EditorRequired] public MatchSheet Sheet { get; set; } = default!;
++
++    private string Name(TeamLineup team) => TeamLabels.Name(L, team.Side, team.Name);
++
++    private string Describe(PlayerTally tally)
++    {
++        var parts = new List<string>();
++        if (tally.Goals > 0)
++        {
++            parts.Add(tally.Goals > 1 ? L["Result_GoalsCount", tally.Goals] : L["Result_GoalsCountOne"]);
++        }
++
++        if (tally.Assists > 0)
++        {
++            parts.Add(tally.Assists > 1 ? L["Result_AssistsCount", tally.Assists] : L["Result_AssistsCountOne"]);
++        }
++
++        return string.Join(" · ", parts);
++    }
++}
+diff --git a/src/AlFariq.UI/Components/Stepper.razor b/src/AlFariq.UI/Components/Stepper.razor
+new file mode 100644
+index 0000000..dcb2e5d
+--- /dev/null
++++ b/src/AlFariq.UI/Components/Stepper.razor
+@@ -0,0 +1,40 @@
++@using System.Globalization
++@inject IStringLocalizer<Strings> L
++
++@* Compteur à boutons − et + (US-012) ; le nombre peut aussi se taper, pour les grands scores. *@
++<div class="stepper @(Typable ? "stepper--score" : "")" role="group" aria-label="@Label">
++    <button type="button" class="stepper__button" aria-label="@L["Result_Less", Label]"
++            disabled="@(Value <= 0)" @onclick="() => SetAsync(Value - 1)">−</button>
++    @if (Typable)
++    {
++        <input class="stepper__value" type="number" inputmode="numeric" min="0" max="@Max" aria-label="@Label"
++               @bind:get="Value.ToString(CultureInfo.InvariantCulture)" @bind:set="TypeAsync" />
++    }
++    else
++    {
++        <output class="stepper__value">@Value</output>
++    }
++    <button type="button" class="stepper__button" aria-label="@L["Result_More", Label]"
++            disabled="@(Value >= Max)" @onclick="() => SetAsync(Value + 1)">+</button>
++</div>
++
++@code {
++    [Parameter, EditorRequired] public int Value { get; set; }
++
++    [Parameter] public EventCallback<int> ValueChanged { get; set; }
++
++    /// <summary>Ce qui est compté, pour les lecteurs d'écran.</summary>
++    [Parameter, EditorRequired] public string Label { get; set; } = "";
++
++    [Parameter] public int Max { get; set; } = MatchSide.MaxScore;
++
++    [Parameter] public bool Typable { get; set; }
++
++    private Task SetAsync(int value) => ValueChanged.InvokeAsync(Math.Clamp(value, 0, Max));
++
++    // Un champ vidé ou illisible garde la valeur précédente.
++    private Task TypeAsync(string? text) =>
++        int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var typed)
++            ? SetAsync(typed)
++            : Task.CompletedTask;
++}
+diff --git a/src/AlFariq.UI/Pages/MatchDetails.razor b/src/AlFariq.UI/Pages/MatchDetails.razor
+index 3eb64f7..220af30 100644
+--- a/src/AlFariq.UI/Pages/MatchDetails.razor
++++ b/src/AlFariq.UI/Pages/MatchDetails.razor
+@@ -2,7 +2,7 @@
+ @using AlFariq.Application
+ @inject IStringLocalizer<Strings> L
+ @inject MatchService Service
+-@inject LineupService Lineups
++@inject ResultService Results
+ @inject TimeProvider Clock
+ @inject NavigationManager Navigation
+ 
+@@ -29,7 +29,15 @@
+ 
+         <article class="card">
+             <p class="next-match__date">@L["Home_MatchDate", MatchLabels.LongDate(start), MatchLabels.Time(start)]</p>
+-            <p><span class="badge">@L["Match_StatusPlanned"]</span></p>
++            <p>
++                <span class="badge @(_match.Status == MatchStatus.Cancelled ? "badge--cancelled" : "")">
++                    @L[MatchLabels.StatusKey(_match.Status)]
++                </span>
++            </p>
++            @if (_match.CancellationReason is not null)
++            {
++                <p class="user-text" dir="auto">@L["Cancel_ReasonValue", _match.CancellationReason]</p>
++            }
+             <dl class="facts">
+                 <dt>@L["Match_Sport"]</dt>
+                 <dd>@L[SportLabels.SportKey(_match.SportCode)]</dd>
+@@ -50,7 +58,12 @@
+             </dl>
+         </article>
+ 
+-        var lineup = _lineup!;
++        if (_match.Status != MatchStatus.Cancelled)
++        {
++            <MatchResultCard Sheet="_sheet!" />
++        }
++
++        var lineup = _sheet!.Lineup;
+         var assigned = lineup.TeamA.Players.Count + lineup.TeamB.Players.Count;
+ 
+         <div class="card">
+@@ -123,6 +136,7 @@
+         <div class="actions">
+             <a class="button button--ghost" href="matchs/@_match.Id/modifier">@L["Match_Edit"]</a>
+             <a class="button button--ghost" href="matchs/@_match.Id/dupliquer">@L["Match_Duplicate"]</a>
++            <MatchCancellation Match="_match" OnChanged="ReloadAsync" />
+             @if (!_confirmingDeletion)
+             {
+                 <button type="button" class="button button--ghost button--danger" @onclick="() => _confirmingDeletion = true">
+@@ -159,7 +173,7 @@
+ 
+ @code {
+     private Match? _match;
+-    private MatchLineup? _lineup;
++    private MatchSheet? _sheet;
+     private Guid _loadedId;
+     private bool _loadFailed;
+     private bool _notFound;
+@@ -178,14 +192,20 @@
+ 
+         _loadedId = Id;
+         _match = null;
+-        _lineup = null;
++        _sheet = null;
+         _loadFailed = _notFound = _confirmingDeletion = _deleteFailed = false;
+ 
++        await ReloadAsync();
++    }
++
++    /// <summary>Lit le match, au premier affichage et après une annulation ou un rétablissement.</summary>
++    private async Task ReloadAsync()
++    {
+         try
+         {
+-            _lineup = await Lineups.GetAsync(Id);
+-            _match = _lineup?.Match;
+-            _notFound = _lineup is null;
++            _sheet = await Results.GetAsync(Id);
++            _match = _sheet?.Match;
++            _notFound = _sheet is null;
+         }
+         catch (Exception exception)
+         {
+diff --git a/src/AlFariq.UI/Pages/MatchEdit.razor b/src/AlFariq.UI/Pages/MatchEdit.razor
+index a9ca34b..d5fb7f2 100644
+--- a/src/AlFariq.UI/Pages/MatchEdit.razor
++++ b/src/AlFariq.UI/Pages/MatchEdit.razor
+@@ -58,7 +58,7 @@
+ 
+             <div class="field">
+                 <label for="match-sport">@L["Match_Sport"]</label>
+-                <select id="match-sport" @bind="_sportCode" @bind:after="ApplySportFormat">
++                <select id="match-sport" @bind="_sportCode" @bind:after="ApplySportFormat" disabled="@_formatLocked">
+                     @foreach (var sport in SportCatalog.All)
+                     {
+                         <option @key="sport.Code" value="@sport.Code">@L[SportLabels.SportKey(sport.Code)]</option>
+@@ -73,12 +73,12 @@
+                     {
+                         var value = format.ToString(CultureInfo.InvariantCulture);
+                         <button @key="format" type="button" class="chip" aria-pressed="@(_playersPerSide == value ? "true" : "false")"
+-                                @onclick="() => _playersPerSide = value">
++                                disabled="@_formatLocked" @onclick="() => _playersPerSide = value">
+                             @L["Home_MatchFormat", format]
+                         </button>
+                     }
+                 </div>
+-                <input id="match-format" type="number" inputmode="numeric" aria-required="true"
++                <input id="match-format" type="number" inputmode="numeric" aria-required="true" disabled="@_formatLocked"
+                        min="@Match.MinPlayersPerSide" max="@Match.MaxPlayersPerSide"
+                        aria-invalid="@(_formatError ? "true" : "false")"
+                        value="@_playersPerSide" @oninput="e => _playersPerSide = e.Value as string ?? string.Empty" />
+@@ -86,6 +86,10 @@
+                 {
+                     <p class="field__error" role="alert">@L["Match_FormatInvalid", Match.MinPlayersPerSide, Match.MaxPlayersPerSide]</p>
+                 }
++                @if (_formatLocked)
++                {
++                    <p class="hint">@L["Match_FormatLocked"]</p>
++                }
+             </div>
+ 
+             <div class="field">
+@@ -146,6 +150,7 @@
+     private bool _notFound;
+     private bool _saving;
+     private bool _saveFailed;
++    private bool _formatLocked;
+     private bool _dateError;
+     private bool _timeError;
+     private bool _formatError;
+@@ -178,7 +183,7 @@
+         }
+ 
+         _loadedFor = (Id, SourceId);
+-        _loaded = _loadFailed = _notFound = _saveFailed = false;
++        _loaded = _loadFailed = _notFound = _saveFailed = _formatLocked = false;
+         _dateError = _timeError = _formatError = _durationError = false;
+ 
+         try
+@@ -195,6 +200,9 @@
+                 }
+ 
+                 Fill(input);
++                // RG-MAT-02 : un match terminé garde son sport et son format (la duplication, elle, reste libre).
++                _formatLocked = Id is { } edited
++                    && (await Service.FindAsync(edited))?.Status == MatchStatus.Finished;
+             }
+             else
+             {
+diff --git a/src/AlFariq.UI/Pages/MatchResult.razor b/src/AlFariq.UI/Pages/MatchResult.razor
+new file mode 100644
+index 0000000..4655ef1
+--- /dev/null
++++ b/src/AlFariq.UI/Pages/MatchResult.razor
+@@ -0,0 +1,293 @@
++@page "/matchs/{Id:guid}/resultat"
++@using AlFariq.Application
++@inject IStringLocalizer<Strings> L
++@inject ResultService Results
++@inject IStoragePersistence StoragePersistence
++@inject TimeProvider Clock
++@inject NavigationManager Navigation
++
++<PageTitle>@L["Result_Title"] · @L["App_Name"]</PageTitle>
++
++<section class="page">
++    <h1>@L["Result_Title"]</h1>
++
++    @if (_loadFailed)
++    {
++        <div class="card" role="alert">
++            <p>@L["Storage_Unavailable"]</p>
++        </div>
++    }
++    else if (_notFound)
++    {
++        <div class="card card--empty">
++            <p>@L["Match_NotFound"]</p>
++        </div>
++        <div class="actions">
++            <a class="button button--ghost" href="matchs">@L["Match_Back"]</a>
++        </div>
++    }
++    else if (_sheet is not null)
++    {
++        var match = _sheet.Match;
++        var start = MatchSchedule.ToLocal(match.StartsAt, Clock.LocalTimeZone);
++
++        <p class="lead squad-lead">
++            @L["Home_MatchDate", MatchLabels.LongDate(start), MatchLabels.Time(start)]<br />
++            @L["Home_MatchFormat", match.PlayersPerSide]
++        </p>
++
++        if (match.Status == MatchStatus.Cancelled)
++        {
++            <div class="card card--empty">
++                <p>@L["Result_Cancelled"]</p>
++            </div>
++        }
++        else
++        {
++            TeamLineup[] teams = [_sheet.Lineup.TeamA, _sheet.Lineup.TeamB];
++            var score = new MatchScore(_scoreA, _scoreB);
++
++            if (match.StartsAt > Clock.GetUtcNow())
++            {
++                <p class="field__warning" role="status">@L["Result_NotStarted"]</p>
++            }
++
++            <div class="card scoreboard">
++                @foreach (var team in teams)
++                {
++                    <div @key="team.Side" class="scoreboard__team team-color--@team.ColorCode">
++                        <h2 class="team-heading">
++                            <span class="team-dot" aria-hidden="true"></span>
++                            <span class="team-heading__name" dir="auto">@Name(team)</span>
++                        </h2>
++                        <Stepper Typable="true" Value="score.For(team.Side)"
++                                 ValueChanged="value => SetScore(team.Side, value)"
++                                 Label="@(L["Result_ScoreOf", Name(team)].Value)" />
++                    </div>
++                }
++            </div>
++
++            <div role="status">
++                @foreach (var team in teams)
++                {
++                    <GoalMismatch @key="team.Side" Score="score" Side="team.Side" TeamName="@Name(team)"
++                                  PlayerGoals="team.Players.Sum(player => _tallies[player.Id].Goals)" />
++                }
++            </div>
++
++            if (SportCatalog.CountsGoals(match.SportCode))
++            {
++                <details class="scorers" open="@_scorersOpen">
++                    <summary>@L["Result_Scorers"]</summary>
++                    @if (_tallies.Count == 0)
++                    {
++                        <p class="hint">@L["Result_NoTeams"]</p>
++                        <div class="actions">
++                            <a class="button button--ghost" href="matchs/@Id/equipes">@L["Teams_Compose"]</a>
++                        </div>
++                    }
++                    else
++                    {
++                        foreach (var team in teams)
++                        {
++                            if (team.Players.Count > 0)
++                            {
++                                <section @key="team.Side">
++                                    <h2 class="lineup__title team-heading team-color--@team.ColorCode">
++                                        <span class="team-dot" aria-hidden="true"></span>
++                                        <span class="team-heading__name" dir="auto">@Name(team)</span>
++                                    </h2>
++                                    <ul class="card lineup">
++                                        @foreach (var player in team.Players)
++                                        {
++                                            var tally = _tallies[player.Id];
++                                            <li @key="player.Id" class="tally">
++                                                <p class="player-list__name" dir="auto">@player.Name</p>
++                                                <div class="tally__counters">
++                                                    <div>
++                                                        <p class="tally__label" aria-hidden="true">@L["Result_Goals"]</p>
++                                                        <Stepper Value="tally.Goals" ValueChanged="value => tally.Goals = value"
++                                                                 Label="@(L["Result_StatOf", player.Name, L["Result_Goals"].Value].Value)" />
++                                                    </div>
++                                                    <div>
++                                                        <p class="tally__label" aria-hidden="true">@L["Result_Assists"]</p>
++                                                        <Stepper Value="tally.Assists" ValueChanged="value => tally.Assists = value"
++                                                                 Label="@(L["Result_StatOf", player.Name, L["Result_Assists"].Value].Value)" />
++                                                    </div>
++                                                </div>
++                                            </li>
++                                        }
++                                    </ul>
++                                </section>
++                            }
++                        }
++                        if (_sheet.Lineup.Unassigned.Count > 0)
++                        {
++                            <p class="hint user-text">
++                                @L["Result_Unlisted", string.Join(", ", _sheet.Lineup.Unassigned.Select(player => player.Name))]
++                            </p>
++                        }
++                    }
++                </details>
++            }
++
++            <p class="hint squad-hint">@L["Result_SaveHint"]</p>
++            if (_saveFailed)
++            {
++                <p class="field__error" role="alert">@L["Result_SaveFailed"]</p>
++            }
++            <div class="actions">
++                <button type="button" class="button" disabled="@_saving" @onclick="SaveAsync">
++                    @(_sheet.Score is null ? L["Result_Save"] : L["Result_SaveChanges"])
++                </button>
++                @if (_sheet.Score is not null && !_confirmingClear)
++                {
++                    <button type="button" class="button button--ghost button--danger" disabled="@_saving"
++                            @onclick="() => _confirmingClear = true">
++                        @L["Result_Clear"]
++                    </button>
++                }
++            </div>
++
++            if (_confirmingClear)
++            {
++                <div class="card" role="alert">
++                    <p>@L["Result_ClearConfirm"]</p>
++                    <div class="actions">
++                        <button type="button" class="button button--ghost button--danger" disabled="@_saving" @onclick="ClearAsync">
++                            @L["Result_ClearYes"]
++                        </button>
++                        <button type="button" class="button button--ghost" disabled="@_saving"
++                                @onclick="() => _confirmingClear = false">
++                            @L["Result_ClearNo"]
++                        </button>
++                    </div>
++                </div>
++            }
++        }
++
++        <div class="actions">
++            <a class="button button--ghost" href="matchs/@Id">@L["Result_Back"]</a>
++        </div>
++    }
++</section>
++
++@code {
++    private sealed class TallyForm
++    {
++        public int Goals { get; set; }
++
++        public int Assists { get; set; }
++    }
++
++    private MatchSheet? _sheet;
++
++    /// <summary>La saisie en cours, pour chaque joueur d'une équipe.</summary>
++    private Dictionary<Guid, TallyForm> _tallies = [];
++
++    private Guid _loadedId;
++    private int _scoreA;
++    private int _scoreB;
++    private bool _scorersOpen;
++    private bool _loadFailed;
++    private bool _notFound;
++    private bool _saving;
++    private bool _saveFailed;
++    private bool _confirmingClear;
++
++    [Parameter] public Guid Id { get; set; }
++
++    protected override async Task OnParametersSetAsync()
++    {
++        if (_loadedId == Id)
++        {
++            return;
++        }
++
++        _loadedId = Id;
++        _sheet = null;
++        _loadFailed = _notFound = _saveFailed = _confirmingClear = false;
++
++        try
++        {
++            var sheet = await Results.GetAsync(Id);
++            if (sheet is null)
++            {
++                _notFound = true;
++                return;
++            }
++
++            _scoreA = sheet.Score?.A ?? 0;
++            _scoreB = sheet.Score?.B ?? 0;
++            _tallies = sheet.Lineup.TeamA.Players.Concat(sheet.Lineup.TeamB.Players).ToDictionary(
++                player => player.Id,
++                player => sheet.Players.TryGetValue(player.Id, out var saved)
++                    ? new TallyForm { Goals = saved.Goals, Assists = saved.Assists }
++                    : new TallyForm());
++            // Replié au départ : les buteurs sont facultatifs.
++            _scorersOpen = sheet.Players.Count > 0;
++            _sheet = sheet;
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _loadFailed = true;
++        }
++    }
++
++    private string Name(TeamLineup team) => TeamLabels.Name(L, team.Side, team.Name);
++
++    private void SetScore(TeamSide side, int value)
++    {
++        if (side == TeamSide.A)
++        {
++            _scoreA = value;
++        }
++        else
++        {
++            _scoreB = value;
++        }
++    }
++
++    private Task SaveAsync()
++    {
++        var players = _tallies
++            .Select(entry => new PlayerTally(entry.Key, entry.Value.Goals, entry.Value.Assists))
++            .ToList();
++        // Les buteurs ne concernent que les sports qui comptent des buts : ailleurs, tout reste à zéro.
++        var input = new ResultInput(_scoreA, _scoreB, players);
++
++        return WriteThenReturnAsync(() => Results.SaveAsync(Id, input));
++    }
++
++    private Task ClearAsync() => WriteThenReturnAsync(() => Results.ClearAsync(Id));
++
++    /// <summary>Enregistre puis revient au match ; en cas d'échec, la saisie reste à l'écran avec un message.</summary>
++    private async Task WriteThenReturnAsync(Func<Task> write)
++    {
++        if (_saving)
++        {
++            return;
++        }
++
++        _saving = true;
++        _saveFailed = false;
++        try
++        {
++            await write();
++
++            // US-002 : des données viennent d'être saisies, on redemande au navigateur de les conserver.
++            await StoragePersistence.RequestAsync();
++            Navigation.NavigateTo($"matchs/{Id}", replace: true);
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _saveFailed = true;
++        }
++        finally
++        {
++            _saving = false;
++        }
++    }
++}
+diff --git a/src/AlFariq.UI/Pages/Matches.razor b/src/AlFariq.UI/Pages/Matches.razor
+index ad33b84..ea14de2 100644
+--- a/src/AlFariq.UI/Pages/Matches.razor
++++ b/src/AlFariq.UI/Pages/Matches.razor
+@@ -59,6 +59,14 @@
+                         <li @key="match.Id">
+                             <a class="match-list__link" href="matchs/@match.Id">
+                                 <span class="match-list__date">@L["Home_MatchDate", MatchLabels.LongDate(start), MatchLabels.Time(start)]</span>
++                                @if (match.Status != MatchStatus.Planned)
++                                {
++                                    <span class="match-list__status">
++                                        <span class="badge @(match.Status == MatchStatus.Cancelled ? "badge--cancelled" : "")">
++                                            @L[MatchLabels.StatusKey(match.Status)]
++                                        </span>
++                                    </span>
++                                }
+                                 <span class="match-list__details">@L[SportLabels.SportKey(match.SportCode)] · @L["Home_MatchFormat", match.PlayersPerSide]</span>
+                                 @if (match.Location is not null)
+                                 {
+diff --git a/src/AlFariq.UI/Resources/MatchLabels.cs b/src/AlFariq.UI/Resources/MatchLabels.cs
+index 4d4b50c..6f3d2b8 100644
+--- a/src/AlFariq.UI/Resources/MatchLabels.cs
++++ b/src/AlFariq.UI/Resources/MatchLabels.cs
+@@ -1,11 +1,14 @@
+ using System.Globalization;
++using AlFariq.Domain;
+ 
+ namespace AlFariq.UI.Resources;
+ 
+-/// <summary>Mise en forme des dates de match dans la langue d'affichage.</summary>
++/// <summary>Mise en forme des dates de match dans la langue d'affichage, et clés de traduction des statuts.</summary>
+ public static class MatchLabels
+ {
+     public static string LongDate(DateTime local) => local.ToString("dddd d MMMM yyyy", CultureInfo.CurrentUICulture);
+ 
++    public static string StatusKey(MatchStatus status) => $"Match_Status{status}";
++
+     public static string Time(DateTime local) => local.ToString("HH:mm", CultureInfo.CurrentUICulture);
+ }
+diff --git a/src/AlFariq.UI/Resources/Strings.resx b/src/AlFariq.UI/Resources/Strings.resx
+index e8ce665..048582f 100644
+--- a/src/AlFariq.UI/Resources/Strings.resx
++++ b/src/AlFariq.UI/Resources/Strings.resx
+@@ -126,6 +126,9 @@
+   <data name="Match_Create" xml:space="preserve"><value>Créer le match</value></data>
+   <data name="Match_SaveFailed" xml:space="preserve"><value>L'enregistrement a échoué. Réessaie.</value></data>
+   <data name="Match_StatusPlanned" xml:space="preserve"><value>Planifié</value></data>
++  <data name="Match_StatusFinished" xml:space="preserve"><value>Terminé</value></data>
++  <data name="Match_StatusCancelled" xml:space="preserve"><value>Annulé</value></data>
++  <data name="Match_FormatLocked" xml:space="preserve"><value>Le sport et le format d'un match terminé ne changent plus.</value></data>
+   <data name="Match_DurationValue" xml:space="preserve"><value>{0} min</value></data>
+   <data name="Match_Edit" xml:space="preserve"><value>Modifier</value></data>
+   <data name="Match_Duplicate" xml:space="preserve"><value>Dupliquer</value></data>
+@@ -318,4 +321,47 @@
+   <data name="NotFound_Back" xml:space="preserve"><value>Retour à l'accueil</value></data>
+ 
+   <data name="Loading_Message" xml:space="preserve"><value>Chargement...</value></data>
++
++  <data name="Result_Title" xml:space="preserve"><value>Résultat</value></data>
++  <data name="Result_Enter" xml:space="preserve"><value>Saisir le résultat</value></data>
++  <data name="Result_Edit" xml:space="preserve"><value>Modifier le résultat</value></data>
++  <data name="Result_NotEntered" xml:space="preserve"><value>Le score n'est pas encore saisi.</value></data>
++  <data name="Result_Winner" xml:space="preserve"><value>Victoire : {0}</value></data>
++  <data name="Result_Draw" xml:space="preserve"><value>Match nul</value></data>
++  <data name="Result_Updated" xml:space="preserve"><value>Dernière modification le {0} à {1}.</value></data>
++  <data name="Result_ScorersTitle" xml:space="preserve"><value>Buteurs et passeurs</value></data>
++  <data name="Result_GoalsCount" xml:space="preserve"><value>{0} buts</value></data>
++  <data name="Result_GoalsCountOne" xml:space="preserve"><value>1 but</value></data>
++  <data name="Result_AssistsCount" xml:space="preserve"><value>{0} passes</value></data>
++  <data name="Result_AssistsCountOne" xml:space="preserve"><value>1 passe</value></data>
++  <data name="Result_ScoreOf" xml:space="preserve"><value>Score : {0}</value></data>
++  <data name="Result_Less" xml:space="preserve"><value>{0}, un de moins</value></data>
++  <data name="Result_More" xml:space="preserve"><value>{0}, un de plus</value></data>
++  <data name="Result_NotStarted" xml:space="preserve"><value>Ce match n'a pas encore commencé.</value></data>
++  <data name="Result_Scorers" xml:space="preserve"><value>Buteurs et passeurs (facultatif)</value></data>
++  <data name="Result_Goals" xml:space="preserve"><value>Buts</value></data>
++  <data name="Result_Assists" xml:space="preserve"><value>Passes</value></data>
++  <data name="Result_StatOf" xml:space="preserve"><value>{0} : {1}</value></data>
++  <data name="Result_NoTeams" xml:space="preserve"><value>Répartis d'abord les joueurs en équipes pour désigner les buteurs.</value></data>
++  <data name="Result_Unlisted" xml:space="preserve"><value>Sans équipe, donc non listés : {0}</value></data>
++  <data name="Result_Mismatch" xml:space="preserve"><value>{0} : {1} buts attribués aux joueurs pour un score de {2}.</value></data>
++  <data name="Result_MismatchOne" xml:space="preserve"><value>{0} : 1 but attribué aux joueurs pour un score de {1}.</value></data>
++  <data name="Result_Save" xml:space="preserve"><value>Valider le résultat</value></data>
++  <data name="Result_SaveChanges" xml:space="preserve"><value>Enregistrer les modifications</value></data>
++  <data name="Result_SaveHint" xml:space="preserve"><value>Rien n'est enregistré avant validation. Le match passe alors à « Terminé » et reste modifiable.</value></data>
++  <data name="Result_SaveFailed" xml:space="preserve"><value>L'enregistrement a échoué. Réessaie.</value></data>
++  <data name="Result_Back" xml:space="preserve"><value>Retour au match</value></data>
++  <data name="Result_Clear" xml:space="preserve"><value>Effacer le résultat</value></data>
++  <data name="Result_ClearConfirm" xml:space="preserve"><value>Effacer le score et les buteurs ? Le match redevient « Planifié ».</value></data>
++  <data name="Result_ClearYes" xml:space="preserve"><value>Oui, effacer</value></data>
++  <data name="Result_ClearNo" xml:space="preserve"><value>Garder le résultat</value></data>
++  <data name="Result_Cancelled" xml:space="preserve"><value>Ce match est annulé : rétablis-le pour saisir un résultat.</value></data>
++
++  <data name="Cancel_Match" xml:space="preserve"><value>Annuler le match</value></data>
++  <data name="Cancel_Explain" xml:space="preserve"><value>Le match reste dans tes listes, marqué « Annulé ». Tu pourras le rétablir.</value></data>
++  <data name="Cancel_Reason" xml:space="preserve"><value>Motif (facultatif)</value></data>
++  <data name="Cancel_ReasonValue" xml:space="preserve"><value>Motif : {0}</value></data>
++  <data name="Cancel_Confirm" xml:space="preserve"><value>Confirmer l'annulation</value></data>
++  <data name="Cancel_Keep" xml:space="preserve"><value>Garder le match</value></data>
++  <data name="Cancel_Restore" xml:space="preserve"><value>Rétablir le match</value></data>
+ </root>
+diff --git a/src/AlFariq.UI/wwwroot/css/app.css b/src/AlFariq.UI/wwwroot/css/app.css
+index 0945f2a..82d0b43 100644
+--- a/src/AlFariq.UI/wwwroot/css/app.css
++++ b/src/AlFariq.UI/wwwroot/css/app.css
+@@ -1205,6 +1205,170 @@ h1:focus {
+   outline-offset: 2px;
+ }
+ 
++/* ---------- Résultat (US-012) ---------- */
++
++.badge--cancelled {
++  background: var(--color-banner-offline-bg);
++  color: var(--color-banner-offline-text);
++}
++
++.match-list__status {
++  margin-block: 0.125rem;
++}
++
++.scoreboard {
++  display: grid;
++  grid-template-columns: repeat(2, minmax(0, 1fr));
++  gap: 0.75rem;
++}
++
++.scoreboard__team {
++  display: flex;
++  flex-direction: column;
++  align-items: center;
++  justify-content: space-between;
++  gap: 0.5rem;
++  text-align: center;
++}
++
++.scoreboard__team .team-heading {
++  justify-content: center;
++  max-width: 100%;
++  margin: 0;
++  font-size: 1rem;
++}
++
++.scoreboard__team .team-heading__name {
++  flex: 0 1 auto;
++}
++
++.scoreboard__score {
++  margin: 0;
++  font-size: 2.75rem;
++  font-weight: 700;
++  line-height: 1.1;
++  font-variant-numeric: tabular-nums;
++}
++
++.scoreboard__outcome {
++  margin-top: 0.5rem;
++  font-weight: 600;
++  text-align: center;
++}
++
++.scorers__title {
++  margin: var(--gutter) 0 0.5rem;
++  font-size: 1rem;
++}
++
++.scorers__list {
++  margin-bottom: 0.75rem;
++}
++
++.scorers summary {
++  display: flex;
++  align-items: center;
++  min-height: 44px;
++  margin-top: var(--gutter);
++  color: var(--color-primary);
++  font-weight: 600;
++  cursor: pointer;
++}
++
++.stepper {
++  display: flex;
++  align-items: center;
++  gap: 0.25rem;
++}
++
++.stepper__button {
++  flex: none;
++  width: 44px;
++  height: 44px;
++  border: 1px solid var(--color-primary);
++  border-radius: 50%;
++  background: transparent;
++  color: var(--color-text);
++  font: inherit;
++  font-size: 1.5rem;
++  line-height: 1;
++  cursor: pointer;
++}
++
++.stepper__button:disabled {
++  border-color: var(--color-border);
++  color: var(--color-muted);
++  cursor: default;
++}
++
++.stepper__value {
++  min-width: 2rem;
++  font-weight: 700;
++  text-align: center;
++  font-variant-numeric: tabular-nums;
++}
++
++.stepper--score {
++  flex-direction: column-reverse;
++  gap: 0.5rem;
++}
++
++.stepper--score .stepper__button {
++  width: 100%;
++  max-width: 120px;
++  height: 56px;
++  border-radius: 999px;
++  font-size: 2rem;
++}
++
++.stepper--score .stepper__button:last-child:not(:disabled) {
++  background: var(--color-primary);
++  color: var(--color-primary-contrast);
++}
++
++.stepper--score .stepper__value {
++  width: 100%;
++  max-width: 120px;
++  min-height: 72px;
++  padding: 0;
++  border: 1px solid var(--color-border);
++  border-radius: 10px;
++  background: var(--color-surface);
++  color: var(--color-text);
++  font: inherit;
++  font-size: 2.75rem;
++  font-weight: 700;
++  -moz-appearance: textfield;
++  appearance: textfield;
++}
++
++.stepper--score .stepper__value::-webkit-inner-spin-button,
++.stepper--score .stepper__value::-webkit-outer-spin-button {
++  margin: 0;
++  -webkit-appearance: none;
++}
++
++.tally {
++  padding: 0.75rem 0;
++}
++
++.tally p {
++  margin: 0;
++}
++
++.tally__counters {
++  display: flex;
++  flex-wrap: wrap;
++  justify-content: space-between;
++  gap: 0.5rem;
++  margin-top: 0.5rem;
++}
++
++.tally__label {
++  color: var(--color-muted);
++  font-size: 0.875rem;
++}
++
+ /* ---------- Écran de démarrage et erreurs (avant / pendant le démarrage de Blazor) ---------- */
+ 
+ .splash {
+diff --git a/src/AlFariq.Web/Program.cs b/src/AlFariq.Web/Program.cs
+index 54920c6..606c55c 100644
+--- a/src/AlFariq.Web/Program.cs
++++ b/src/AlFariq.Web/Program.cs
+@@ -25,6 +25,7 @@ builder.Services
+     .AddLocalRepository<Match>(LocalSchema.MatchesStore)
+     .AddLocalRepository<MatchParticipant>(LocalSchema.MatchParticipantsStore)
+     .AddLocalRepository<MatchSide>(LocalSchema.MatchSidesStore)
++    .AddLocalRepository<MatchEvent>(LocalSchema.MatchEventsStore)
+     .AddAlFariqUi();
+ 
+ await builder.Build().RunAsync();
+diff --git a/tests/AlFariq.Client.Core.Tests/MatchTestHost.cs b/tests/AlFariq.Client.Core.Tests/MatchTestHost.cs
+index c01e929..1e634b9 100644
+--- a/tests/AlFariq.Client.Core.Tests/MatchTestHost.cs
++++ b/tests/AlFariq.Client.Core.Tests/MatchTestHost.cs
+@@ -19,6 +19,7 @@ internal static class MatchTestHost
+         services.AddLocalRepository<Match>(LocalSchema.MatchesStore);
+         services.AddLocalRepository<MatchParticipant>(LocalSchema.MatchParticipantsStore);
+         services.AddLocalRepository<MatchSide>(LocalSchema.MatchSidesStore);
++        services.AddLocalRepository<MatchEvent>(LocalSchema.MatchEventsStore);
+         return services.BuildServiceProvider();
+     }
+ }
+diff --git a/tests/AlFariq.Client.Core.Tests/ResultServiceTests.cs b/tests/AlFariq.Client.Core.Tests/ResultServiceTests.cs
+new file mode 100644
+index 0000000..28bc332
+--- /dev/null
++++ b/tests/AlFariq.Client.Core.Tests/ResultServiceTests.cs
+@@ -0,0 +1,304 @@
++using AlFariq.Application;
++using AlFariq.Domain;
++using Microsoft.Extensions.DependencyInjection;
++
++namespace AlFariq.Client.Core.Tests;
++
++public sealed class ResultServiceTests : IDisposable
++{
++    // L'horloge des tests est au 25 novembre 2026 à 10 h (UTC).
++    private static readonly MatchInput Evening = new(new DateOnly(2026, 12, 2), new TimeOnly(20, 0), 5);
++
++    private readonly FakeClock _clock = new();
++    private readonly ServiceProvider _app;
++    private readonly ResultService _results;
++
++    public ResultServiceTests()
++    {
++        _app = MatchTestHost.Create(_clock);
++        _results = _app.GetRequiredService<ResultService>();
++    }
++
++    public void Dispose() => _app.Dispose();
++
++    private MatchService Matches => _app.GetRequiredService<MatchService>();
++
++    private LineupService Lineups => _app.GetRequiredService<LineupService>();
++
++    private SquadService Squads => _app.GetRequiredService<SquadService>();
++
++    private IRepository<MatchEvent> Events => _app.GetRequiredService<IRepository<MatchEvent>>();
++
++    private async Task<Guid> NewMatchAsync(MatchInput? input = null) => (await Matches.CreateAsync(input ?? Evening)).Id;
++
++    private async Task<Guid> JoinAsync(Guid match, string name, TeamSide? side)
++    {
++        var id = (await Squads.AddNewPlayerAsync(match, name)).Id;
++        await Lineups.AssignAsync(match, id, side);
++        return id;
++    }
++
++    private async Task<MatchSheet> SheetAsync(Guid match) => (await _results.GetAsync(match))!;
++
++    [Fact]
++    public async Task A_planned_match_has_no_score()
++    {
++        var match = await NewMatchAsync();
++
++        var sheet = await SheetAsync(match);
++
++        Assert.Equal(MatchStatus.Planned, sheet.Match.Status);
++        Assert.Null(sheet.Score);
++        Assert.Empty(sheet.Players);
++    }
++
++    [Theory]
++    [InlineData(3, 2)]
++    [InlineData(0, 0)]
++    public async Task Validating_a_score_finishes_the_match_without_requiring_scorers(int a, int b)
++    {
++        var match = await NewMatchAsync();
++
++        await _results.SaveAsync(match, new ResultInput(a, b));
++        var sheet = await SheetAsync(match);
++
++        Assert.Equal(MatchStatus.Finished, sheet.Match.Status);
++        Assert.Equal(new MatchScore(a, b), sheet.Score);
++        Assert.Empty(sheet.Players);
++    }
++
++    [Fact]
++    public async Task Scorers_and_assists_are_recorded_for_each_player()
++    {
++        var match = await NewMatchAsync();
++        var sami = await JoinAsync(match, "Sami", TeamSide.A);
++        var alice = await JoinAsync(match, "Alice", TeamSide.B);
++
++        await _results.SaveAsync(
++            match, new ResultInput(3, 1, [new PlayerTally(sami, Goals: 2, Assists: 1), new PlayerTally(alice, 1)]));
++        var sheet = await SheetAsync(match);
++
++        Assert.Equal(new PlayerTally(sami, 2, 1), sheet.Players[sami]);
++        Assert.Equal(new PlayerTally(alice, 1, 0), sheet.Players[alice]);
++        Assert.Equal(2, sheet.PlayerGoals(TeamSide.A));
++        Assert.True(sheet.Score!.DiffersFrom(TeamSide.A, sheet.PlayerGoals(TeamSide.A)));
++        Assert.False(sheet.Score.DiffersFrom(TeamSide.B, sheet.PlayerGoals(TeamSide.B)));
++        Assert.Equal(4, (await Events.ListAsync()).Count);
++    }
++
++    [Fact]
++    public async Task A_result_stays_editable_and_dates_its_last_change()
++    {
++        var match = await NewMatchAsync();
++        var sami = await JoinAsync(match, "Sami", TeamSide.A);
++        var alice = await JoinAsync(match, "Alice", TeamSide.A);
++        await _results.SaveAsync(match, new ResultInput(3, 0, [new PlayerTally(sami, 3, 1)]));
++        var first = (await SheetAsync(match)).Match.UpdatedAt;
++        _clock.Advance(TimeSpan.FromHours(1));
++
++        await _results.SaveAsync(match, new ResultInput(2, 2, [new PlayerTally(sami, 1), new PlayerTally(alice, 1)]));
++        var sheet = await SheetAsync(match);
++
++        Assert.Equal(new MatchScore(2, 2), sheet.Score);
++        Assert.Equal(new PlayerTally(sami, 1, 0), sheet.Players[sami]);
++        Assert.Equal(new PlayerTally(alice, 1, 0), sheet.Players[alice]);
++        Assert.Equal(2, (await Events.ListAsync()).Count);
++        Assert.True(sheet.Match.UpdatedAt > first);
++    }
++
++    [Fact]
++    public async Task A_player_left_out_of_a_correction_loses_their_goals()
++    {
++        var match = await NewMatchAsync();
++        var sami = await JoinAsync(match, "Sami", TeamSide.A);
++        await _results.SaveAsync(match, new ResultInput(1, 0, [new PlayerTally(sami, 1)]));
++
++        await _results.SaveAsync(match, new ResultInput(1, 0));
++
++        Assert.Empty((await SheetAsync(match)).Players);
++        Assert.Empty(await Events.ListAsync());
++    }
++
++    [Fact]
++    public async Task Saving_a_score_keeps_the_team_settings()
++    {
++        var match = await NewMatchAsync();
++        await Lineups.SetTeamAsync(match, TeamSide.A, "Les Verts", "green");
++
++        await _results.SaveAsync(match, new ResultInput(4, 1));
++        await Lineups.SetTeamAsync(match, TeamSide.B, "Les Jaunes", "yellow");
++        var sheet = await SheetAsync(match);
++
++        Assert.Equal("Les Verts", sheet.Lineup.TeamA.Name);
++        Assert.Equal("green", sheet.Lineup.TeamA.ColorCode);
++        Assert.Equal("Les Jaunes", sheet.Lineup.TeamB.Name);
++        Assert.Equal(new MatchScore(4, 1), sheet.Score);
++    }
++
++    [Fact]
++    public async Task A_scorer_must_play_in_a_team_otherwise_nothing_is_saved()
++    {
++        var match = await NewMatchAsync();
++        var sami = await JoinAsync(match, "Sami", side: null);
++
++        await Assert.ThrowsAsync<InvalidOperationException>(
++            () => _results.SaveAsync(match, new ResultInput(1, 0, [new PlayerTally(sami, 1)])));
++
++        Assert.Equal(MatchStatus.Planned, (await SheetAsync(match)).Match.Status);
++        Assert.Empty(await Events.ListAsync());
++    }
++
++    [Fact]
++    public async Task Goals_of_a_player_removed_from_the_teams_no_longer_count_and_come_back_with_them()
++    {
++        var match = await NewMatchAsync();
++        var sami = await JoinAsync(match, "Sami", TeamSide.A);
++        await _results.SaveAsync(match, new ResultInput(2, 0, [new PlayerTally(sami, 2)]));
++
++        await Squads.SetSelectedAsync(match, sami, selected: false);
++        await _results.SaveAsync(match, new ResultInput(2, 1));
++
++        Assert.Empty((await SheetAsync(match)).Players);
++
++        await Squads.SetSelectedAsync(match, sami, selected: true);
++        await Lineups.AssignAsync(match, sami, TeamSide.B);
++
++        Assert.Equal(2, (await SheetAsync(match)).PlayerGoals(TeamSide.B));
++    }
++
++    [Theory]
++    [InlineData(-1, 0)]
++    [InlineData(0, MatchSide.MaxScore + 1)]
++    public async Task A_score_stays_within_its_limits(int a, int b)
++    {
++        var match = await NewMatchAsync();
++
++        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
++            () => _results.SaveAsync(match, new ResultInput(a, b)));
++    }
++
++    [Fact]
++    public async Task Only_sports_counting_goals_have_scorers()
++    {
++        var match = await NewMatchAsync(Evening with { SportCode = "basketball" });
++        var sami = await JoinAsync(match, "Sami", TeamSide.A);
++
++        await Assert.ThrowsAsync<ArgumentException>(
++            () => _results.SaveAsync(match, new ResultInput(80, 72, [new PlayerTally(sami, 10)])));
++
++        // Des joueurs sans but ni passe ne gênent pas : l'écran les envoie tous.
++        await _results.SaveAsync(match, new ResultInput(80, 72, [new PlayerTally(sami)]));
++
++        Assert.Equal(new MatchScore(80, 72), (await SheetAsync(match)).Score);
++    }
++
++    [Theory]
++    [InlineData("  Pluie  ", "Pluie")]
++    [InlineData("   ", null)]
++    [InlineData(null, null)]
++    public async Task A_match_is_cancelled_with_an_optional_reason(string? typed, string? expected)
++    {
++        var match = await NewMatchAsync();
++
++        await Matches.CancelAsync(match, typed);
++        var cancelled = (await Matches.FindAsync(match))!;
++
++        Assert.Equal(MatchStatus.Cancelled, cancelled.Status);
++        Assert.Equal(expected, cancelled.CancellationReason);
++    }
++
++    [Fact]
++    public async Task A_cancelled_match_has_no_result_until_it_is_reinstated()
++    {
++        var match = await NewMatchAsync();
++        await Matches.CancelAsync(match, "Pluie");
++
++        await Assert.ThrowsAsync<InvalidOperationException>(
++            () => _results.SaveAsync(match, new ResultInput(1, 0)));
++
++        var reinstated = await Matches.ReinstateAsync(match);
++
++        Assert.Equal(MatchStatus.Planned, reinstated.Status);
++        Assert.Null(reinstated.CancellationReason);
++        await _results.SaveAsync(match, new ResultInput(1, 0));
++    }
++
++    [Fact]
++    public async Task A_finished_match_cannot_be_cancelled_and_a_reason_has_a_limit()
++    {
++        var match = await NewMatchAsync();
++
++        await Assert.ThrowsAsync<ArgumentException>(
++            () => Matches.CancelAsync(match, new string('x', Match.MaxCancellationReasonLength + 1)));
++
++        await _results.SaveAsync(match, new ResultInput(1, 0));
++
++        await Assert.ThrowsAsync<InvalidOperationException>(() => Matches.CancelAsync(match));
++        await Assert.ThrowsAsync<InvalidOperationException>(() => Matches.ReinstateAsync(match));
++    }
++
++    [Fact]
++    public async Task Clearing_a_result_makes_the_match_planned_again()
++    {
++        var match = await NewMatchAsync();
++        var sami = await JoinAsync(match, "Sami", TeamSide.A);
++        await _results.SaveAsync(match, new ResultInput(1, 0, [new PlayerTally(sami, 1)]));
++
++        await _results.ClearAsync(match);
++        var sheet = await SheetAsync(match);
++
++        Assert.Equal(MatchStatus.Planned, sheet.Match.Status);
++        Assert.Null(sheet.Score);
++        Assert.Empty(await Events.ListAsync());
++        var sides = await _app.GetRequiredService<IRepository<MatchSide>>().ListAsync();
++        Assert.All(sides, side => Assert.Null(side.Score));
++        await Assert.ThrowsAsync<InvalidOperationException>(() => _results.ClearAsync(match));
++    }
++
++    [Fact]
++    public async Task A_finished_match_keeps_its_sport_and_format_but_stays_editable()
++    {
++        var match = await NewMatchAsync();
++        await _results.SaveAsync(match, new ResultInput(1, 0));
++
++        await Assert.ThrowsAsync<InvalidOperationException>(
++            () => Matches.UpdateAsync(match, Evening with { PlayersPerSide = 7 }));
++        await Assert.ThrowsAsync<InvalidOperationException>(
++            () => Matches.UpdateAsync(match, Evening with { SportCode = "futsal" }));
++
++        var updated = await Matches.UpdateAsync(match, Evening with { Location = "Stade" });
++
++        Assert.Equal("Stade", updated.Location);
++        Assert.Equal(MatchStatus.Finished, updated.Status);
++    }
++
++    [Fact]
++    public async Task Finished_and_cancelled_matches_are_not_the_next_match()
++    {
++        var finished = await NewMatchAsync();
++        var cancelled = await NewMatchAsync(Evening with { Date = Evening.Date.AddDays(1) });
++        var planned = await NewMatchAsync(Evening with { Date = Evening.Date.AddDays(2) });
++        await _results.SaveAsync(finished, new ResultInput(1, 0));
++        await Matches.CancelAsync(cancelled);
++
++        var next = await _app.GetRequiredService<IUpcomingMatchQuery>().GetNextAsync();
++
++        Assert.Equal(planned, next!.Id);
++    }
++
++    [Fact]
++    public async Task Duplicating_a_finished_match_gives_a_planned_match_without_result()
++    {
++        var source = await NewMatchAsync();
++        var sami = await JoinAsync(source, "Sami", TeamSide.A);
++        await _results.SaveAsync(source, new ResultInput(1, 0, [new PlayerTally(sami, 1)]));
++        var input = (await Matches.GetDuplicateInputAsync(source))!;
++
++        var copy = await Matches.CreateAsync(input, duplicatedFrom: source);
++        var sheet = await SheetAsync(copy.Id);
++
++        Assert.Equal(MatchStatus.Planned, sheet.Match.Status);
++        Assert.Null(sheet.Score);
++        Assert.Empty(sheet.Players);
++    }
++}
+diff --git a/tests/AlFariq.Domain.Tests/MatchResultTests.cs b/tests/AlFariq.Domain.Tests/MatchResultTests.cs
+new file mode 100644
+index 0000000..196c22a
+--- /dev/null
++++ b/tests/AlFariq.Domain.Tests/MatchResultTests.cs
+@@ -0,0 +1,66 @@
++using System.Text.Json;
++
++namespace AlFariq.Domain.Tests;
++
++public class MatchResultTests
++{
++    private static readonly DateTimeOffset Now = new(2026, 11, 25, 10, 0, 0, TimeSpan.Zero);
++
++    [Theory]
++    [InlineData(2, 1, TeamSide.A)]
++    [InlineData(0, 3, TeamSide.B)]
++    [InlineData(1, 1, null)]
++    public void The_result_is_a_win_or_a_draw(int a, int b, TeamSide? winner)
++    {
++        Assert.Equal(winner, new MatchScore(a, b).Winner);
++    }
++
++    [Theory]
++    [InlineData(0, false)] // aucun buteur saisi : rien à comparer
++    [InlineData(2, true)]
++    [InlineData(3, false)]
++    [InlineData(4, true)]
++    public void A_gap_between_scorers_and_score_is_reported(int playerGoals, bool expected)
++    {
++        Assert.Equal(expected, new MatchScore(3, 0).DiffersFrom(TeamSide.A, playerGoals));
++    }
++
++    [Fact]
++    public void A_scorer_in_a_team_without_goal_is_a_gap()
++    {
++        Assert.True(new MatchScore(3, 0).DiffersFrom(TeamSide.B, 1));
++    }
++
++    [Fact]
++    public void A_finished_match_is_past_even_before_its_planned_end()
++    {
++        var finished = new Match { StartsAt = Now.AddHours(2), Status = MatchStatus.Finished };
++        var cancelled = new Match { StartsAt = Now.AddHours(2), Status = MatchStatus.Cancelled };
++
++        Assert.Equal(new[] { cancelled }, MatchSchedule.Upcoming([finished, cancelled], Now));
++        Assert.Equal(new[] { finished }, MatchSchedule.Past([finished, cancelled], Now));
++    }
++
++    [Theory]
++    [InlineData(MatchStatus.Planned)]
++    [InlineData(MatchStatus.Finished)]
++    [InlineData(MatchStatus.Cancelled)]
++    public void A_status_is_stored_as_text(MatchStatus status)
++    {
++        var json = JsonSerializer.Serialize(new Match { Status = status });
++
++        Assert.Contains($"\"Status\":\"{status}\"", json);
++    }
++
++    [Theory]
++    [InlineData("football", true)]
++    [InlineData("futsal", true)]
++    [InlineData("handball", true)]
++    [InlineData("basketball", false)]
++    [InlineData("volleyball", false)]
++    [InlineData(null, false)]
++    public void Only_some_sports_count_goals(string? sport, bool expected)
++    {
++        Assert.Equal(expected, SportCatalog.CountsGoals(sport));
++    }
++}
+diff --git a/tests/AlFariq.Web.Tests/MatchStatusTranslationTests.cs b/tests/AlFariq.Web.Tests/MatchStatusTranslationTests.cs
+new file mode 100644
+index 0000000..d4922e6
+--- /dev/null
++++ b/tests/AlFariq.Web.Tests/MatchStatusTranslationTests.cs
+@@ -0,0 +1,23 @@
++using System.Xml.Linq;
++using AlFariq.Domain;
++
++namespace AlFariq.Web.Tests;
++
++public class MatchStatusTranslationTests
++{
++    [Fact]
++    public void Every_match_status_has_a_label()
++    {
++        var defined = XDocument
++            .Load(Path.Combine(RepoPaths.UiRoot, "Resources", "Strings.resx"))
++            .Root!
++            .Elements("data")
++            .Select(e => (string)e.Attribute("name")!)
++            .ToHashSet();
++
++        // Même convention que MatchLabels.StatusKey (AlFariq.UI).
++        var expected = Enum.GetNames<MatchStatus>().Select(status => "Match_Status" + status);
++
++        Assert.Empty(expected.Except(defined));
++    }
++}
