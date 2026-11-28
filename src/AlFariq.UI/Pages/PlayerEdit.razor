@@ -101,6 +101,10 @@
     }
 
     <div class="actions">
+        @if (_loaded && Id is not null)
+        {
+            <a class="button button--ghost" href="statistiques/joueurs/@Id">@L["Stats_SeePlayer"]</a>
+        }
         <a class="button button--ghost" href="joueurs">@L["Player_Back"]</a>
     </div>
 </section>

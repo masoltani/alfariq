@@ -7,7 +7,7 @@ public static class DependencyInjection
 {
     /// <summary>
     /// Enregistre les services de l'interface (traductions, connexion, thème, mises à jour, nouveautés, filtres des
-    /// matchs).
+    /// matchs et des statistiques).
     /// </summary>
     public static IServiceCollection AddAlFariqUi(this IServiceCollection services)
     {
@@ -18,6 +18,7 @@ public static class DependencyInjection
         services.AddScoped<UpdateService>();
         services.AddScoped<WhatsNewService>();
         services.AddScoped<MatchListState>();
+        services.AddScoped<StatsFilterState>();
         return services;
     }
 }

@@ -1,0 +1,1352 @@
+diff --git a/Directory.Build.props b/Directory.Build.props
+index b607b1b..804350a 100644
+--- a/Directory.Build.props
++++ b/Directory.Build.props
+@@ -6,7 +6,7 @@
+     <Nullable>enable</Nullable>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <AnalysisLevel>latest</AnalysisLevel>
+-    <Version>0.14.0</Version>
++    <Version>0.15.0</Version>
+     <Deterministic>true</Deterministic>
+   </PropertyGroup>
+ 
+diff --git a/docs/user-stories.md b/docs/user-stories.md
+index 29f87a4..86493b2 100644
+--- a/docs/user-stories.md
++++ b/docs/user-stories.md
+@@ -223,6 +223,8 @@ Critères d'acceptation :
+ - On peut filtrer sur une période.
+ - Les statistiques ne prennent en compte que les matchs « Terminés ».
+ 
++**Note (US-014)** : `/statistiques` (depuis l'accueil et les joueurs) montre « Mes statistiques » puis le classement ; `/statistiques/joueurs/{id}` détaille un joueur. Tout est recalculé à partir des matchs, équipes, scores et buteurs (`StatsCalculator`, `StatisticsService`), sans nouveau magasin. Un joueur a joué s'il est dans une équipe d'un match « Terminé » (RG-STA-04) ; un match terminé sans équipes est signalé et ne compte pas, y compris dans la présence (matchs joués sur matchs comptés). Périodes (RG-STA-05) : depuis le début, mois en cours, saison en cours (1er juillet – 30 juin) ou dates au choix, bornes comprises. Classement par victoires ou par buts ; à égalité, le moins de matchs joués passe devant, puis les ex æquo partagent leur place. Tous les sports sont additionnés.
++
+ ### US-015 — Exporter et importer mes données
+ En tant qu'utilisateur, je veux sauvegarder toutes mes données dans un fichier et les restaurer afin de ne rien perdre si mon navigateur efface le stockage ou si je change d'appareil.
+ Priorité : M — Taille : M — Dépend de : US-002
+diff --git a/src/AlFariq.Application/DependencyInjection.cs b/src/AlFariq.Application/DependencyInjection.cs
+index 4f0cb30..dfe633e 100644
+--- a/src/AlFariq.Application/DependencyInjection.cs
++++ b/src/AlFariq.Application/DependencyInjection.cs
+@@ -17,6 +17,7 @@ public static class DependencyInjection
+         services.TryAddSingleton<LineupService>();
+         services.TryAddSingleton<ResultService>();
+         services.TryAddSingleton<MatchHistoryService>();
++        services.TryAddSingleton<StatisticsService>();
+         return services;
+     }
+ }
+diff --git a/src/AlFariq.Application/StatisticsService.cs b/src/AlFariq.Application/StatisticsService.cs
+new file mode 100644
+index 0000000..4bfc6cb
+--- /dev/null
++++ b/src/AlFariq.Application/StatisticsService.cs
+@@ -0,0 +1,84 @@
++using AlFariq.Domain;
++
++namespace AlFariq.Application;
++
++/// <summary>L'historique dont se calculent les statistiques.</summary>
++/// <param name="Matches">Les matchs terminés et les joueurs de leurs équipes.</param>
++/// <param name="Players">Tous les joueurs, y compris archivés ou supprimés (RG-JOU-03 et 04).</param>
++/// <param name="OwnPlayerId">Le joueur qui est la personne du profil ; null sans profil.</param>
++public sealed record StatsHistory(
++    IReadOnlyList<FinishedMatch> Matches, IReadOnlyList<Player> Players, Guid? OwnPlayerId)
++{
++    public Player? Find(Guid playerId) => Players.FirstOrDefault(player => player.Id == playerId);
++}
++
++/// <summary>
++/// Rassemble l'historique pour les statistiques (US-014). Rien n'est enregistré : tout est relu des matchs, des
++/// équipes, des scores et des buteurs.
++/// </summary>
++public sealed class StatisticsService
++{
++    private readonly IRepository<Match> _matches;
++    private readonly IRepository<MatchParticipant> _participants;
++    private readonly IRepository<MatchSide> _sides;
++    private readonly IRepository<MatchEvent> _events;
++    private readonly IRepository<Player> _players;
++
++    public StatisticsService(
++        IRepository<Match> matches,
++        IRepository<MatchParticipant> participants,
++        IRepository<MatchSide> sides,
++        IRepository<MatchEvent> events,
++        IRepository<Player> players)
++    {
++        _matches = matches;
++        _participants = participants;
++        _sides = sides;
++        _events = events;
++        _players = players;
++    }
++
++    public async Task<StatsHistory> GetAsync(CancellationToken cancellationToken = default)
++    {
++        var matches = await _matches.ListAsync(cancellationToken: cancellationToken);
++        var players = await _players.ListAsync(includeDeleted: true, cancellationToken);
++        var known = players.Select(player => player.Id).ToHashSet();
++        var registrations = (await _participants.ListAsync(cancellationToken: cancellationToken))
++            .ToLookup(participant => participant.MatchId);
++        var sides = (await _sides.ListAsync(cancellationToken: cancellationToken))
++            .ToLookup(side => side.MatchId);
++        var events = (await _events.ListAsync(cancellationToken: cancellationToken))
++            .ToLookup(item => (item.MatchId, item.PlayerId));
++
++        FinishedMatch Describe(Match match)
++        {
++            int ScoreOf(TeamSide side) =>
++                sides[match.Id].FirstOrDefault(candidate => candidate.Side == side)?.Score ?? 0;
++
++            // Comme pour la composition : la dernière inscription modifiée l'emporte, et seuls les joueurs d'une
++            // équipe ont joué (RG-STA-04).
++            var appearances = registrations[match.Id]
++                .GroupBy(participant => participant.PlayerId)
++                .Select(group => group.MaxBy(participant => participant.UpdatedAt)!)
++                .Where(participant => participant.Side is not null && known.Contains(participant.PlayerId))
++                .Select(participant =>
++                {
++                    var own = events[(match.Id, participant.PlayerId)];
++                    return new Appearance(
++                        participant.PlayerId,
++                        participant.Side!.Value,
++                        own.Count(item => item.Type == MatchEventType.Goal),
++                        own.Count(item => item.Type == MatchEventType.Assist));
++                })
++                .ToList();
++
++            return new FinishedMatch(
++                match, new MatchScore(ScoreOf(TeamSide.A), ScoreOf(TeamSide.B)), appearances);
++        }
++
++        return new StatsHistory(
++            matches.Where(match => match.Status == MatchStatus.Finished).Select(Describe).ToList(),
++            players,
++            players.FirstOrDefault(player => player.ProfileId is not null && !player.IsDeleted)?.Id);
++    }
++}
+diff --git a/src/AlFariq.Domain/Releases/changelog.json b/src/AlFariq.Domain/Releases/changelog.json
+index a57acd1..7852805 100644
+--- a/src/AlFariq.Domain/Releases/changelog.json
++++ b/src/AlFariq.Domain/Releases/changelog.json
+@@ -1,5 +1,35 @@
+ {
+   "entries": [
++    {
++      "version": "0.15.0",
++      "date": "2026-11-28",
++      "changes": [
++        {
++          "type": "added",
++          "text": {
++            "fr": "Statistiques : matchs joués, victoires, nuls, défaites, buts, passes et présence, pour toi et tes joueurs.",
++            "en": "Statistics: matches played, wins, draws, losses, goals, assists and attendance, for you and your players.",
++            "ar": "الإحصائيات: المباريات والانتصارات والتعادلات والهزائم والأهداف والتمريرات الحاسمة ونسبة الحضور، لك وللاعبيك."
++          }
++        },
++        {
++          "type": "added",
++          "text": {
++            "fr": "Classe les joueurs par victoires ou par buts.",
++            "en": "Rank players by wins or by goals.",
++            "ar": "رتّب اللاعبين حسب الانتصارات أو الأهداف."
++          }
++        },
++        {
++          "type": "added",
++          "text": {
++            "fr": "Choisis la période : depuis le début, le mois, la saison ou des dates précises.",
++            "en": "Choose the period: all time, this month, this season or specific dates.",
++            "ar": "اختر الفترة: منذ البداية أو هذا الشهر أو هذا الموسم أو تواريخ محددة."
++          }
++        }
++      ]
++    },
+     {
+       "version": "0.14.0",
+       "date": "2026-11-28",
+diff --git a/src/AlFariq.Domain/Statistics/StatsCalculator.cs b/src/AlFariq.Domain/Statistics/StatsCalculator.cs
+new file mode 100644
+index 0000000..409fa3e
+--- /dev/null
++++ b/src/AlFariq.Domain/Statistics/StatsCalculator.cs
+@@ -0,0 +1,121 @@
++namespace AlFariq.Domain;
++
++/// <summary>La participation d'un joueur à un match, dans une des équipes.</summary>
++public sealed record Appearance(Guid PlayerId, TeamSide Side, int Goals = 0, int Assists = 0);
++
++/// <summary>Un match, son score et les joueurs de ses équipes (RG-STA-04).</summary>
++public sealed record FinishedMatch(Match Match, MatchScore Score, IReadOnlyList<Appearance> Appearances);
++
++/// <summary>Les statistiques d'un joueur sur une période (RG-STA-02).</summary>
++public sealed record PlayerStats(
++    Guid PlayerId,
++    int Played = 0,
++    int Wins = 0,
++    int Draws = 0,
++    int Losses = 0,
++    int Goals = 0,
++    int Assists = 0);
++
++/// <summary>Les statistiques d'une période.</summary>
++/// <param name="Matches">Les matchs terminés pris en compte.</param>
++/// <param name="MatchesWithoutTeams">Les matchs terminés sans joueur en équipe, non comptés.</param>
++/// <param name="Players">Les joueurs ayant joué au moins un de ces matchs, par identifiant.</param>
++public sealed record StatsSummary(
++    int Matches, int MatchesWithoutTeams, IReadOnlyDictionary<Guid, PlayerStats> Players)
++{
++    /// <summary>Les statistiques d'un joueur ; tout à zéro s'il n'a pas joué.</summary>
++    public PlayerStats For(Guid playerId) => Players.GetValueOrDefault(playerId) ?? new PlayerStats(playerId);
++
++    /// <summary>La part des matchs comptés que le joueur a joués, en pour cent ; null sans aucun match.</summary>
++    public int? AttendancePercent(Guid playerId) => Matches == 0
++        ? null
++        : (int)Math.Round(100.0 * For(playerId).Played / Matches, MidpointRounding.AwayFromZero);
++}
++
++/// <summary>Ce qui classe les joueurs.</summary>
++public enum RankingCriterion
++{
++    Wins,
++    Goals,
++}
++
++/// <summary>Un joueur et sa place au classement ; deux joueurs à égalité partagent la même.</summary>
++public sealed record RankedPlayer(int Rank, Player Player, PlayerStats Stats);
++
++/// <summary>
++/// Statistiques de base (US-014). Elles sont toujours calculées à partir de l'historique, jamais enregistrées
++/// (RG-STA-01), et seuls les matchs « Terminés » comptent.
++/// </summary>
++public static class StatsCalculator
++{
++    /// <summary>Les statistiques des matchs terminés d'une période.</summary>
++    /// <param name="matches">Les matchs et les joueurs de leurs équipes.</param>
++    /// <param name="period">La période.</param>
++    /// <param name="zone">Le fuseau dans lequel les dates sont affichées.</param>
++    public static StatsSummary Compute(IEnumerable<FinishedMatch> matches, StatsPeriod period, TimeZoneInfo zone)
++    {
++        var players = new Dictionary<Guid, PlayerStats>();
++        var counted = 0;
++        var withoutTeams = 0;
++        foreach (var (match, score, appearances) in matches)
++        {
++            if (match.Status != MatchStatus.Finished
++                || !period.Contains(DateOnly.FromDateTime(MatchSchedule.ToLocal(match.StartsAt, zone))))
++            {
++                continue;
++            }
++
++            if (appearances.Count == 0)
++            {
++                withoutTeams++;
++                continue;
++            }
++
++            counted++;
++            foreach (var appearance in appearances)
++            {
++                var stats = players.GetValueOrDefault(appearance.PlayerId) ?? new PlayerStats(appearance.PlayerId);
++                players[appearance.PlayerId] = stats with
++                {
++                    Played = stats.Played + 1,
++                    Wins = stats.Wins + (score.Winner == appearance.Side ? 1 : 0),
++                    Draws = stats.Draws + (score.Winner is null ? 1 : 0),
++                    Losses = stats.Losses + (score.Winner is { } winner && winner != appearance.Side ? 1 : 0),
++                    Goals = stats.Goals + appearance.Goals,
++                    Assists = stats.Assists + appearance.Assists,
++                };
++            }
++        }
++
++        return new StatsSummary(counted, withoutTeams, players);
++    }
++
++    /// <summary>
++    /// Le classement des joueurs ayant joué : par victoires ou par buts, puis à égalité celui qui a eu besoin du moins
++    /// de matchs. Les ex æquo partagent leur place et sont présentés par nom.
++    /// </summary>
++    public static IReadOnlyList<RankedPlayer> Rank(
++        StatsSummary summary, IEnumerable<Player> players, RankingCriterion criterion)
++    {
++        int ValueOf(PlayerStats stats) => criterion == RankingCriterion.Goals ? stats.Goals : stats.Wins;
++
++        // Le tri conserve l'ordre des noms entre ex æquo.
++        var ordered = PlayerDirectory.Search(players, query: null)
++            .Where(player => summary.Players.ContainsKey(player.Id))
++            .OrderByDescending(player => ValueOf(summary.Players[player.Id]))
++            .ThenBy(player => summary.Players[player.Id].Played);
++
++        var ranking = new List<RankedPlayer>();
++        foreach (var player in ordered)
++        {
++            var stats = summary.Players[player.Id];
++            var previous = ranking.LastOrDefault();
++            var tied = previous is not null
++                && ValueOf(previous.Stats) == ValueOf(stats)
++                && previous.Stats.Played == stats.Played;
++            ranking.Add(new RankedPlayer(tied ? previous!.Rank : ranking.Count + 1, player, stats));
++        }
++
++        return ranking;
++    }
++}
+diff --git a/src/AlFariq.Domain/Statistics/StatsPeriod.cs b/src/AlFariq.Domain/Statistics/StatsPeriod.cs
+new file mode 100644
+index 0000000..939ddc7
+--- /dev/null
++++ b/src/AlFariq.Domain/Statistics/StatsPeriod.cs
+@@ -0,0 +1,50 @@
++namespace AlFariq.Domain;
++
++/// <summary>Les périodes proposées pour les statistiques (US-014, RG-STA-05).</summary>
++public enum PeriodKind
++{
++    All,
++    Month,
++    Season,
++    Custom,
++}
++
++/// <summary>Une période en jours, bornes comprises ; une borne absente ne limite rien.</summary>
++public sealed record StatsPeriod(DateOnly? From = null, DateOnly? To = null)
++{
++    /// <summary>La saison va du 1er juillet au 30 juin.</summary>
++    public const int SeasonFirstMonth = 7;
++
++    /// <summary>Vrai si le début suit la fin : aucun jour ne convient.</summary>
++    public bool IsReversed => From > To;
++
++    public bool Contains(DateOnly day) => (From is null || day >= From) && (To is null || day <= To);
++
++    /// <summary>La période d'un choix, vue d'un jour donné.</summary>
++    /// <param name="kind">Le choix.</param>
++    /// <param name="today">Le jour qui situe le mois et la saison en cours.</param>
++    /// <param name="from">Début, pour des dates au choix.</param>
++    /// <param name="to">Fin, pour des dates au choix.</param>
++    public static StatsPeriod Of(PeriodKind kind, DateOnly today, DateOnly? from = null, DateOnly? to = null) =>
++        kind switch
++        {
++            PeriodKind.All => new StatsPeriod(),
++            PeriodKind.Month => MonthOf(today),
++            PeriodKind.Season => SeasonOf(today),
++            PeriodKind.Custom => new StatsPeriod(from, to),
++            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Période inconnue."),
++        };
++
++    private static StatsPeriod MonthOf(DateOnly day)
++    {
++        var first = new DateOnly(day.Year, day.Month, 1);
++        return new StatsPeriod(first, first.AddMonths(1).AddDays(-1));
++    }
++
++    private static StatsPeriod SeasonOf(DateOnly day)
++    {
++        var year = day.Month >= SeasonFirstMonth ? day.Year : day.Year - 1;
++        var first = new DateOnly(year, SeasonFirstMonth, 1);
++        return new StatsPeriod(first, first.AddYears(1).AddDays(-1));
++    }
++}
+diff --git a/src/AlFariq.UI/Components/PeriodFilter.razor b/src/AlFariq.UI/Components/PeriodFilter.razor
+new file mode 100644
+index 0000000..28299a5
+--- /dev/null
++++ b/src/AlFariq.UI/Components/PeriodFilter.razor
+@@ -0,0 +1,64 @@
++@using System.Globalization
++@inject IStringLocalizer<Strings> L
++@inject StatsFilterState State
++@inject TimeProvider Clock
++
++@* La période des statistiques (US-014) : elle s'applique à tous les chiffres affichés. *@
++<div class="field">
++    <label for="stats-period">@L["Stats_Period"]</label>
++    <select id="stats-period" value="@State.Period.ToString()" @onchange="SetPeriodAsync">
++        <option value="All">@L["Stats_PeriodAll"]</option>
++        <option value="Month">@L["Stats_PeriodMonth"]</option>
++        <option value="Season">@L["Stats_PeriodSeason"]</option>
++        <option value="Custom">@L["Stats_PeriodCustom"]</option>
++    </select>
++</div>
++
++@if (State.Period == PeriodKind.Custom)
++{
++    <div class="period-dates">
++        <div class="field">
++            <label for="stats-from">@L["Stats_From"]</label>
++            <input id="stats-from" type="date" value="@DateInput.Value(State.From)" @onchange="SetFromAsync" />
++        </div>
++        <div class="field">
++            <label for="stats-to">@L["Stats_To"]</label>
++            <input id="stats-to" type="date" value="@DateInput.Value(State.To)" @onchange="SetToAsync" />
++        </div>
++    </div>
++    if (new StatsPeriod(State.From, State.To).IsReversed)
++    {
++        <p class="field__warning" role="alert">@L["Stats_PeriodReversed"]</p>
++    }
++}
++else if (State.Period != PeriodKind.All)
++{
++    var period = State.PeriodAt(
++        DateOnly.FromDateTime(MatchSchedule.ToLocal(Clock.GetUtcNow(), Clock.LocalTimeZone)));
++    <p class="hint">@L["Stats_PeriodRange", Day(period.From), Day(period.To)]</p>
++}
++
++@code {
++    /// <summary>La période a changé : l'écran recalcule ses chiffres.</summary>
++    [Parameter] public EventCallback OnChanged { get; set; }
++
++    private static string Day(DateOnly? date) => date?.ToString("d MMMM yyyy", CultureInfo.CurrentUICulture) ?? "";
++
++    private Task SetPeriodAsync(ChangeEventArgs e)
++    {
++        State.Period = Enum.TryParse<PeriodKind>(e.Value as string, out var kind) ? kind : PeriodKind.All;
++        return OnChanged.InvokeAsync();
++    }
++
++    private Task SetFromAsync(ChangeEventArgs e)
++    {
++        State.From = DateInput.Parse(e.Value);
++        return OnChanged.InvokeAsync();
++    }
++
++    private Task SetToAsync(ChangeEventArgs e)
++    {
++        State.To = DateInput.Parse(e.Value);
++        return OnChanged.InvokeAsync();
++    }
++}
+diff --git a/src/AlFariq.UI/Components/StatsGrid.razor b/src/AlFariq.UI/Components/StatsGrid.razor
+new file mode 100644
+index 0000000..31231e5
+--- /dev/null
++++ b/src/AlFariq.UI/Components/StatsGrid.razor
+@@ -0,0 +1,41 @@
++@inject IStringLocalizer<Strings> L
++
++@* Les chiffres d'un joueur sur la période (US-014, RG-STA-02). *@
++<dl class="stats-grid">
++    <div>
++        <dt>@L["Stats_Played"]</dt>
++        <dd>@Totals.Played</dd>
++    </div>
++    <div>
++        <dt>@L["Stats_Wins"]</dt>
++        <dd>@Totals.Wins</dd>
++    </div>
++    <div>
++        <dt>@L["Stats_Draws"]</dt>
++        <dd>@Totals.Draws</dd>
++    </div>
++    <div>
++        <dt>@L["Stats_Losses"]</dt>
++        <dd>@Totals.Losses</dd>
++    </div>
++    <div>
++        <dt>@L["Stats_Goals"]</dt>
++        <dd>@Totals.Goals</dd>
++    </div>
++    <div>
++        <dt>@L["Stats_Assists"]</dt>
++        <dd>@Totals.Assists</dd>
++    </div>
++</dl>
++@if (Summary.AttendancePercent(PlayerId) is { } percent)
++{
++    <p class="hint">@L["Stats_Attendance", percent, Totals.Played, Summary.Matches]</p>
++}
++
++@code {
++    [Parameter, EditorRequired] public StatsSummary Summary { get; set; } = default!;
++
++    [Parameter, EditorRequired] public Guid PlayerId { get; set; }
++
++    private PlayerStats Totals => Summary.For(PlayerId);
++}
+diff --git a/src/AlFariq.UI/DependencyInjection.cs b/src/AlFariq.UI/DependencyInjection.cs
+index b48de60..b45cea0 100644
+--- a/src/AlFariq.UI/DependencyInjection.cs
++++ b/src/AlFariq.UI/DependencyInjection.cs
+@@ -7,7 +7,7 @@ public static class DependencyInjection
+ {
+     /// <summary>
+     /// Enregistre les services de l'interface (traductions, connexion, thème, mises à jour, nouveautés, filtres des
+-    /// matchs).
++    /// matchs et des statistiques).
+     /// </summary>
+     public static IServiceCollection AddAlFariqUi(this IServiceCollection services)
+     {
+@@ -18,6 +18,7 @@ public static class DependencyInjection
+         services.AddScoped<UpdateService>();
+         services.AddScoped<WhatsNewService>();
+         services.AddScoped<MatchListState>();
++        services.AddScoped<StatsFilterState>();
+         return services;
+     }
+ }
+diff --git a/src/AlFariq.UI/Pages/Home.razor b/src/AlFariq.UI/Pages/Home.razor
+index 6715b9e..85bb9b0 100644
+--- a/src/AlFariq.UI/Pages/Home.razor
++++ b/src/AlFariq.UI/Pages/Home.razor
+@@ -43,6 +43,7 @@
+     <div class="actions">
+         <a class="button" href="matchs/nouveau">@L["Home_CreateMatch"]</a>
+         <a class="button button--ghost" href="joueurs">@L["Home_Players"]</a>
++        <a class="button button--ghost" href="statistiques">@L["Stats_Title"]</a>
+     </div>
+ </section>
+ 
+diff --git a/src/AlFariq.UI/Pages/Matches.razor b/src/AlFariq.UI/Pages/Matches.razor
+index 3ec9cb9..f44a4bb 100644
+--- a/src/AlFariq.UI/Pages/Matches.razor
++++ b/src/AlFariq.UI/Pages/Matches.razor
+@@ -1,5 +1,4 @@
+ @page "/matchs"
+-@using System.Globalization
+ @using AlFariq.Application
+ @inject IStringLocalizer<Strings> L
+ @inject MatchHistoryService History
+@@ -53,7 +52,7 @@
+                 </div>
+                 <div class="field">
+                     <label for="match-search-date">@L["Matches_SearchDate"]</label>
+-                    <input id="match-search-date" type="date" value="@IsoDate(State.Date)" @onchange="SetDate" />
++                    <input id="match-search-date" type="date" value="@DateInput.Value(State.Date)" @onchange="SetDate" />
+                 </div>
+             </div>
+             if (!criteria.IsEmpty)
+@@ -175,13 +174,6 @@
+         }
+     }
+ 
+-    private static string IsoDate(DateOnly? date) =>
+-        date?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "";
+-
+-    // Un champ date vidé ou incomplet donne un texte vide : le critère disparaît.
+-    private void SetDate(ChangeEventArgs e) =>
+-        State.Date = DateOnly.TryParseExact(
+-            e.Value as string, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)
+-            ? date
+-            : null;
++    // Un champ date vidé ou incomplet retire le critère.
++    private void SetDate(ChangeEventArgs e) => State.Date = DateInput.Parse(e.Value);
+ }
+diff --git a/src/AlFariq.UI/Pages/PlayerEdit.razor b/src/AlFariq.UI/Pages/PlayerEdit.razor
+index 17c954e..46ea713 100644
+--- a/src/AlFariq.UI/Pages/PlayerEdit.razor
++++ b/src/AlFariq.UI/Pages/PlayerEdit.razor
+@@ -101,6 +101,10 @@
+     }
+ 
+     <div class="actions">
++        @if (_loaded && Id is not null)
++        {
++            <a class="button button--ghost" href="statistiques/joueurs/@Id">@L["Stats_SeePlayer"]</a>
++        }
+         <a class="button button--ghost" href="joueurs">@L["Player_Back"]</a>
+     </div>
+ </section>
+diff --git a/src/AlFariq.UI/Pages/PlayerStatsPage.razor b/src/AlFariq.UI/Pages/PlayerStatsPage.razor
+new file mode 100644
+index 0000000..7c468c8
+--- /dev/null
++++ b/src/AlFariq.UI/Pages/PlayerStatsPage.razor
+@@ -0,0 +1,75 @@
++@page "/statistiques/joueurs/{Id:guid}"
++@using AlFariq.Application
++@inject IStringLocalizer<Strings> L
++@inject StatisticsService Service
++@inject StatsFilterState State
++@inject TimeProvider Clock
++
++<PageTitle>@L["Stats_PlayerTitle"] · @L["App_Name"]</PageTitle>
++
++<section class="page">
++    <h1>@L["Stats_PlayerTitle"]</h1>
++
++    @if (_loadFailed)
++    {
++        <div class="card" role="alert">
++            <p>@L["Storage_Unavailable"]</p>
++        </div>
++    }
++    else if (_history is not null)
++    {
++        var player = _history.Find(Id);
++
++        if (player is null)
++        {
++            <div class="card card--empty">
++                <p>@L["Player_NotFound"]</p>
++            </div>
++        }
++        else
++        {
++            var today = DateOnly.FromDateTime(MatchSchedule.ToLocal(Clock.GetUtcNow(), Clock.LocalTimeZone));
++            var summary = StatsCalculator.Compute(_history.Matches, State.PeriodAt(today), Clock.LocalTimeZone);
++
++            <p class="lead user-text" dir="auto">@player.Name</p>
++
++            <PeriodFilter OnChanged="StateHasChanged" />
++
++            <div class="card" role="status">
++                <StatsGrid Summary="summary" PlayerId="Id" />
++            </div>
++            if (summary.MatchesWithoutTeams > 0)
++            {
++                <p class="hint">@L["Stats_WithoutTeams", summary.MatchesWithoutTeams]</p>
++            }
++        }
++
++        <div class="actions">
++            <a class="button button--ghost" href="statistiques">@L["Stats_Back"]</a>
++            @if (player is { IsDeleted: false })
++            {
++                <a class="button button--ghost" href="joueurs/@Id">@L["Stats_SeeSheet"]</a>
++            }
++        </div>
++    }
++</section>
++
++@code {
++    private StatsHistory? _history;
++    private bool _loadFailed;
++
++    [Parameter] public Guid Id { get; set; }
++
++    protected override async Task OnInitializedAsync()
++    {
++        try
++        {
++            _history = await Service.GetAsync();
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _loadFailed = true;
++        }
++    }
++}
+diff --git a/src/AlFariq.UI/Pages/Players.razor b/src/AlFariq.UI/Pages/Players.razor
+index 7c3ff86..2b517ca 100644
+--- a/src/AlFariq.UI/Pages/Players.razor
++++ b/src/AlFariq.UI/Pages/Players.razor
+@@ -18,6 +18,7 @@
+     {
+         <div class="actions">
+             <a class="button" href="joueurs/nouveau">@L["Players_Add"]</a>
++            <a class="button button--ghost" href="statistiques">@L["Stats_Title"]</a>
+         </div>
+ 
+         if (_players.Count == 0)
+diff --git a/src/AlFariq.UI/Pages/StatsOverview.razor b/src/AlFariq.UI/Pages/StatsOverview.razor
+new file mode 100644
+index 0000000..5414fa1
+--- /dev/null
++++ b/src/AlFariq.UI/Pages/StatsOverview.razor
+@@ -0,0 +1,137 @@
++@page "/statistiques"
++@using AlFariq.Application
++@inject IStringLocalizer<Strings> L
++@inject StatisticsService Service
++@inject StatsFilterState State
++@inject TimeProvider Clock
++
++<PageTitle>@L["Stats_Title"] · @L["App_Name"]</PageTitle>
++
++<section class="page">
++    <h1>@L["Stats_Title"]</h1>
++
++    @if (_loadFailed)
++    {
++        <div class="card" role="alert">
++            <p>@L["Storage_Unavailable"]</p>
++        </div>
++    }
++    else if (_history is not null)
++    {
++        if (_history.Matches.Count == 0)
++        {
++            <div class="card card--empty">
++                <p>@L["Stats_Empty"]</p>
++            </div>
++            <div class="actions">
++                <a class="button" href="matchs">@L["Stats_SeeMatches"]</a>
++            </div>
++        }
++        else
++        {
++            var today = DateOnly.FromDateTime(MatchSchedule.ToLocal(Clock.GetUtcNow(), Clock.LocalTimeZone));
++            var summary = StatsCalculator.Compute(_history.Matches, State.PeriodAt(today), Clock.LocalTimeZone);
++            var ranking = StatsCalculator.Rank(summary, _history.Players, State.Ranking);
++
++            <PeriodFilter OnChanged="StateHasChanged" />
++
++            <div role="status">
++                <p class="hint">@L["Stats_MatchCount", summary.Matches]</p>
++                @if (summary.MatchesWithoutTeams > 0)
++                {
++                    <p class="hint">@L["Stats_WithoutTeams", summary.MatchesWithoutTeams]</p>
++                }
++            </div>
++
++            <div class="card">
++                <h2>@L["Stats_Mine"]</h2>
++                @if (_history.OwnPlayerId is { } ownId)
++                {
++                    <StatsGrid Summary="summary" PlayerId="ownId" />
++                }
++                else
++                {
++                    <p>@L["Stats_NoProfile"]</p>
++                    <a class="button button--small button--ghost" href="profil">@L["Profile_Create"]</a>
++                }
++            </div>
++
++            <h2 class="lineup__title">@L["Stats_Ranking"]</h2>
++            <fieldset class="segmented stats-criterion">
++                <legend class="sr-only">@L["Stats_RankBy"]</legend>
++                <label class="segmented__option">
++                    <input type="radio" name="stats-ranking" checked="@(State.Ranking == RankingCriterion.Wins)"
++                           @onchange="() => State.Ranking = RankingCriterion.Wins" />
++                    <span>@L["Stats_Wins"]</span>
++                </label>
++                <label class="segmented__option">
++                    <input type="radio" name="stats-ranking" checked="@(State.Ranking == RankingCriterion.Goals)"
++                           @onchange="() => State.Ranking = RankingCriterion.Goals" />
++                    <span>@L["Stats_Goals"]</span>
++                </label>
++            </fieldset>
++
++            if (ranking.Count == 0)
++            {
++                <p class="hint list-none" role="status">@L["Stats_NobodyPlayed"]</p>
++            }
++            else
++            {
++                if (State.Ranking == RankingCriterion.Goals && ranking.All(entry => entry.Stats.Goals == 0))
++                {
++                    <p class="hint list-none" role="status">@L["Stats_NoScorers"]</p>
++                }
++
++                <ol class="card ranking">
++                    @foreach (var entry in ranking)
++                    {
++                        var stats = entry.Stats;
++                        <li @key="entry.Player.Id">
++                            <a class="ranking__link" href="statistiques/joueurs/@entry.Player.Id">
++                                <span class="ranking__rank">@entry.Rank</span>
++                                <span class="ranking__player">
++                                    <span class="ranking__name">
++                                        <span dir="auto">@entry.Player.Name</span>
++                                        @if (entry.Player.ProfileId is not null)
++                                        {
++                                            <span class="badge">@L["Players_Me"]</span>
++                                        }
++                                        @if (entry.Player.IsArchived)
++                                        {
++                                            <span class="badge">@L["Squad_Archived"]</span>
++                                        }
++                                    </span>
++                                    <span class="ranking__details">@L["Stats_RowResults", stats.Played, stats.Wins, stats.Draws, stats.Losses]</span>
++                                    <span class="ranking__details">@L["Stats_RowEvents", stats.Goals, stats.Assists]</span>
++                                </span>
++                                @* Déjà dit par le détail : ce grand chiffre ne sert qu'à lire le classement d'un coup d'œil. *@
++                                <span class="ranking__value" aria-hidden="true">
++                                    @(State.Ranking == RankingCriterion.Goals ? stats.Goals : stats.Wins)
++                                </span>
++                            </a>
++                        </li>
++                    }
++                </ol>
++            }
++        }
++    }
++</section>
++
++@code {
++    private StatsHistory? _history;
++    private bool _loadFailed;
++
++    protected override async Task OnInitializedAsync()
++    {
++        try
++        {
++            // Lu une seule fois : la période et le classement se calculent ensuite en mémoire.
++            _history = await Service.GetAsync();
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine(exception);
++            _loadFailed = true;
++        }
++    }
++}
+diff --git a/src/AlFariq.UI/Resources/DateInput.cs b/src/AlFariq.UI/Resources/DateInput.cs
+new file mode 100644
+index 0000000..0033b52
+--- /dev/null
++++ b/src/AlFariq.UI/Resources/DateInput.cs
+@@ -0,0 +1,18 @@
++using System.Globalization;
++
++namespace AlFariq.UI.Resources;
++
++/// <summary>La valeur d'un champ <c>type="date"</c>, toujours au format année-mois-jour.</summary>
++public static class DateInput
++{
++    private const string Format = "yyyy-MM-dd";
++
++    public static string Value(DateOnly? date) => date?.ToString(Format, CultureInfo.InvariantCulture) ?? "";
++
++    /// <summary>La date saisie ; null si le champ est vide ou incomplet.</summary>
++    public static DateOnly? Parse(object? value) =>
++        DateOnly.TryParseExact(
++            value as string, Format, CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)
++            ? date
++            : null;
++}
+diff --git a/src/AlFariq.UI/Resources/Strings.resx b/src/AlFariq.UI/Resources/Strings.resx
+index 5c1e46a..119cce3 100644
+--- a/src/AlFariq.UI/Resources/Strings.resx
++++ b/src/AlFariq.UI/Resources/Strings.resx
+@@ -375,4 +375,37 @@
+   <data name="Cancel_Confirm" xml:space="preserve"><value>Confirmer l'annulation</value></data>
+   <data name="Cancel_Keep" xml:space="preserve"><value>Garder le match</value></data>
+   <data name="Cancel_Restore" xml:space="preserve"><value>Rétablir le match</value></data>
++  <data name="Stats_Title" xml:space="preserve"><value>Statistiques</value></data>
++  <data name="Stats_PlayerTitle" xml:space="preserve"><value>Statistiques du joueur</value></data>
++  <data name="Stats_Empty" xml:space="preserve"><value>Les statistiques apparaissent dès qu'un match a un résultat.</value></data>
++  <data name="Stats_SeeMatches" xml:space="preserve"><value>Voir les matchs</value></data>
++  <data name="Stats_SeePlayer" xml:space="preserve"><value>Voir ses statistiques</value></data>
++  <data name="Stats_SeeSheet" xml:space="preserve"><value>Voir la fiche du joueur</value></data>
++  <data name="Stats_Back" xml:space="preserve"><value>Voir le classement</value></data>
++  <data name="Stats_Period" xml:space="preserve"><value>Période</value></data>
++  <data name="Stats_PeriodAll" xml:space="preserve"><value>Depuis le début</value></data>
++  <data name="Stats_PeriodMonth" xml:space="preserve"><value>Ce mois-ci</value></data>
++  <data name="Stats_PeriodSeason" xml:space="preserve"><value>Cette saison</value></data>
++  <data name="Stats_PeriodCustom" xml:space="preserve"><value>Dates au choix</value></data>
++  <data name="Stats_From" xml:space="preserve"><value>Du</value></data>
++  <data name="Stats_To" xml:space="preserve"><value>Au</value></data>
++  <data name="Stats_PeriodRange" xml:space="preserve"><value>Du {0} au {1}.</value></data>
++  <data name="Stats_PeriodReversed" xml:space="preserve"><value>La date de début est après la date de fin.</value></data>
++  <data name="Stats_MatchCount" xml:space="preserve"><value>Matchs terminés pris en compte : {0}</value></data>
++  <data name="Stats_WithoutTeams" xml:space="preserve"><value>Matchs terminés sans équipes, non comptés : {0}. Compose leurs équipes pour les inclure.</value></data>
++  <data name="Stats_Mine" xml:space="preserve"><value>Mes statistiques</value></data>
++  <data name="Stats_NoProfile" xml:space="preserve"><value>Crée ton profil, puis ajoute-toi à tes matchs pour suivre tes statistiques.</value></data>
++  <data name="Stats_Played" xml:space="preserve"><value>Joués</value></data>
++  <data name="Stats_Wins" xml:space="preserve"><value>Victoires</value></data>
++  <data name="Stats_Draws" xml:space="preserve"><value>Nuls</value></data>
++  <data name="Stats_Losses" xml:space="preserve"><value>Défaites</value></data>
++  <data name="Stats_Goals" xml:space="preserve"><value>Buts</value></data>
++  <data name="Stats_Assists" xml:space="preserve"><value>Passes</value></data>
++  <data name="Stats_Attendance" xml:space="preserve"><value>Présence : {0} % ({1} sur {2}).</value></data>
++  <data name="Stats_Ranking" xml:space="preserve"><value>Classement</value></data>
++  <data name="Stats_RankBy" xml:space="preserve"><value>Classer par</value></data>
++  <data name="Stats_NobodyPlayed" xml:space="preserve"><value>Personne n'a joué de match terminé sur cette période.</value></data>
++  <data name="Stats_NoScorers" xml:space="preserve"><value>Aucun buteur saisi sur cette période.</value></data>
++  <data name="Stats_RowResults" xml:space="preserve"><value>Joués {0} · V {1} · N {2} · D {3}</value></data>
++  <data name="Stats_RowEvents" xml:space="preserve"><value>Buts {0} · Passes {1}</value></data>
+ </root>
+diff --git a/src/AlFariq.UI/Services/StatsFilterState.cs b/src/AlFariq.UI/Services/StatsFilterState.cs
+new file mode 100644
+index 0000000..6d189c4
+--- /dev/null
++++ b/src/AlFariq.UI/Services/StatsFilterState.cs
+@@ -0,0 +1,22 @@
++using AlFariq.Domain;
++
++namespace AlFariq.UI.Services;
++
++/// <summary>
++/// La période et le classement choisis (US-014), communs aux écrans de statistiques et gardés tant que l'application
++/// est ouverte. Rien n'est enregistré sur l'appareil.
++/// </summary>
++public sealed class StatsFilterState
++{
++    public PeriodKind Period { get; set; } = PeriodKind.All;
++
++    /// <summary>Début des dates au choix.</summary>
++    public DateOnly? From { get; set; }
++
++    /// <summary>Fin des dates au choix.</summary>
++    public DateOnly? To { get; set; }
++
++    public RankingCriterion Ranking { get; set; } = RankingCriterion.Wins;
++
++    public StatsPeriod PeriodAt(DateOnly today) => StatsPeriod.Of(Period, today, From, To);
++}
+diff --git a/src/AlFariq.UI/wwwroot/css/app.css b/src/AlFariq.UI/wwwroot/css/app.css
+index b1b8252..b46e506 100644
+--- a/src/AlFariq.UI/wwwroot/css/app.css
++++ b/src/AlFariq.UI/wwwroot/css/app.css
+@@ -367,19 +367,22 @@ h1:focus {
+ /* ---------- Historique (US-013) ---------- */
+ 
+ /* Côte à côte dès que l'écran le permet, l'un sous l'autre à 320 px. */
+-.match-search {
++.match-search,
++.period-dates {
+   display: grid;
+   grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+   gap: 0.75rem;
+   margin-top: var(--gutter);
+ }
+ 
+-.match-search .field {
++.match-search .field,
++.period-dates .field {
+   min-width: 0;
+   margin: 0;
+ }
+ 
+-.match-search input {
++.match-search input,
++.period-dates input {
+   min-width: 0;
+ }
+ 
+@@ -1190,6 +1193,85 @@ h1:focus {
+   font-weight: 600;
+ }
+ 
++/* ---------- Statistiques (US-014) ---------- */
++
++.segmented.stats-criterion {
++  margin-top: 0.5rem;
++}
++
++.stats-grid {
++  display: grid;
++  grid-template-columns: repeat(3, minmax(0, 1fr));
++  gap: 0.75rem;
++  margin: 0 0 0.75rem;
++  text-align: center;
++}
++
++.stats-grid dt {
++  color: var(--color-muted);
++  font-size: 0.875rem;
++}
++
++.stats-grid dd {
++  margin: 0;
++  font-size: 1.75rem;
++  font-weight: 700;
++}
++
++.ranking {
++  margin-bottom: 0;
++  padding-block: 0;
++  list-style: none;
++}
++
++.ranking li + li {
++  border-top: 1px solid var(--color-border);
++}
++
++.ranking__link {
++  display: flex;
++  align-items: center;
++  gap: 0.75rem;
++  min-height: 44px;
++  padding: 0.75rem 0;
++  color: inherit;
++  text-decoration: none;
++}
++
++.ranking__rank {
++  flex: none;
++  min-width: 2ch;
++  font-weight: 700;
++  text-align: center;
++}
++
++.ranking__player {
++  display: flex;
++  flex: 1;
++  flex-direction: column;
++  min-width: 0;
++}
++
++.ranking__name {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  gap: 0.5rem;
++  font-weight: 600;
++  overflow-wrap: anywhere;
++}
++
++.ranking__details {
++  color: var(--color-muted);
++  font-size: 0.875rem;
++}
++
++.ranking__value {
++  flex: none;
++  font-size: 1.5rem;
++  font-weight: 700;
++}
++
+ /* ---------- Choix du thème ---------- */
+ 
+ .segmented {
+diff --git a/tests/AlFariq.Client.Core.Tests/StatisticsServiceTests.cs b/tests/AlFariq.Client.Core.Tests/StatisticsServiceTests.cs
+new file mode 100644
+index 0000000..de69768
+--- /dev/null
++++ b/tests/AlFariq.Client.Core.Tests/StatisticsServiceTests.cs
+@@ -0,0 +1,123 @@
++using AlFariq.Application;
++using AlFariq.Domain;
++using Microsoft.Extensions.DependencyInjection;
++
++namespace AlFariq.Client.Core.Tests;
++
++/// <summary>Statistiques (US-014) calculées à partir de ce qui est réellement enregistré.</summary>
++public sealed class StatisticsServiceTests : IDisposable
++{
++    private static readonly MatchInput Evening = new(new DateOnly(2026, 11, 20), new TimeOnly(20, 0), 5);
++
++    private readonly FakeClock _clock = new();
++    private readonly ServiceProvider _app;
++
++    public StatisticsServiceTests() => _app = MatchTestHost.Create(_clock);
++
++    public void Dispose() => _app.Dispose();
++
++    private StatisticsService Statistics => _app.GetRequiredService<StatisticsService>();
++
++    private MatchService Matches => _app.GetRequiredService<MatchService>();
++
++    private SquadService Squads => _app.GetRequiredService<SquadService>();
++
++    private LineupService Lineups => _app.GetRequiredService<LineupService>();
++
++    private ResultService Results => _app.GetRequiredService<ResultService>();
++
++    private async Task<Guid> NewMatchAsync() => (await Matches.CreateAsync(Evening)).Id;
++
++    private async Task<Guid> JoinAsync(Guid match, string name, TeamSide? side = TeamSide.A)
++    {
++        var player = (await Squads.AddNewPlayerAsync(match, name)).Id;
++        await Lineups.AssignAsync(match, player, side);
++        return player;
++    }
++
++    // Les écritures successives ont des dates distinctes, comme sur un appareil.
++    private async Task SaveAsync(Guid match, int a, int b, params PlayerTally[] players)
++    {
++        _clock.Advance(TimeSpan.FromSeconds(1));
++        await Results.SaveAsync(match, new ResultInput(a, b, players));
++    }
++
++    private async Task<StatsSummary> SummaryAsync() =>
++        StatsCalculator.Compute((await Statistics.GetAsync()).Matches, new StatsPeriod(), TimeZoneInfo.Utc);
++
++    [Fact]
++    public async Task The_statistics_come_from_the_teams_the_score_and_the_scorers()
++    {
++        var match = await NewMatchAsync();
++        var sami = await JoinAsync(match, "Sami");
++        var alice = await JoinAsync(match, "Alice", TeamSide.B);
++        var karim = await JoinAsync(match, "Karim", side: null);
++        await SaveAsync(match, 2, 0, new PlayerTally(sami, Goals: 2, Assists: 1));
++
++        var summary = await SummaryAsync();
++
++        Assert.Equal(new PlayerStats(sami, 1, 1, 0, 0, 2, 1), summary.For(sami));
++        Assert.Equal(new PlayerStats(alice, 1, 0, 0, 1), summary.For(alice));
++        // Sans équipe, on n'a pas joué (RG-STA-04).
++        Assert.False(summary.Players.ContainsKey(karim));
++    }
++
++    [Fact]
++    public async Task A_corrected_result_changes_the_statistics()
++    {
++        var match = await NewMatchAsync();
++        var sami = await JoinAsync(match, "Sami");
++        await SaveAsync(match, 3, 0, new PlayerTally(sami, Goals: 3));
++
++        await SaveAsync(match, 0, 1, new PlayerTally(sami));
++
++        Assert.Equal(new PlayerStats(sami, 1, 0, 0, 1), (await SummaryAsync()).For(sami));
++    }
++
++    [Fact]
++    public async Task Unfinished_cancelled_cleared_and_deleted_matches_are_left_out()
++    {
++        var planned = await NewMatchAsync();
++        await JoinAsync(planned, "Sami");
++        await Matches.CancelAsync(await NewMatchAsync());
++        var cleared = await NewMatchAsync();
++        await JoinAsync(cleared, "Alice");
++        await SaveAsync(cleared, 1, 0);
++        await Results.ClearAsync(cleared);
++        var deleted = await NewMatchAsync();
++        await JoinAsync(deleted, "Karim");
++        await SaveAsync(deleted, 1, 0);
++        await Matches.DeleteAsync(deleted);
++
++        Assert.Empty((await Statistics.GetAsync()).Matches);
++    }
++
++    [Fact]
++    public async Task A_player_who_left_the_match_loses_its_goals_and_an_archived_one_keeps_them()
++    {
++        var match = await NewMatchAsync();
++        var sami = await JoinAsync(match, "Sami");
++        var alice = await JoinAsync(match, "Alice");
++        await SaveAsync(match, 2, 0, new PlayerTally(sami, Goals: 1), new PlayerTally(alice, Goals: 1));
++
++        await Squads.SetSelectedAsync(match, sami, selected: false);
++        await _app.GetRequiredService<PlayerService>().SetArchivedAsync(alice, archived: true);
++
++        var summary = await SummaryAsync();
++        Assert.False(summary.Players.ContainsKey(sami));
++        Assert.Equal(1, summary.For(alice).Goals);
++        Assert.NotNull((await Statistics.GetAsync()).Find(alice));
++    }
++
++    [Fact]
++    public async Task The_own_player_is_the_one_of_the_profile()
++    {
++        await _app.GetRequiredService<PlayerService>().AddAsync(new PlayerInput("Alice"));
++        Assert.Null((await Statistics.GetAsync()).OwnPlayerId);
++
++        await _app.GetRequiredService<ProfileService>().SaveAsync(new ProfileInput("Sami"));
++
++        var history = await Statistics.GetAsync();
++        Assert.Equal("Sami", history.Find(history.OwnPlayerId!.Value)!.Name);
++    }
++}
+diff --git a/tests/AlFariq.Domain.Tests/StatsCalculatorTests.cs b/tests/AlFariq.Domain.Tests/StatsCalculatorTests.cs
+new file mode 100644
+index 0000000..59eaf9e
+--- /dev/null
++++ b/tests/AlFariq.Domain.Tests/StatsCalculatorTests.cs
+@@ -0,0 +1,146 @@
++namespace AlFariq.Domain.Tests;
++
++public class StatsCalculatorTests
++{
++    private static readonly Player Alice = new() { Name = "Alice" };
++    private static readonly Player Karim = new() { Name = "Karim" };
++    private static readonly Player Sami = new() { Name = "Sami" };
++
++    private static Appearance On(Player player, TeamSide side, int goals = 0, int assists = 0) =>
++        new(player.Id, side, goals, assists);
++
++    private static FinishedMatch Played(int scoreA, int scoreB, params Appearance[] appearances) =>
++        PlayedOn(new DateOnly(2026, 11, 20), scoreA, scoreB, appearances);
++
++    private static FinishedMatch PlayedOn(DateOnly day, int scoreA, int scoreB, params Appearance[] appearances) =>
++        new(
++            new Match
++            {
++                StartsAt = new DateTimeOffset(day.ToDateTime(new TimeOnly(20, 0)), TimeSpan.Zero),
++                Status = MatchStatus.Finished,
++            },
++            new MatchScore(scoreA, scoreB),
++            appearances);
++
++    private static StatsSummary Compute(params FinishedMatch[] matches) =>
++        StatsCalculator.Compute(matches, new StatsPeriod(), TimeZoneInfo.Utc);
++
++    [Fact]
++    public void Wins_draws_losses_goals_and_assists_add_up()
++    {
++        var summary = Compute(
++            Played(3, 1, On(Sami, TeamSide.A, goals: 2, assists: 1), On(Alice, TeamSide.B, goals: 1)),
++            Played(0, 2, On(Sami, TeamSide.A), On(Alice, TeamSide.B)),
++            Played(2, 2, On(Sami, TeamSide.B, goals: 1), On(Alice, TeamSide.A)));
++
++        Assert.Equal(3, summary.Matches);
++        Assert.Equal(new PlayerStats(Sami.Id, 3, 1, 1, 1, 3, 1), summary.For(Sami.Id));
++        Assert.Equal(new PlayerStats(Alice.Id, 3, 1, 1, 1, 1, 0), summary.For(Alice.Id));
++    }
++
++    [Theory]
++    [InlineData(MatchStatus.Planned)]
++    [InlineData(MatchStatus.Cancelled)]
++    public void Only_finished_matches_count(MatchStatus status)
++    {
++        var match = Played(1, 0, On(Sami, TeamSide.A, goals: 1));
++        match.Match.Status = status;
++
++        var summary = Compute(match);
++
++        Assert.Equal(0, summary.Matches);
++        Assert.Empty(summary.Players);
++    }
++
++    [Fact]
++    public void A_match_without_teams_is_reported_apart_and_does_not_lower_attendance()
++    {
++        var summary = Compute(Played(1, 0, On(Sami, TeamSide.A)), Played(4, 4));
++
++        Assert.Equal(1, summary.Matches);
++        Assert.Equal(1, summary.MatchesWithoutTeams);
++        Assert.Equal(100, summary.AttendancePercent(Sami.Id));
++    }
++
++    [Fact]
++    public void Attendance_is_the_share_of_the_matches_played()
++    {
++        var summary = Compute(
++            Played(1, 0, On(Sami, TeamSide.A), On(Alice, TeamSide.B)),
++            Played(1, 0, On(Sami, TeamSide.A)),
++            Played(1, 0, On(Sami, TeamSide.A)));
++
++        Assert.Equal(33, summary.AttendancePercent(Alice.Id));
++        Assert.Equal(0, summary.AttendancePercent(Karim.Id));
++        Assert.Equal(new PlayerStats(Karim.Id), summary.For(Karim.Id));
++    }
++
++    [Fact]
++    public void Without_a_match_there_is_no_attendance()
++    {
++        Assert.Null(Compute().AttendancePercent(Sami.Id));
++    }
++
++    [Fact]
++    public void The_period_keeps_both_of_its_ends()
++    {
++        FinishedMatch[] matches =
++        [
++            PlayedOn(new DateOnly(2026, 9, 30), 1, 0, On(Sami, TeamSide.A, goals: 1)),
++            PlayedOn(new DateOnly(2026, 10, 1), 1, 0, On(Sami, TeamSide.A, goals: 2)),
++            PlayedOn(new DateOnly(2026, 10, 31), 1, 0, On(Sami, TeamSide.A, goals: 4)),
++            PlayedOn(new DateOnly(2026, 11, 1), 1, 0, On(Sami, TeamSide.A, goals: 8)),
++        ];
++        var october = new StatsPeriod(new DateOnly(2026, 10, 1), new DateOnly(2026, 10, 31));
++
++        var summary = StatsCalculator.Compute(matches, october, TimeZoneInfo.Utc);
++
++        Assert.Equal(2, summary.Matches);
++        Assert.Equal(6, summary.For(Sami.Id).Goals);
++    }
++
++    [Fact]
++    public void The_period_uses_the_date_displayed_in_the_time_zone()
++    {
++        var zone = TimeZoneInfo.FindSystemTimeZoneById("Europe/Paris");
++        var match = Played(1, 0, On(Sami, TeamSide.A));
++        // Le 30 septembre à 23 h 30 UTC, on est déjà en octobre à Paris.
++        match.Match.StartsAt = new DateTimeOffset(2026, 9, 30, 23, 30, 0, TimeSpan.Zero);
++        var october = new StatsPeriod(From: new DateOnly(2026, 10, 1));
++
++        Assert.Equal(1, StatsCalculator.Compute([match], october, zone).Matches);
++        Assert.Equal(0, StatsCalculator.Compute([match], october, TimeZoneInfo.Utc).Matches);
++    }
++
++    private static IEnumerable<(int Rank, string Name)> Places(IEnumerable<RankedPlayer> ranking) =>
++        ranking.Select(entry => (entry.Rank, entry.Player.Name));
++
++    [Fact]
++    public void Players_are_ranked_by_wins_or_by_goals()
++    {
++        var summary = Compute(
++            Played(2, 3, On(Sami, TeamSide.A), On(Alice, TeamSide.B, goals: 3)),
++            Played(1, 0, On(Sami, TeamSide.A, goals: 1), On(Alice, TeamSide.B)),
++            Played(2, 0, On(Sami, TeamSide.A), On(Alice, TeamSide.B)));
++        Player[] players = [Alice, Karim, Sami];
++
++        var byWins = StatsCalculator.Rank(summary, players, RankingCriterion.Wins);
++        var byGoals = StatsCalculator.Rank(summary, players, RankingCriterion.Goals);
++
++        // Karim n'a pas joué : il n'est pas classé.
++        Assert.Equal(new[] { (1, "Sami"), (2, "Alice") }, Places(byWins));
++        Assert.Equal(new[] { (1, "Alice"), (2, "Sami") }, Places(byGoals));
++    }
++
++    [Fact]
++    public void With_equal_wins_fewer_matches_rank_higher_and_equals_share_a_place()
++    {
++        var summary = Compute(
++            Played(1, 0, On(Sami, TeamSide.A), On(Karim, TeamSide.A), On(Alice, TeamSide.A)),
++            Played(0, 1, On(Alice, TeamSide.A)));
++
++        var ranking = StatsCalculator.Rank(summary, [Sami, Karim, Alice], RankingCriterion.Wins);
++
++        Assert.Equal(new[] { (1, "Karim"), (1, "Sami"), (3, "Alice") }, Places(ranking));
++    }
++}
+diff --git a/tests/AlFariq.Domain.Tests/StatsPeriodTests.cs b/tests/AlFariq.Domain.Tests/StatsPeriodTests.cs
+new file mode 100644
+index 0000000..d57f5f8
+--- /dev/null
++++ b/tests/AlFariq.Domain.Tests/StatsPeriodTests.cs
+@@ -0,0 +1,56 @@
++namespace AlFariq.Domain.Tests;
++
++public class StatsPeriodTests
++{
++    private static readonly DateOnly Today = new(2026, 11, 28);
++
++    [Fact]
++    public void All_matches_every_day()
++    {
++        var period = StatsPeriod.Of(PeriodKind.All, Today, from: Today, to: Today);
++
++        Assert.Equal(new StatsPeriod(), period);
++        Assert.True(period.Contains(DateOnly.MinValue));
++        Assert.True(period.Contains(DateOnly.MaxValue));
++    }
++
++    [Fact]
++    public void The_month_goes_from_its_first_to_its_last_day()
++    {
++        var period = StatsPeriod.Of(PeriodKind.Month, new DateOnly(2028, 2, 10));
++
++        Assert.Equal(new StatsPeriod(new DateOnly(2028, 2, 1), new DateOnly(2028, 2, 29)), period);
++    }
++
++    [Theory]
++    [InlineData("2026-07-01", 2026)]
++    [InlineData("2026-11-28", 2026)]
++    [InlineData("2027-06-30", 2026)]
++    [InlineData("2027-07-01", 2027)]
++    public void The_season_runs_from_july_to_june(string day, int firstYear)
++    {
++        var period = StatsPeriod.Of(PeriodKind.Season, DateOnly.ParseExact(day, "yyyy-MM-dd"));
++
++        Assert.Equal(new StatsPeriod(new DateOnly(firstYear, 7, 1), new DateOnly(firstYear + 1, 6, 30)), period);
++    }
++
++    [Fact]
++    public void Chosen_dates_may_be_open_ended()
++    {
++        var since = StatsPeriod.Of(PeriodKind.Custom, Today, from: Today);
++
++        Assert.True(since.Contains(Today.AddYears(1)));
++        Assert.False(since.Contains(Today.AddDays(-1)));
++        Assert.False(since.IsReversed);
++    }
++
++    [Fact]
++    public void Reversed_dates_match_nothing()
++    {
++        var period = StatsPeriod.Of(PeriodKind.Custom, Today, from: Today, to: Today.AddDays(-1));
++
++        Assert.True(period.IsReversed);
++        Assert.False(period.Contains(Today));
++        Assert.False(period.Contains(Today.AddDays(-1)));
++    }
++}
+diff --git a/tests/AlFariq.Web.Tests/HomePageTests.cs b/tests/AlFariq.Web.Tests/HomePageTests.cs
+index 04d9f6f..fa5af1e 100644
+--- a/tests/AlFariq.Web.Tests/HomePageTests.cs
++++ b/tests/AlFariq.Web.Tests/HomePageTests.cs
+@@ -9,6 +9,7 @@ public class HomePageTests
+     [InlineData("matchs/nouveau", "MatchEdit.razor")]
+     [InlineData("joueurs", "Players.razor")]
+     [InlineData("profil", "MyProfile.razor")]
++    [InlineData("statistiques", "StatsOverview.razor")]
+     public void Home_links_to_a_page_that_exists(string link, string pageFile)
+     {
+         Assert.Contains($"href=\"{link}\"", Page("Home.razor"));

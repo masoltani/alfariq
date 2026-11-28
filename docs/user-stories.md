@@ -223,6 +223,8 @@ Critères d'acceptation :
 - On peut filtrer sur une période.
 - Les statistiques ne prennent en compte que les matchs « Terminés ».
 
+**Note (US-014)** : `/statistiques` (depuis l'accueil et les joueurs) montre « Mes statistiques » puis le classement ; `/statistiques/joueurs/{id}` détaille un joueur. Tout est recalculé à partir des matchs, équipes, scores et buteurs (`StatsCalculator`, `StatisticsService`), sans nouveau magasin. Un joueur a joué s'il est dans une équipe d'un match « Terminé » (RG-STA-04) ; un match terminé sans équipes est signalé et ne compte pas, y compris dans la présence (matchs joués sur matchs comptés). Périodes (RG-STA-05) : depuis le début, mois en cours, saison en cours (1er juillet – 30 juin) ou dates au choix, bornes comprises. Classement par victoires ou par buts ; à égalité, le moins de matchs joués passe devant, puis les ex æquo partagent leur place. Tous les sports sont additionnés.
+
 ### US-015 — Exporter et importer mes données
 En tant qu'utilisateur, je veux sauvegarder toutes mes données dans un fichier et les restaurer afin de ne rien perdre si mon navigateur efface le stockage ou si je change d'appareil.
 Priorité : M — Taille : M — Dépend de : US-002

@@ -1,5 +1,4 @@
 @page "/matchs"
-@using System.Globalization
 @using AlFariq.Application
 @inject IStringLocalizer<Strings> L
 @inject MatchHistoryService History
@@ -53,7 +52,7 @@
                 </div>
                 <div class="field">
                     <label for="match-search-date">@L["Matches_SearchDate"]</label>
-                    <input id="match-search-date" type="date" value="@IsoDate(State.Date)" @onchange="SetDate" />
+                    <input id="match-search-date" type="date" value="@DateInput.Value(State.Date)" @onchange="SetDate" />
                 </div>
             </div>
             if (!criteria.IsEmpty)
@@ -175,13 +174,6 @@
         }
     }
 
-    private static string IsoDate(DateOnly? date) =>
-        date?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "";
-
-    // Un champ date vidé ou incomplet donne un texte vide : le critère disparaît.
-    private void SetDate(ChangeEventArgs e) =>
-        State.Date = DateOnly.TryParseExact(
-            e.Value as string, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)
-            ? date
-            : null;
+    // Un champ date vidé ou incomplet retire le critère.
+    private void SetDate(ChangeEventArgs e) => State.Date = DateInput.Parse(e.Value);
 }

@@ -1,0 +1,137 @@
+@page "/statistiques"
+@using AlFariq.Application
+@inject IStringLocalizer<Strings> L
+@inject StatisticsService Service
+@inject StatsFilterState State
+@inject TimeProvider Clock
+
+<PageTitle>@L["Stats_Title"] · @L["App_Name"]</PageTitle>
+
+<section class="page">
+    <h1>@L["Stats_Title"]</h1>
+
+    @if (_loadFailed)
+    {
+        <div class="card" role="alert">
+            <p>@L["Storage_Unavailable"]</p>
+        </div>
+    }
+    else if (_history is not null)
+    {
+        if (_history.Matches.Count == 0)
+        {
+            <div class="card card--empty">
+                <p>@L["Stats_Empty"]</p>
+            </div>
+            <div class="actions">
+                <a class="button" href="matchs">@L["Stats_SeeMatches"]</a>
+            </div>
+        }
+        else
+        {
+            var today = DateOnly.FromDateTime(MatchSchedule.ToLocal(Clock.GetUtcNow(), Clock.LocalTimeZone));
+            var summary = StatsCalculator.Compute(_history.Matches, State.PeriodAt(today), Clock.LocalTimeZone);
+            var ranking = StatsCalculator.Rank(summary, _history.Players, State.Ranking);
+
+            <PeriodFilter OnChanged="StateHasChanged" />
+
+            <div role="status">
+                <p class="hint">@L["Stats_MatchCount", summary.Matches]</p>
+                @if (summary.MatchesWithoutTeams > 0)
+                {
+                    <p class="hint">@L["Stats_WithoutTeams", summary.MatchesWithoutTeams]</p>
+                }
+            </div>
+
+            <div class="card">
+                <h2>@L["Stats_Mine"]</h2>
+                @if (_history.OwnPlayerId is { } ownId)
+                {
+                    <StatsGrid Summary="summary" PlayerId="ownId" />
+                }
+                else
+                {
+                    <p>@L["Stats_NoProfile"]</p>
+                    <a class="button button--small button--ghost" href="profil">@L["Profile_Create"]</a>
+                }
+            </div>
+
+            <h2 class="lineup__title">@L["Stats_Ranking"]</h2>
+            <fieldset class="segmented stats-criterion">
+                <legend class="sr-only">@L["Stats_RankBy"]</legend>
+                <label class="segmented__option">
+                    <input type="radio" name="stats-ranking" checked="@(State.Ranking == RankingCriterion.Wins)"
+                           @onchange="() => State.Ranking = RankingCriterion.Wins" />
+                    <span>@L["Stats_Wins"]</span>
+                </label>
+                <label class="segmented__option">
+                    <input type="radio" name="stats-ranking" checked="@(State.Ranking == RankingCriterion.Goals)"
+                           @onchange="() => State.Ranking = RankingCriterion.Goals" />
+                    <span>@L["Stats_Goals"]</span>
+                </label>
+            </fieldset>
+
+            if (ranking.Count == 0)
+            {
+                <p class="hint list-none" role="status">@L["Stats_NobodyPlayed"]</p>
+            }
+            else
+            {
+                if (State.Ranking == RankingCriterion.Goals && ranking.All(entry => entry.Stats.Goals == 0))
+                {
+                    <p class="hint list-none" role="status">@L["Stats_NoScorers"]</p>
+                }
+
+                <ol class="card ranking">
+                    @foreach (var entry in ranking)
+                    {
+                        var stats = entry.Stats;
+                        <li @key="entry.Player.Id">
+                            <a class="ranking__link" href="statistiques/joueurs/@entry.Player.Id">
+                                <span class="ranking__rank">@entry.Rank</span>
+                                <span class="ranking__player">
+                                    <span class="ranking__name">
+                                        <span dir="auto">@entry.Player.Name</span>
+                                        @if (entry.Player.ProfileId is not null)
+                                        {
+                                            <span class="badge">@L["Players_Me"]</span>
+                                        }
+                                        @if (entry.Player.IsArchived)
+                                        {
+                                            <span class="badge">@L["Squad_Archived"]</span>
+                                        }
+                                    </span>
+                                    <span class="ranking__details">@L["Stats_RowResults", stats.Played, stats.Wins, stats.Draws, stats.Losses]</span>
+                                    <span class="ranking__details">@L["Stats_RowEvents", stats.Goals, stats.Assists]</span>
+                                </span>
+                                @* Déjà dit par le détail : ce grand chiffre ne sert qu'à lire le classement d'un coup d'œil. *@
+                                <span class="ranking__value" aria-hidden="true">
+                                    @(State.Ranking == RankingCriterion.Goals ? stats.Goals : stats.Wins)
+                                </span>
+                            </a>
+                        </li>
+                    }
+                </ol>
+            }
+        }
+    }
+</section>
+
+@code {
+    private StatsHistory? _history;
+    private bool _loadFailed;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            // Lu une seule fois : la période et le classement se calculent ensuite en mémoire.
+            _history = await Service.GetAsync();
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _loadFailed = true;
+        }
+    }
+}

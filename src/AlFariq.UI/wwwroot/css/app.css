@@ -367,19 +367,22 @@ h1:focus {
 /* ---------- Historique (US-013) ---------- */
 
 /* Côte à côte dès que l'écran le permet, l'un sous l'autre à 320 px. */
-.match-search {
+.match-search,
+.period-dates {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
   gap: 0.75rem;
   margin-top: var(--gutter);
 }
 
-.match-search .field {
+.match-search .field,
+.period-dates .field {
   min-width: 0;
   margin: 0;
 }
 
-.match-search input {
+.match-search input,
+.period-dates input {
   min-width: 0;
 }
 
@@ -1188,6 +1191,85 @@ h1:focus {
 .bottom-nav__item.is-active {
   color: var(--color-primary);
   font-weight: 600;
+}
+
+/* ---------- Statistiques (US-014) ---------- */
+
+.segmented.stats-criterion {
+  margin-top: 0.5rem;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0 0 0.75rem;
+  text-align: center;
+}
+
+.stats-grid dt {
+  color: var(--color-muted);
+  font-size: 0.875rem;
+}
+
+.stats-grid dd {
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 700;
+}
+
+.ranking {
+  margin-bottom: 0;
+  padding-block: 0;
+  list-style: none;
+}
+
+.ranking li + li {
+  border-top: 1px solid var(--color-border);
+}
+
+.ranking__link {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 44px;
+  padding: 0.75rem 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.ranking__rank {
+  flex: none;
+  min-width: 2ch;
+  font-weight: 700;
+  text-align: center;
+}
+
+.ranking__player {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ranking__name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.ranking__details {
+  color: var(--color-muted);
+  font-size: 0.875rem;
+}
+
+.ranking__value {
+  flex: none;
+  font-size: 1.5rem;
+  font-weight: 700;
 }
 
 /* ---------- Choix du thème ---------- */

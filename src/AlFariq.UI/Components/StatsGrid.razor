@@ -1,0 +1,41 @@
+@inject IStringLocalizer<Strings> L
+
+@* Les chiffres d'un joueur sur la période (US-014, RG-STA-02). *@
+<dl class="stats-grid">
+    <div>
+        <dt>@L["Stats_Played"]</dt>
+        <dd>@Totals.Played</dd>
+    </div>
+    <div>
+        <dt>@L["Stats_Wins"]</dt>
+        <dd>@Totals.Wins</dd>
+    </div>
+    <div>
+        <dt>@L["Stats_Draws"]</dt>
+        <dd>@Totals.Draws</dd>
+    </div>
+    <div>
+        <dt>@L["Stats_Losses"]</dt>
+        <dd>@Totals.Losses</dd>
+    </div>
+    <div>
+        <dt>@L["Stats_Goals"]</dt>
+        <dd>@Totals.Goals</dd>
+    </div>
+    <div>
+        <dt>@L["Stats_Assists"]</dt>
+        <dd>@Totals.Assists</dd>
+    </div>
+</dl>
+@if (Summary.AttendancePercent(PlayerId) is { } percent)
+{
+    <p class="hint">@L["Stats_Attendance", percent, Totals.Played, Summary.Matches]</p>
+}
+
+@code {
+    [Parameter, EditorRequired] public StatsSummary Summary { get; set; } = default!;
+
+    [Parameter, EditorRequired] public Guid PlayerId { get; set; }
+
+    private PlayerStats Totals => Summary.For(PlayerId);
+}

@@ -9,6 +9,7 @@ public class HomePageTests
     [InlineData("matchs/nouveau", "MatchEdit.razor")]
     [InlineData("joueurs", "Players.razor")]
     [InlineData("profil", "MyProfile.razor")]
+    [InlineData("statistiques", "StatsOverview.razor")]
     public void Home_links_to_a_page_that_exists(string link, string pageFile)
     {
         Assert.Contains($"href=\"{link}\"", Page("Home.razor"));

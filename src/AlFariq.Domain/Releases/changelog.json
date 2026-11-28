@@ -1,6 +1,36 @@
 {
   "entries": [
     {
+      "version": "0.15.0",
+      "date": "2026-11-28",
+      "changes": [
+        {
+          "type": "added",
+          "text": {
+            "fr": "Statistiques : matchs joués, victoires, nuls, défaites, buts, passes et présence, pour toi et tes joueurs.",
+            "en": "Statistics: matches played, wins, draws, losses, goals, assists and attendance, for you and your players.",
+            "ar": "الإحصائيات: المباريات والانتصارات والتعادلات والهزائم والأهداف والتمريرات الحاسمة ونسبة الحضور، لك وللاعبيك."
+          }
+        },
+        {
+          "type": "added",
+          "text": {
+            "fr": "Classe les joueurs par victoires ou par buts.",
+            "en": "Rank players by wins or by goals.",
+            "ar": "رتّب اللاعبين حسب الانتصارات أو الأهداف."
+          }
+        },
+        {
+          "type": "added",
+          "text": {
+            "fr": "Choisis la période : depuis le début, le mois, la saison ou des dates précises.",
+            "en": "Choose the period: all time, this month, this season or specific dates.",
+            "ar": "اختر الفترة: منذ البداية أو هذا الشهر أو هذا الموسم أو تواريخ محددة."
+          }
+        }
+      ]
+    },
+    {
       "version": "0.14.0",
       "date": "2026-11-28",
       "changes": [

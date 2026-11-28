@@ -375,4 +375,37 @@
   <data name="Cancel_Confirm" xml:space="preserve"><value>Confirmer l'annulation</value></data>
   <data name="Cancel_Keep" xml:space="preserve"><value>Garder le match</value></data>
   <data name="Cancel_Restore" xml:space="preserve"><value>Rétablir le match</value></data>
+  <data name="Stats_Title" xml:space="preserve"><value>Statistiques</value></data>
+  <data name="Stats_PlayerTitle" xml:space="preserve"><value>Statistiques du joueur</value></data>
+  <data name="Stats_Empty" xml:space="preserve"><value>Les statistiques apparaissent dès qu'un match a un résultat.</value></data>
+  <data name="Stats_SeeMatches" xml:space="preserve"><value>Voir les matchs</value></data>
+  <data name="Stats_SeePlayer" xml:space="preserve"><value>Voir ses statistiques</value></data>
+  <data name="Stats_SeeSheet" xml:space="preserve"><value>Voir la fiche du joueur</value></data>
+  <data name="Stats_Back" xml:space="preserve"><value>Voir le classement</value></data>
+  <data name="Stats_Period" xml:space="preserve"><value>Période</value></data>
+  <data name="Stats_PeriodAll" xml:space="preserve"><value>Depuis le début</value></data>
+  <data name="Stats_PeriodMonth" xml:space="preserve"><value>Ce mois-ci</value></data>
+  <data name="Stats_PeriodSeason" xml:space="preserve"><value>Cette saison</value></data>
+  <data name="Stats_PeriodCustom" xml:space="preserve"><value>Dates au choix</value></data>
+  <data name="Stats_From" xml:space="preserve"><value>Du</value></data>
+  <data name="Stats_To" xml:space="preserve"><value>Au</value></data>
+  <data name="Stats_PeriodRange" xml:space="preserve"><value>Du {0} au {1}.</value></data>
+  <data name="Stats_PeriodReversed" xml:space="preserve"><value>La date de début est après la date de fin.</value></data>
+  <data name="Stats_MatchCount" xml:space="preserve"><value>Matchs terminés pris en compte : {0}</value></data>
+  <data name="Stats_WithoutTeams" xml:space="preserve"><value>Matchs terminés sans équipes, non comptés : {0}. Compose leurs équipes pour les inclure.</value></data>
+  <data name="Stats_Mine" xml:space="preserve"><value>Mes statistiques</value></data>
+  <data name="Stats_NoProfile" xml:space="preserve"><value>Crée ton profil, puis ajoute-toi à tes matchs pour suivre tes statistiques.</value></data>
+  <data name="Stats_Played" xml:space="preserve"><value>Joués</value></data>
+  <data name="Stats_Wins" xml:space="preserve"><value>Victoires</value></data>
+  <data name="Stats_Draws" xml:space="preserve"><value>Nuls</value></data>
+  <data name="Stats_Losses" xml:space="preserve"><value>Défaites</value></data>
+  <data name="Stats_Goals" xml:space="preserve"><value>Buts</value></data>
+  <data name="Stats_Assists" xml:space="preserve"><value>Passes</value></data>
+  <data name="Stats_Attendance" xml:space="preserve"><value>Présence : {0} % ({1} sur {2}).</value></data>
+  <data name="Stats_Ranking" xml:space="preserve"><value>Classement</value></data>
+  <data name="Stats_RankBy" xml:space="preserve"><value>Classer par</value></data>
+  <data name="Stats_NobodyPlayed" xml:space="preserve"><value>Personne n'a joué de match terminé sur cette période.</value></data>
+  <data name="Stats_NoScorers" xml:space="preserve"><value>Aucun buteur saisi sur cette période.</value></data>
+  <data name="Stats_RowResults" xml:space="preserve"><value>Joués {0} · V {1} · N {2} · D {3}</value></data>
+  <data name="Stats_RowEvents" xml:space="preserve"><value>Buts {0} · Passes {1}</value></data>
 </root>

@@ -1,0 +1,75 @@
+@page "/statistiques/joueurs/{Id:guid}"
+@using AlFariq.Application
+@inject IStringLocalizer<Strings> L
+@inject StatisticsService Service
+@inject StatsFilterState State
+@inject TimeProvider Clock
+
+<PageTitle>@L["Stats_PlayerTitle"] · @L["App_Name"]</PageTitle>
+
+<section class="page">
+    <h1>@L["Stats_PlayerTitle"]</h1>
+
+    @if (_loadFailed)
+    {
+        <div class="card" role="alert">
+            <p>@L["Storage_Unavailable"]</p>
+        </div>
+    }
+    else if (_history is not null)
+    {
+        var player = _history.Find(Id);
+
+        if (player is null)
+        {
+            <div class="card card--empty">
+                <p>@L["Player_NotFound"]</p>
+            </div>
+        }
+        else
+        {
+            var today = DateOnly.FromDateTime(MatchSchedule.ToLocal(Clock.GetUtcNow(), Clock.LocalTimeZone));
+            var summary = StatsCalculator.Compute(_history.Matches, State.PeriodAt(today), Clock.LocalTimeZone);
+
+            <p class="lead user-text" dir="auto">@player.Name</p>
+
+            <PeriodFilter OnChanged="StateHasChanged" />
+
+            <div class="card" role="status">
+                <StatsGrid Summary="summary" PlayerId="Id" />
+            </div>
+            if (summary.MatchesWithoutTeams > 0)
+            {
+                <p class="hint">@L["Stats_WithoutTeams", summary.MatchesWithoutTeams]</p>
+            }
+        }
+
+        <div class="actions">
+            <a class="button button--ghost" href="statistiques">@L["Stats_Back"]</a>
+            @if (player is { IsDeleted: false })
+            {
+                <a class="button button--ghost" href="joueurs/@Id">@L["Stats_SeeSheet"]</a>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    private StatsHistory? _history;
+    private bool _loadFailed;
+
+    [Parameter] public Guid Id { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _history = await Service.GetAsync();
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            _loadFailed = true;
+        }
+    }
+}

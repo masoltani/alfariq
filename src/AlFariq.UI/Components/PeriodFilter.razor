@@ -1,0 +1,64 @@
+@using System.Globalization
+@inject IStringLocalizer<Strings> L
+@inject StatsFilterState State
+@inject TimeProvider Clock
+
+@* La période des statistiques (US-014) : elle s'applique à tous les chiffres affichés. *@
+<div class="field">
+    <label for="stats-period">@L["Stats_Period"]</label>
+    <select id="stats-period" value="@State.Period.ToString()" @onchange="SetPeriodAsync">
+        <option value="All">@L["Stats_PeriodAll"]</option>
+        <option value="Month">@L["Stats_PeriodMonth"]</option>
+        <option value="Season">@L["Stats_PeriodSeason"]</option>
+        <option value="Custom">@L["Stats_PeriodCustom"]</option>
+    </select>
+</div>
+
+@if (State.Period == PeriodKind.Custom)
+{
+    <div class="period-dates">
+        <div class="field">
+            <label for="stats-from">@L["Stats_From"]</label>
+            <input id="stats-from" type="date" value="@DateInput.Value(State.From)" @onchange="SetFromAsync" />
+        </div>
+        <div class="field">
+            <label for="stats-to">@L["Stats_To"]</label>
+            <input id="stats-to" type="date" value="@DateInput.Value(State.To)" @onchange="SetToAsync" />
+        </div>
+    </div>
+    if (new StatsPeriod(State.From, State.To).IsReversed)
+    {
+        <p class="field__warning" role="alert">@L["Stats_PeriodReversed"]</p>
+    }
+}
+else if (State.Period != PeriodKind.All)
+{
+    var period = State.PeriodAt(
+        DateOnly.FromDateTime(MatchSchedule.ToLocal(Clock.GetUtcNow(), Clock.LocalTimeZone)));
+    <p class="hint">@L["Stats_PeriodRange", Day(period.From), Day(period.To)]</p>
+}
+
+@code {
+    /// <summary>La période a changé : l'écran recalcule ses chiffres.</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private static string Day(DateOnly? date) => date?.ToString("d MMMM yyyy", CultureInfo.CurrentUICulture) ?? "";
+
+    private Task SetPeriodAsync(ChangeEventArgs e)
+    {
+        State.Period = Enum.TryParse<PeriodKind>(e.Value as string, out var kind) ? kind : PeriodKind.All;
+        return OnChanged.InvokeAsync();
+    }
+
+    private Task SetFromAsync(ChangeEventArgs e)
+    {
+        State.From = DateInput.Parse(e.Value);
+        return OnChanged.InvokeAsync();
+    }
+
+    private Task SetToAsync(ChangeEventArgs e)
+    {
+        State.To = DateInput.Parse(e.Value);
+        return OnChanged.InvokeAsync();
+    }
+}

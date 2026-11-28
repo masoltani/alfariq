@@ -17,6 +17,7 @@ public static class DependencyInjection
         services.TryAddSingleton<LineupService>();
         services.TryAddSingleton<ResultService>();
         services.TryAddSingleton<MatchHistoryService>();
+        services.TryAddSingleton<StatisticsService>();
         return services;
     }
 }
