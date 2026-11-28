@@ -212,6 +212,8 @@ Critères d'acceptation :
 - Le détail d'un match affiche équipes, composition, score et buteurs.
 - Un match peut être retrouvé par date ou par nom de joueur.
 
+**Note (US-013)** : la liste `/matchs` filtre les deux onglets à la fois par nom de joueur (partie du nom, sans tenir compte de la casse ni des accents) et par jour affiché (`MatchSearch`, `MatchHistoryService`) ; les joueurs archivés ou supprimés restent trouvables sur leurs matchs (RG-JOU-03 et 04). Le filtre par statut ne propose que les statuts présents dans l'onglet et n'apparaît que s'il y en a au moins deux ; un match passé sans résultat reste « Planifié ». L'onglet et la recherche sont gardés tant que l'application est ouverte (`MatchListState`). La fiche présente la composition comme le partage : formation dès qu'un joueur est placé, titulaires depuis le gardien, puis remplaçants ; le terrain dessiné reste sur son écran. Le filtrage se fait en mémoire, sans index IndexedDB à ce stade.
+
 ### US-014 — Statistiques de base
 En tant qu'utilisateur, je veux voir mes statistiques et celles de mes joueurs (matchs joués, victoires, nuls, défaites, buts) afin de mesurer l'évolution.
 Priorité : S — Taille : M — Dépend de : US-012

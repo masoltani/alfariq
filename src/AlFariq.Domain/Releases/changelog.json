@@ -1,6 +1,36 @@
 {
   "entries": [
     {
+      "version": "0.14.0",
+      "date": "2026-11-28",
+      "changes": [
+        {
+          "type": "added",
+          "text": {
+            "fr": "Retrouve un match par sa date ou par le nom d'un joueur.",
+            "en": "Find a match by its date or by a player's name.",
+            "ar": "اعثر على مباراة بتاريخها أو باسم أحد اللاعبين."
+          }
+        },
+        {
+          "type": "added",
+          "text": {
+            "fr": "Filtre les matchs à venir ou passés par statut.",
+            "en": "Filter upcoming or past matches by status.",
+            "ar": "صفِّ المباريات القادمة أو السابقة حسب حالتها."
+          }
+        },
+        {
+          "type": "changed",
+          "text": {
+            "fr": "La fiche d'un match montre la formation, les postes et les remplaçants de chaque équipe.",
+            "en": "A match page shows each team's formation, positions and substitutes.",
+            "ar": "تعرض صفحة المباراة خطة كل فريق ومراكز لاعبيه واحتياطييه."
+          }
+        }
+      ]
+    },
+    {
       "version": "0.13.0",
       "date": "2026-11-28",
       "changes": [

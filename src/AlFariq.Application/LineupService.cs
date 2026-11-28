@@ -22,6 +22,25 @@ public sealed record TeamLineup(
     /// <summary>Les joueurs de l'équipe sans emplacement (RG-COM-05), triés par nom.</summary>
     public IReadOnlyList<Player> OffPitch =>
         Players.Where(player => OnPitch.Values.All(placed => placed.Id != player.Id)).ToList();
+
+    /// <summary>
+    /// La formation à présenter : celle de l'équipe dès qu'un joueur y est placé (un terrain vide n'apprend rien).
+    /// </summary>
+    public Formation? FilledFormation => OnPitch.Count == 0 ? null : Formation;
+
+    /// <summary>
+    /// Les joueurs à présenter d'abord : avec une formation remplie, ceux du terrain (gardien d'abord) ; sinon toute
+    /// l'équipe.
+    /// </summary>
+    public IReadOnlyList<Player> Starters => FilledFormation is null
+        ? Players
+        : OnPitch.OrderBy(entry => entry.Key).Select(entry => entry.Value).ToList();
+
+    /// <summary>Avec une formation remplie, les joueurs sans emplacement ; sinon aucun.</summary>
+    public IReadOnlyList<Player> Others => FilledFormation is null ? [] : OffPitch;
+
+    /// <summary>Vrai quand chaque emplacement de la formation est occupé : les autres sont des remplaçants.</summary>
+    public bool IsPitchFull => FilledFormation is { } formation && OnPitch.Count == formation.Slots.Count;
 }
 
 /// <summary>La composition d'un match : chaque joueur inscrit figure dans une seule des trois listes.</summary>

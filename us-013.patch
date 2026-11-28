@@ -1,0 +1,932 @@
+diff --git a/Directory.Build.props b/Directory.Build.props
+index 105cf09..b607b1b 100644
+--- a/Directory.Build.props
++++ b/Directory.Build.props
+@@ -6,7 +6,7 @@
+     <Nullable>enable</Nullable>
+     <ImplicitUsings>enable</ImplicitUsings>
+     <AnalysisLevel>latest</AnalysisLevel>
+-    <Version>0.13.0</Version>
++    <Version>0.14.0</Version>
+     <Deterministic>true</Deterministic>
+   </PropertyGroup>
+ 
+diff --git a/docs/user-stories.md b/docs/user-stories.md
+index 225a04d..29f87a4 100644
+--- a/docs/user-stories.md
++++ b/docs/user-stories.md
+@@ -212,6 +212,8 @@ Critères d'acceptation :
+ - Le détail d'un match affiche équipes, composition, score et buteurs.
+ - Un match peut être retrouvé par date ou par nom de joueur.
+ 
++**Note (US-013)** : la liste `/matchs` filtre les deux onglets à la fois par nom de joueur (partie du nom, sans tenir compte de la casse ni des accents) et par jour affiché (`MatchSearch`, `MatchHistoryService`) ; les joueurs archivés ou supprimés restent trouvables sur leurs matchs (RG-JOU-03 et 04). Le filtre par statut ne propose que les statuts présents dans l'onglet et n'apparaît que s'il y en a au moins deux ; un match passé sans résultat reste « Planifié ». L'onglet et la recherche sont gardés tant que l'application est ouverte (`MatchListState`). La fiche présente la composition comme le partage : formation dès qu'un joueur est placé, titulaires depuis le gardien, puis remplaçants ; le terrain dessiné reste sur son écran. Le filtrage se fait en mémoire, sans index IndexedDB à ce stade.
++
+ ### US-014 — Statistiques de base
+ En tant qu'utilisateur, je veux voir mes statistiques et celles de mes joueurs (matchs joués, victoires, nuls, défaites, buts) afin de mesurer l'évolution.
+ Priorité : S — Taille : M — Dépend de : US-012
+diff --git a/src/AlFariq.Application/DependencyInjection.cs b/src/AlFariq.Application/DependencyInjection.cs
+index 6071015..4f0cb30 100644
+--- a/src/AlFariq.Application/DependencyInjection.cs
++++ b/src/AlFariq.Application/DependencyInjection.cs
+@@ -16,6 +16,7 @@ public static class DependencyInjection
+         services.TryAddSingleton<SquadService>();
+         services.TryAddSingleton<LineupService>();
+         services.TryAddSingleton<ResultService>();
++        services.TryAddSingleton<MatchHistoryService>();
+         return services;
+     }
+ }
+diff --git a/src/AlFariq.Application/LineupCard.cs b/src/AlFariq.Application/LineupCard.cs
+index ed2203f..d0262c2 100644
+--- a/src/AlFariq.Application/LineupCard.cs
++++ b/src/AlFariq.Application/LineupCard.cs
+@@ -107,9 +107,9 @@ public static class LineupCardBuilder
+             team.Positions.TryGetValue(player.Id, out var code) ? labels.Position(code) : null);
+ 
+         // Un terrain vide n'apprend rien : sans joueur placé, l'équipe est simplement listée.
+-        if (team.Formation is not { } formation || team.OnPitch.Count == 0)
++        if (team.FilledFormation is not { } formation)
+         {
+-            return new CardTeam(name, team.ColorCode, null, [], team.Players.Select(Listed).ToList(), [], null);
++            return new CardTeam(name, team.ColorCode, null, [], team.Starters.Select(Listed).ToList(), [], null);
+         }
+ 
+         var lines = formation.Lines
+@@ -119,10 +119,10 @@ public static class LineupCardBuilder
+                     team.OnPitch.GetValueOrDefault(slot.Index)?.Name))
+                 .ToList())
+             .ToList();
+-        var placed = team.OnPitch.OrderBy(entry => entry.Key).Select(entry => Listed(entry.Value)).ToList();
+-        var others = team.OffPitch.Select(Listed).ToList();
++        var placed = team.Starters.Select(Listed).ToList();
++        var others = team.Others.Select(Listed).ToList();
+         var othersTitle = others.Count == 0 ? null
+-            : team.OnPitch.Count == formation.Slots.Count ? labels.Substitutes
++            : team.IsPitchFull ? labels.Substitutes
+             : labels.OtherPlayers;
+ 
+         return new CardTeam(name, team.ColorCode, formation.Code, lines, placed, others, othersTitle);
+diff --git a/src/AlFariq.Application/LineupService.cs b/src/AlFariq.Application/LineupService.cs
+index 2fd95ae..083b991 100644
+--- a/src/AlFariq.Application/LineupService.cs
++++ b/src/AlFariq.Application/LineupService.cs
+@@ -22,6 +22,25 @@ public sealed record TeamLineup(
+     /// <summary>Les joueurs de l'équipe sans emplacement (RG-COM-05), triés par nom.</summary>
+     public IReadOnlyList<Player> OffPitch =>
+         Players.Where(player => OnPitch.Values.All(placed => placed.Id != player.Id)).ToList();
++
++    /// <summary>
++    /// La formation à présenter : celle de l'équipe dès qu'un joueur y est placé (un terrain vide n'apprend rien).
++    /// </summary>
++    public Formation? FilledFormation => OnPitch.Count == 0 ? null : Formation;
++
++    /// <summary>
++    /// Les joueurs à présenter d'abord : avec une formation remplie, ceux du terrain (gardien d'abord) ; sinon toute
++    /// l'équipe.
++    /// </summary>
++    public IReadOnlyList<Player> Starters => FilledFormation is null
++        ? Players
++        : OnPitch.OrderBy(entry => entry.Key).Select(entry => entry.Value).ToList();
++
++    /// <summary>Avec une formation remplie, les joueurs sans emplacement ; sinon aucun.</summary>
++    public IReadOnlyList<Player> Others => FilledFormation is null ? [] : OffPitch;
++
++    /// <summary>Vrai quand chaque emplacement de la formation est occupé : les autres sont des remplaçants.</summary>
++    public bool IsPitchFull => FilledFormation is { } formation && OnPitch.Count == formation.Slots.Count;
+ }
+ 
+ /// <summary>La composition d'un match : chaque joueur inscrit figure dans une seule des trois listes.</summary>
+diff --git a/src/AlFariq.Application/MatchHistoryService.cs b/src/AlFariq.Application/MatchHistoryService.cs
+new file mode 100644
+index 0000000..a019627
+--- /dev/null
++++ b/src/AlFariq.Application/MatchHistoryService.cs
+@@ -0,0 +1,44 @@
++using AlFariq.Domain;
++
++namespace AlFariq.Application;
++
++/// <summary>L'historique des matchs (US-013) : chaque match avec ses joueurs, pour le retrouver.</summary>
++public sealed class MatchHistoryService
++{
++    private readonly IRepository<Match> _matches;
++    private readonly IRepository<MatchParticipant> _participants;
++    private readonly IRepository<Player> _players;
++
++    public MatchHistoryService(
++        IRepository<Match> matches,
++        IRepository<MatchParticipant> participants,
++        IRepository<Player> players)
++    {
++        _matches = matches;
++        _participants = participants;
++        _players = players;
++    }
++
++    /// <summary>
++    /// Tous les matchs non supprimés et leurs joueurs. Un joueur archivé ou supprimé reste dans les matchs auxquels
++    /// il a participé (RG-JOU-03 et 04) ; un joueur retiré d'un match n'y figure plus.
++    /// </summary>
++    public async Task<IReadOnlyList<MatchRecord>> ListAsync(CancellationToken cancellationToken = default)
++    {
++        var matches = await _matches.ListAsync(cancellationToken: cancellationToken);
++        var players = (await _players.ListAsync(includeDeleted: true, cancellationToken))
++            .ToDictionary(player => player.Id);
++        var registrations = (await _participants.ListAsync(cancellationToken: cancellationToken))
++            .ToLookup(participant => participant.MatchId, participant => participant.PlayerId);
++
++        return matches
++            .Select(match => new MatchRecord(
++                match,
++                registrations[match.Id]
++                    .Distinct()
++                    .Where(players.ContainsKey)
++                    .Select(id => players[id])
++                    .ToList()))
++            .ToList();
++    }
++}
+diff --git a/src/AlFariq.Domain/Matches/MatchSearch.cs b/src/AlFariq.Domain/Matches/MatchSearch.cs
+new file mode 100644
+index 0000000..a6c425c
+--- /dev/null
++++ b/src/AlFariq.Domain/Matches/MatchSearch.cs
+@@ -0,0 +1,62 @@
++namespace AlFariq.Domain;
++
++/// <summary>Un match et les joueurs qui y sont inscrits.</summary>
++public sealed record MatchRecord(Match Match, IReadOnlyList<Player> Players);
++
++/// <summary>Ce que l'on cherche dans l'historique ; un critère vide ne filtre rien.</summary>
++/// <param name="PlayerName">Tout ou partie du nom d'un joueur inscrit.</param>
++/// <param name="Date">Le jour du match, dans le fuseau d'affichage.</param>
++public sealed record MatchCriteria(string? PlayerName = null, DateOnly? Date = null)
++{
++    public bool IsEmpty => PlayerDirectory.CleanName(PlayerName).Length == 0 && Date is null;
++}
++
++/// <summary>Un match trouvé.</summary>
++/// <param name="Match">Le match.</param>
++/// <param name="NamedPlayers">Les joueurs dont le nom correspond, triés par nom ; vide sans nom cherché.</param>
++public sealed record FoundMatch(Match Match, IReadOnlyList<Player> NamedPlayers);
++
++/// <summary>Retrouver un match (US-013) : par date, par nom de joueur, puis par statut.</summary>
++public static class MatchSearch
++{
++    /// <summary>Les matchs qui répondent à tous les critères, dans l'ordre reçu.</summary>
++    /// <param name="records">Les matchs et leurs joueurs.</param>
++    /// <param name="criteria">Ce que l'on cherche.</param>
++    /// <param name="zone">Le fuseau dans lequel les dates sont affichées.</param>
++    public static IReadOnlyList<FoundMatch> Find(
++        IEnumerable<MatchRecord> records, MatchCriteria criteria, TimeZoneInfo zone)
++    {
++        var name = PlayerDirectory.CleanName(criteria.PlayerName);
++        var found = new List<FoundMatch>();
++        foreach (var record in records)
++        {
++            if (criteria.Date is { } date
++                && DateOnly.FromDateTime(MatchSchedule.ToLocal(record.Match.StartsAt, zone)) != date)
++            {
++                continue;
++            }
++
++            if (name.Length == 0)
++            {
++                found.Add(new FoundMatch(record.Match, []));
++                continue;
++            }
++
++            var named = PlayerDirectory.Search(record.Players, name);
++            if (named.Count > 0)
++            {
++                found.Add(new FoundMatch(record.Match, named));
++            }
++        }
++
++        return found;
++    }
++
++    /// <summary>Les statuts présents dans une liste : eux seuls sont proposés en filtre.</summary>
++    public static IReadOnlyList<MatchStatus> Statuses(IEnumerable<Match> matches) =>
++        matches.Select(match => match.Status).Distinct().Order().ToList();
++
++    /// <summary>Les matchs d'un statut (tous si aucun statut n'est choisi), dans l'ordre reçu.</summary>
++    public static IReadOnlyList<Match> WithStatus(IEnumerable<Match> matches, MatchStatus? status) =>
++        matches.Where(match => status is null || match.Status == status).ToList();
++}
+diff --git a/src/AlFariq.Domain/Releases/changelog.json b/src/AlFariq.Domain/Releases/changelog.json
+index cd21e2f..a57acd1 100644
+--- a/src/AlFariq.Domain/Releases/changelog.json
++++ b/src/AlFariq.Domain/Releases/changelog.json
+@@ -1,5 +1,35 @@
+ {
+   "entries": [
++    {
++      "version": "0.14.0",
++      "date": "2026-11-28",
++      "changes": [
++        {
++          "type": "added",
++          "text": {
++            "fr": "Retrouve un match par sa date ou par le nom d'un joueur.",
++            "en": "Find a match by its date or by a player's name.",
++            "ar": "اعثر على مباراة بتاريخها أو باسم أحد اللاعبين."
++          }
++        },
++        {
++          "type": "added",
++          "text": {
++            "fr": "Filtre les matchs à venir ou passés par statut.",
++            "en": "Filter upcoming or past matches by status.",
++            "ar": "صفِّ المباريات القادمة أو السابقة حسب حالتها."
++          }
++        },
++        {
++          "type": "changed",
++          "text": {
++            "fr": "La fiche d'un match montre la formation, les postes et les remplaçants de chaque équipe.",
++            "en": "A match page shows each team's formation, positions and substitutes.",
++            "ar": "تعرض صفحة المباراة خطة كل فريق ومراكز لاعبيه واحتياطييه."
++          }
++        }
++      ]
++    },
+     {
+       "version": "0.13.0",
+       "date": "2026-11-28",
+diff --git a/src/AlFariq.UI/Components/TeamSheet.razor b/src/AlFariq.UI/Components/TeamSheet.razor
+new file mode 100644
+index 0000000..7c8505a
+--- /dev/null
++++ b/src/AlFariq.UI/Components/TeamSheet.razor
+@@ -0,0 +1,51 @@
++@using AlFariq.Application
++@inject IStringLocalizer<Strings> L
++
++@* La composition d'une équipe sur la fiche d'un match (US-013) : formation, joueurs et postes. *@
++<div>
++    <h3 class="team-heading team-color--@Team.ColorCode">
++        <span class="team-dot" aria-hidden="true"></span>
++        <span class="team-heading__name" dir="auto">@TeamLabels.Name(L, Team.Side, Team.Name)</span>
++    </h3>
++    <p class="hint">@L["Teams_Count", Team.Players.Count]</p>
++    @if (Team.FilledFormation is { } formation)
++    {
++        @* Traits d'union insécables : « 4-2-3-1 » ne se coupe pas dans une colonne étroite. *@
++        var shape = formation.Code.Replace('-', '\u2011');
++        <p class="hint">
++            @L["Match_Formation", formation.HasGoalkeeper ? shape : L["Pitch_NoKeeper", shape].Value]
++        </p>
++    }
++    <ul class="squad-names composition">
++        @foreach (var player in Team.Starters)
++        {
++            <li @key="player.Id">
++                <span dir="auto">@player.Name</span>
++                @if (Team.Positions.TryGetValue(player.Id, out var position))
++                {
++                    <span class="composition__position">@L[SportLabels.PositionKey(position)]</span>
++                }
++            </li>
++        }
++    </ul>
++    @if (Team.Others.Count > 0)
++    {
++        <h4 class="composition__others">@(Team.IsPitchFull ? L["Share_Substitutes"] : L["Share_OtherPlayers"])</h4>
++        <ul class="squad-names composition">
++            @foreach (var player in Team.Others)
++            {
++                <li @key="player.Id">
++                    <span dir="auto">@player.Name</span>
++                    @if (Team.Positions.TryGetValue(player.Id, out var position))
++                    {
++                        <span class="composition__position">@L[SportLabels.PositionKey(position)]</span>
++                    }
++                </li>
++            }
++        </ul>
++    }
++</div>
++
++@code {
++    [Parameter, EditorRequired] public TeamLineup Team { get; set; } = default!;
++}
+diff --git a/src/AlFariq.UI/DependencyInjection.cs b/src/AlFariq.UI/DependencyInjection.cs
+index d0de9f8..b48de60 100644
+--- a/src/AlFariq.UI/DependencyInjection.cs
++++ b/src/AlFariq.UI/DependencyInjection.cs
+@@ -5,7 +5,10 @@ namespace AlFariq.UI;
+ 
+ public static class DependencyInjection
+ {
+-    /// <summary>Enregistre les services de l'interface (traductions, connexion, thème, mises à jour, nouveautés).</summary>
++    /// <summary>
++    /// Enregistre les services de l'interface (traductions, connexion, thème, mises à jour, nouveautés, filtres des
++    /// matchs).
++    /// </summary>
+     public static IServiceCollection AddAlFariqUi(this IServiceCollection services)
+     {
+         services.AddLocalization();
+@@ -14,6 +17,7 @@ public static class DependencyInjection
+         services.AddScoped<ThemeService>();
+         services.AddScoped<UpdateService>();
+         services.AddScoped<WhatsNewService>();
++        services.AddScoped<MatchListState>();
+         return services;
+     }
+ }
+diff --git a/src/AlFariq.UI/Pages/MatchDetails.razor b/src/AlFariq.UI/Pages/MatchDetails.razor
+index 220af30..e4470fb 100644
+--- a/src/AlFariq.UI/Pages/MatchDetails.razor
++++ b/src/AlFariq.UI/Pages/MatchDetails.razor
+@@ -101,22 +101,8 @@
+                 @if (assigned > 0)
+                 {
+                     <div class="team-columns">
+-                        @foreach (var team in new[] { lineup.TeamA, lineup.TeamB })
+-                        {
+-                            <div @key="team.Side">
+-                                <h3 class="team-heading team-color--@team.ColorCode">
+-                                    <span class="team-dot" aria-hidden="true"></span>
+-                                    <span class="team-heading__name" dir="auto">@TeamLabels.Name(L, team.Side, team.Name)</span>
+-                                </h3>
+-                                <p class="hint">@L["Teams_Count", team.Players.Count]</p>
+-                                <ul class="squad-names">
+-                                    @foreach (var player in team.Players)
+-                                    {
+-                                        <li @key="player.Id"><span dir="auto">@player.Name</span></li>
+-                                    }
+-                                </ul>
+-                            </div>
+-                        }
++                        <TeamSheet @key="TeamSide.A" Team="lineup.TeamA" />
++                        <TeamSheet @key="TeamSide.B" Team="lineup.TeamB" />
+                     </div>
+                     if (lineup.Unassigned.Count > 0)
+                     {
+diff --git a/src/AlFariq.UI/Pages/Matches.razor b/src/AlFariq.UI/Pages/Matches.razor
+index ea14de2..3ec9cb9 100644
+--- a/src/AlFariq.UI/Pages/Matches.razor
++++ b/src/AlFariq.UI/Pages/Matches.razor
+@@ -1,7 +1,9 @@
+ @page "/matchs"
++@using System.Globalization
+ @using AlFariq.Application
+ @inject IStringLocalizer<Strings> L
+-@inject MatchService Service
++@inject MatchHistoryService History
++@inject MatchListState State
+ @inject TimeProvider Clock
+ 
+ <PageTitle>@L["Matches_Title"] · @L["App_Name"]</PageTitle>
+@@ -15,13 +17,13 @@
+             <p>@L["Storage_Unavailable"]</p>
+         </div>
+     }
+-    else if (_matches is not null)
++    else if (_records is not null)
+     {
+         <div class="actions">
+             <a class="button" href="matchs/nouveau">@L["Home_CreateMatch"]</a>
+         </div>
+ 
+-        if (_matches.Count == 0)
++        if (_records.Count == 0)
+         {
+             <div class="card card--empty">
+                 <p>@L["Matches_Empty"]</p>
+@@ -30,25 +32,93 @@
+         else
+         {
+             var now = Clock.GetUtcNow();
+-            var upcoming = MatchSchedule.Upcoming(_matches, now);
+-            var past = MatchSchedule.Past(_matches, now);
+-            var visible = _showPast ? past : upcoming;
++            var criteria = State.Criteria;
++            var found = MatchSearch.Find(_records, criteria, Clock.LocalTimeZone);
++            var namedPlayers = found.ToDictionary(result => result.Match.Id, result => result.NamedPlayers);
++            var matches = found.Select(result => result.Match).ToList();
++            var upcoming = MatchSchedule.Upcoming(matches, now);
++            var past = MatchSchedule.Past(matches, now);
++            var tab = State.ShowPast ? past : upcoming;
++            var otherTab = State.ShowPast ? upcoming : past;
++            var statuses = MatchSearch.Statuses(tab);
++            // Un statut absent de la liste (après une nouvelle recherche) ne filtre pas.
++            MatchStatus? status = State.Status is { } chosen && statuses.Contains(chosen) ? chosen : null;
++            var visible = MatchSearch.WithStatus(tab, status);
++
++            <div class="match-search" role="search">
++                <div class="field">
++                    <label for="match-search-player">@L["Matches_SearchPlayer"]</label>
++                    <input id="match-search-player" type="search" dir="auto" autocomplete="off" enterkeyhint="search"
++                           @bind="State.PlayerName" @bind:event="oninput" />
++                </div>
++                <div class="field">
++                    <label for="match-search-date">@L["Matches_SearchDate"]</label>
++                    <input id="match-search-date" type="date" value="@IsoDate(State.Date)" @onchange="SetDate" />
++                </div>
++            </div>
++            if (!criteria.IsEmpty)
++            {
++                <div class="actions">
++                    <button type="button" class="button button--ghost" @onclick="State.ClearSearch">
++                        @L["Matches_ClearSearch"]
++                    </button>
++                </div>
++            }
++            <p class="sr-only" role="status">
++                @(criteria.IsEmpty ? "" : L["Matches_Found", upcoming.Count, past.Count].Value)
++            </p>
+ 
+             <fieldset class="segmented list-filter">
+                 <legend class="sr-only">@L["Matches_Filter"]</legend>
+                 <label class="segmented__option">
+-                    <input type="radio" name="matches-period" checked="@(!_showPast)" @onchange="() => _showPast = false" />
++                    <input type="radio" name="matches-period" checked="@(!State.ShowPast)"
++                           @onchange="() => State.Show(past: false)" />
+                     <span>@L["Matches_Upcoming", upcoming.Count]</span>
+                 </label>
+                 <label class="segmented__option">
+-                    <input type="radio" name="matches-period" checked="@_showPast" @onchange="() => _showPast = true" />
++                    <input type="radio" name="matches-period" checked="@State.ShowPast"
++                           @onchange="() => State.Show(past: true)" />
+                     <span>@L["Matches_Past", past.Count]</span>
+                 </label>
+             </fieldset>
+ 
++            if (statuses.Count > 1)
++            {
++                <div class="chips match-statuses" role="group" aria-label="@L["Matches_StatusFilter"]">
++                    <button type="button" class="chip" aria-pressed="@(status is null ? "true" : "false")"
++                            @onclick="() => State.Status = null">
++                        @L["Matches_AllStatuses"]
++                    </button>
++                    @foreach (var choice in statuses)
++                    {
++                        <button @key="choice" type="button" class="chip"
++                                aria-pressed="@(status == choice ? "true" : "false")"
++                                @onclick="() => State.Status = choice">
++                            @L[MatchLabels.StatusKey(choice)]
++                        </button>
++                    }
++                </div>
++            }
++
+             if (visible.Count == 0)
+             {
+-                <p class="hint list-none" role="status">@(_showPast ? L["Matches_NoPast"] : L["Matches_NoUpcoming"])</p>
++                <p class="hint list-none" role="status">
++                    @(!criteria.IsEmpty ? L["Matches_NoResult"]
++                        : State.ShowPast ? L["Matches_NoPast"]
++                        : L["Matches_NoUpcoming"])
++                </p>
++                @* La recherche porte sur les deux onglets : on mène droit à celui qui a des résultats. *@
++                if (!criteria.IsEmpty && otherTab.Count > 0)
++                {
++                    <div class="actions">
++                        <button type="button" class="button button--ghost"
++                                @onclick="() => State.Show(past: !State.ShowPast)">
++                            @(State.ShowPast
++                                ? L["Matches_ShowUpcoming", otherTab.Count]
++                                : L["Matches_ShowPast", otherTab.Count])
++                        </button>
++                    </div>
++                }
+             }
+             else
+             {
+@@ -56,6 +126,7 @@
+                     @foreach (var match in visible)
+                     {
+                         var start = MatchSchedule.ToLocal(match.StartsAt, Clock.LocalTimeZone);
++                        var named = namedPlayers[match.Id];
+                         <li @key="match.Id">
+                             <a class="match-list__link" href="matchs/@match.Id">
+                                 <span class="match-list__date">@L["Home_MatchDate", MatchLabels.LongDate(start), MatchLabels.Time(start)]</span>
+@@ -72,6 +143,12 @@
+                                 {
+                                     <span class="match-list__details" dir="auto">@match.Location</span>
+                                 }
++                                @if (named.Count > 0)
++                                {
++                                    <span class="match-list__details">
++                                        @L["Matches_WithPlayers", string.Join(", ", named.Select(player => player.Name))]
++                                    </span>
++                                }
+                             </a>
+                         </li>
+                     }
+@@ -82,15 +159,14 @@
+ </section>
+ 
+ @code {
+-    private IReadOnlyList<Match>? _matches;
+-    private bool _showPast;
++    private IReadOnlyList<MatchRecord>? _records;
+     private bool _loadFailed;
+ 
+     protected override async Task OnInitializedAsync()
+     {
+         try
+         {
+-            _matches = await Service.ListAsync();
++            _records = await History.ListAsync();
+         }
+         catch (Exception exception)
+         {
+@@ -98,4 +174,14 @@
+             _loadFailed = true;
+         }
+     }
++
++    private static string IsoDate(DateOnly? date) =>
++        date?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "";
++
++    // Un champ date vidé ou incomplet donne un texte vide : le critère disparaît.
++    private void SetDate(ChangeEventArgs e) =>
++        State.Date = DateOnly.TryParseExact(
++            e.Value as string, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)
++            ? date
++            : null;
+ }
+diff --git a/src/AlFariq.UI/Resources/Strings.resx b/src/AlFariq.UI/Resources/Strings.resx
+index 048582f..5c1e46a 100644
+--- a/src/AlFariq.UI/Resources/Strings.resx
++++ b/src/AlFariq.UI/Resources/Strings.resx
+@@ -147,6 +147,17 @@
+   <data name="Matches_Empty" xml:space="preserve"><value>Aucun match pour l'instant.</value></data>
+   <data name="Matches_NoUpcoming" xml:space="preserve"><value>Aucun match à venir.</value></data>
+   <data name="Matches_NoPast" xml:space="preserve"><value>Aucun match passé.</value></data>
++  <data name="Matches_SearchPlayer" xml:space="preserve"><value>Nom d'un joueur</value></data>
++  <data name="Matches_SearchDate" xml:space="preserve"><value>Date du match</value></data>
++  <data name="Matches_ClearSearch" xml:space="preserve"><value>Effacer la recherche</value></data>
++  <data name="Matches_Found" xml:space="preserve"><value>Matchs trouvés : {0} à venir, {1} passés.</value></data>
++  <data name="Matches_NoResult" xml:space="preserve"><value>Aucun match ne correspond dans cet onglet.</value></data>
++  <data name="Matches_ShowUpcoming" xml:space="preserve"><value>Voir les résultats à venir ({0})</value></data>
++  <data name="Matches_ShowPast" xml:space="preserve"><value>Voir les résultats passés ({0})</value></data>
++  <data name="Matches_StatusFilter" xml:space="preserve"><value>Filtrer par statut</value></data>
++  <data name="Matches_AllStatuses" xml:space="preserve"><value>Tous</value></data>
++  <data name="Matches_WithPlayers" xml:space="preserve"><value>Avec : {0}</value></data>
++  <data name="Match_Formation" xml:space="preserve"><value>Formation : {0}</value></data>
+   <data name="Squad_Title" xml:space="preserve"><value>Joueurs du match</value></data>
+   <data name="Squad_Choose" xml:space="preserve"><value>Choisir les joueurs</value></data>
+   <data name="Squad_Count" xml:space="preserve"><value>{0} joueurs sur {1} attendus</value></data>
+diff --git a/src/AlFariq.UI/Services/MatchListState.cs b/src/AlFariq.UI/Services/MatchListState.cs
+new file mode 100644
+index 0000000..792ec43
+--- /dev/null
++++ b/src/AlFariq.UI/Services/MatchListState.cs
+@@ -0,0 +1,34 @@
++using AlFariq.Domain;
++
++namespace AlFariq.UI.Services;
++
++/// <summary>
++/// L'onglet et les filtres de la liste des matchs (US-013), gardés tant que l'application est ouverte : revenir de la
++/// fiche d'un match retrouve la même recherche. Rien n'est enregistré sur l'appareil.
++/// </summary>
++public sealed class MatchListState
++{
++    public bool ShowPast { get; private set; }
++
++    /// <summary>Statut choisi ; null pour tous.</summary>
++    public MatchStatus? Status { get; set; }
++
++    public string PlayerName { get; set; } = "";
++
++    public DateOnly? Date { get; set; }
++
++    public MatchCriteria Criteria => new(PlayerName, Date);
++
++    /// <summary>Change d'onglet. Les statuts varient d'un onglet à l'autre : le filtre repart de « Tous ».</summary>
++    public void Show(bool past)
++    {
++        ShowPast = past;
++        Status = null;
++    }
++
++    public void ClearSearch()
++    {
++        PlayerName = "";
++        Date = null;
++    }
++}
+diff --git a/src/AlFariq.UI/wwwroot/css/app.css b/src/AlFariq.UI/wwwroot/css/app.css
+index 82d0b43..b1b8252 100644
+--- a/src/AlFariq.UI/wwwroot/css/app.css
++++ b/src/AlFariq.UI/wwwroot/css/app.css
+@@ -364,6 +364,29 @@ h1:focus {
+   text-align: center;
+ }
+ 
++/* ---------- Historique (US-013) ---------- */
++
++/* Côte à côte dès que l'écran le permet, l'un sous l'autre à 320 px. */
++.match-search {
++  display: grid;
++  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
++  gap: 0.75rem;
++  margin-top: var(--gutter);
++}
++
++.match-search .field {
++  min-width: 0;
++  margin: 0;
++}
++
++.match-search input {
++  min-width: 0;
++}
++
++.match-statuses {
++  margin-top: 0.75rem;
++}
++
+ .match-list {
+   padding-block: 0;
+   list-style: none;
+@@ -766,6 +789,23 @@ h1:focus {
+   margin-top: 0.25rem;
+ }
+ 
++/* Le poste sous le nom : deux colonnes tiennent sur un écran de 360 px. */
++.composition li {
++  flex-direction: column;
++  align-items: flex-start;
++  gap: 0;
++}
++
++.composition__position {
++  color: var(--color-muted);
++  font-size: 0.875rem;
++}
++
++.composition__others {
++  margin: 0.75rem 0 0;
++  font-size: 0.875rem;
++}
++
+ /* ---------- Proposition d'équipes ---------- */
+ 
+ .team-toggle--lock[aria-pressed="true"]::after {
+diff --git a/tests/AlFariq.Client.Core.Tests/MatchHistoryTests.cs b/tests/AlFariq.Client.Core.Tests/MatchHistoryTests.cs
+new file mode 100644
+index 0000000..8521b26
+--- /dev/null
++++ b/tests/AlFariq.Client.Core.Tests/MatchHistoryTests.cs
+@@ -0,0 +1,141 @@
++using AlFariq.Application;
++using AlFariq.Domain;
++using Microsoft.Extensions.DependencyInjection;
++
++namespace AlFariq.Client.Core.Tests;
++
++/// <summary>Historique (US-013) : les joueurs de chaque match et la composition présentée sur sa fiche.</summary>
++public sealed class MatchHistoryTests : IDisposable
++{
++    private static readonly MatchInput Evening = new(new DateOnly(2026, 12, 2), new TimeOnly(20, 0), 5);
++
++    private readonly FakeClock _clock = new();
++    private readonly ServiceProvider _app;
++
++    public MatchHistoryTests() => _app = MatchTestHost.Create(_clock);
++
++    public void Dispose() => _app.Dispose();
++
++    private MatchHistoryService History => _app.GetRequiredService<MatchHistoryService>();
++
++    private MatchService Matches => _app.GetRequiredService<MatchService>();
++
++    private SquadService Squads => _app.GetRequiredService<SquadService>();
++
++    private LineupService Lineups => _app.GetRequiredService<LineupService>();
++
++    private async Task<Guid> NewMatchAsync() => (await Matches.CreateAsync(Evening)).Id;
++
++    private async Task<Guid> JoinAsync(Guid match, string name, TeamSide? side = TeamSide.A)
++    {
++        var player = (await Squads.AddNewPlayerAsync(match, name)).Id;
++        await Lineups.AssignAsync(match, player, side);
++        return player;
++    }
++
++    private async Task<IEnumerable<string>> PlayersOfAsync(Guid match) =>
++        (await History.ListAsync()).Single(record => record.Match.Id == match)
++            .Players.Select(player => player.Name).Order();
++
++    [Fact]
++    public async Task Each_match_comes_with_its_own_players()
++    {
++        var first = await NewMatchAsync();
++        var second = await NewMatchAsync();
++        var empty = await NewMatchAsync();
++        await JoinAsync(first, "Sami");
++        await JoinAsync(first, "Alice", side: null);
++        await JoinAsync(second, "Karim");
++
++        Assert.Equal(new[] { "Alice", "Sami" }, await PlayersOfAsync(first));
++        Assert.Equal(new[] { "Karim" }, await PlayersOfAsync(second));
++        Assert.Empty(await PlayersOfAsync(empty));
++    }
++
++    [Fact]
++    public async Task Archived_and_deleted_players_stay_in_the_history()
++    {
++        var match = await NewMatchAsync();
++        var sami = await JoinAsync(match, "Sami");
++        var alice = await JoinAsync(match, "Alice");
++
++        await _app.GetRequiredService<PlayerService>().SetArchivedAsync(sami, archived: true);
++        await _app.GetRequiredService<IRepository<Player>>().DeleteAsync(alice);
++
++        Assert.Equal(new[] { "Alice", "Sami" }, await PlayersOfAsync(match));
++    }
++
++    [Fact]
++    public async Task A_player_removed_from_a_match_is_no_longer_found_there()
++    {
++        var match = await NewMatchAsync();
++        var sami = await JoinAsync(match, "Sami");
++
++        await Squads.SetSelectedAsync(match, sami, selected: false);
++
++        Assert.Empty(await PlayersOfAsync(match));
++    }
++
++    [Fact]
++    public async Task A_deleted_match_leaves_the_history()
++    {
++        var match = await NewMatchAsync();
++
++        await Matches.DeleteAsync(match);
++
++        Assert.Empty(await History.ListAsync());
++    }
++
++    [Fact]
++    public async Task Without_a_player_on_the_pitch_the_whole_team_is_listed_without_formation()
++    {
++        var match = await NewMatchAsync();
++        await JoinAsync(match, "Sami");
++        await Lineups.SetFormationAsync(match, TeamSide.A, "2-1-1");
++
++        var team = (await Lineups.GetAsync(match))!.TeamA;
++
++        Assert.Null(team.FilledFormation);
++        Assert.Equal(new[] { "Sami" }, team.Starters.Select(player => player.Name));
++        Assert.Empty(team.Others);
++        Assert.False(team.IsPitchFull);
++    }
++
++    [Fact]
++    public async Task With_a_formation_the_pitch_comes_first_from_the_goalkeeper_then_the_others()
++    {
++        var match = await NewMatchAsync();
++        var alice = await JoinAsync(match, "Alice");
++        var karim = await JoinAsync(match, "Karim");
++        await JoinAsync(match, "Zoé");
++        await Lineups.SetFormationAsync(match, TeamSide.A, "2-1-1");
++        await Lineups.PlaceAsync(match, TeamSide.A, 4, alice);
++        await Lineups.PlaceAsync(match, TeamSide.A, 0, karim);
++
++        var team = (await Lineups.GetAsync(match))!.TeamA;
++
++        Assert.Equal("2-1-1", team.FilledFormation!.Code);
++        Assert.Equal(new[] { "Karim", "Alice" }, team.Starters.Select(player => player.Name));
++        Assert.Equal(new[] { "Zoé" }, team.Others.Select(player => player.Name));
++        Assert.False(team.IsPitchFull);
++    }
++
++    [Fact]
++    public async Task The_pitch_is_full_when_every_spot_is_taken()
++    {
++        var match = await NewMatchAsync();
++        await Lineups.SetFormationAsync(match, TeamSide.A, "2-1-1");
++        for (var slot = 0; slot < 5; slot++)
++        {
++            var player = await JoinAsync(match, $"Joueur {slot}");
++            await Lineups.PlaceAsync(match, TeamSide.A, slot, player);
++        }
++
++        await JoinAsync(match, "Remplaçant");
++
++        var team = (await Lineups.GetAsync(match))!.TeamA;
++
++        Assert.True(team.IsPitchFull);
++        Assert.Equal(new[] { "Remplaçant" }, team.Others.Select(player => player.Name));
++    }
++}
+diff --git a/tests/AlFariq.Domain.Tests/MatchSearchTests.cs b/tests/AlFariq.Domain.Tests/MatchSearchTests.cs
+new file mode 100644
+index 0000000..3808678
+--- /dev/null
++++ b/tests/AlFariq.Domain.Tests/MatchSearchTests.cs
+@@ -0,0 +1,108 @@
++namespace AlFariq.Domain.Tests;
++
++public class MatchSearchTests
++{
++    private static readonly DateOnly Day = new(2026, 12, 2);
++
++    private static MatchRecord Record(DateTimeOffset startsAt, params string[] players) =>
++        new(new Match { StartsAt = startsAt }, players.Select(name => new Player { Name = name }).ToList());
++
++    private static MatchRecord Evening(int day, params string[] players) =>
++        Record(new DateTimeOffset(2026, 12, day, 20, 0, 0, TimeSpan.Zero), players);
++
++    private static IReadOnlyList<FoundMatch> Find(MatchCriteria criteria, params MatchRecord[] records) =>
++        MatchSearch.Find(records, criteria, TimeZoneInfo.Utc);
++
++    [Theory]
++    [InlineData(null)]
++    [InlineData("   ")]
++    public void Without_criteria_every_match_is_kept(string? name)
++    {
++        var criteria = new MatchCriteria(name);
++
++        var found = Find(criteria, Evening(2, "Sami"), Evening(3));
++
++        Assert.True(criteria.IsEmpty);
++        Assert.Equal(2, found.Count);
++        Assert.All(found, match => Assert.Empty(match.NamedPlayers));
++    }
++
++    [Theory]
++    [InlineData("elo")]
++    [InlineData("ÉLODIE")]
++    [InlineData("  lodie ")]
++    public void A_match_is_found_by_part_of_a_player_name(string name)
++    {
++        var played = Evening(2, "Sami", "Élodie");
++
++        var found = Find(new MatchCriteria(name), played, Evening(3, "Sami"), Evening(4));
++
++        var match = Assert.Single(found);
++        Assert.Same(played.Match, match.Match);
++        Assert.Equal(new[] { "Élodie" }, match.NamedPlayers.Select(player => player.Name));
++    }
++
++    [Fact]
++    public void Every_player_whose_name_matches_is_cited()
++    {
++        var found = Find(new MatchCriteria("kar"), Evening(2, "Karima", "Alice", "Karim"));
++
++        Assert.Equal(new[] { "Karim", "Karima" }, Assert.Single(found).NamedPlayers.Select(player => player.Name));
++    }
++
++    [Fact]
++    public void A_match_is_found_by_its_date()
++    {
++        var wanted = Evening(2);
++
++        var found = Find(new MatchCriteria(Date: Day), Evening(1), wanted, Evening(3));
++
++        Assert.Same(wanted.Match, Assert.Single(found).Match);
++    }
++
++    [Fact]
++    public void The_date_is_the_one_displayed_in_the_time_zone()
++    {
++        var zone = TimeZoneInfo.FindSystemTimeZoneById("Europe/Paris");
++        // Le 1er décembre à 23 h 30 UTC, il est déjà le 2 à Paris.
++        var record = Record(new DateTimeOffset(2026, 12, 1, 23, 30, 0, TimeSpan.Zero));
++
++        Assert.Single(MatchSearch.Find([record], new MatchCriteria(Date: Day), zone));
++        Assert.Empty(MatchSearch.Find([record], new MatchCriteria(Date: Day.AddDays(-1)), zone));
++    }
++
++    [Fact]
++    public void Date_and_name_must_both_match()
++    {
++        var wanted = Evening(2, "Sami");
++
++        var found = Find(new MatchCriteria("sami", Day), wanted, Evening(2, "Alice"), Evening(3, "Sami"));
++
++        Assert.Same(wanted.Match, Assert.Single(found).Match);
++    }
++
++    [Fact]
++    public void Only_the_statuses_present_are_offered()
++    {
++        Match[] matches =
++        [
++            new() { Status = MatchStatus.Cancelled },
++            new() { Status = MatchStatus.Planned },
++            new() { Status = MatchStatus.Cancelled },
++        ];
++
++        Assert.Equal(new[] { MatchStatus.Planned, MatchStatus.Cancelled }, MatchSearch.Statuses(matches));
++    }
++
++    [Fact]
++    public void Matches_are_filtered_by_status_keeping_their_order()
++    {
++        var first = new Match { Status = MatchStatus.Finished };
++        var planned = new Match { Status = MatchStatus.Planned };
++        var second = new Match { Status = MatchStatus.Finished };
++        Match[] matches = [first, planned, second];
++
++        Assert.Equal(new[] { first, second }, MatchSearch.WithStatus(matches, MatchStatus.Finished));
++        Assert.Equal(matches, MatchSearch.WithStatus(matches, null));
++    }
++}

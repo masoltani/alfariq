@@ -101,22 +101,8 @@
                 @if (assigned > 0)
                 {
                     <div class="team-columns">
-                        @foreach (var team in new[] { lineup.TeamA, lineup.TeamB })
-                        {
-                            <div @key="team.Side">
-                                <h3 class="team-heading team-color--@team.ColorCode">
-                                    <span class="team-dot" aria-hidden="true"></span>
-                                    <span class="team-heading__name" dir="auto">@TeamLabels.Name(L, team.Side, team.Name)</span>
-                                </h3>
-                                <p class="hint">@L["Teams_Count", team.Players.Count]</p>
-                                <ul class="squad-names">
-                                    @foreach (var player in team.Players)
-                                    {
-                                        <li @key="player.Id"><span dir="auto">@player.Name</span></li>
-                                    }
-                                </ul>
-                            </div>
-                        }
+                        <TeamSheet @key="TeamSide.A" Team="lineup.TeamA" />
+                        <TeamSheet @key="TeamSide.B" Team="lineup.TeamB" />
                     </div>
                     if (lineup.Unassigned.Count > 0)
                     {

@@ -364,6 +364,29 @@ h1:focus {
   text-align: center;
 }
 
+/* ---------- Historique (US-013) ---------- */
+
+/* Côte à côte dès que l'écran le permet, l'un sous l'autre à 320 px. */
+.match-search {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.75rem;
+  margin-top: var(--gutter);
+}
+
+.match-search .field {
+  min-width: 0;
+  margin: 0;
+}
+
+.match-search input {
+  min-width: 0;
+}
+
+.match-statuses {
+  margin-top: 0.75rem;
+}
+
 .match-list {
   padding-block: 0;
   list-style: none;
@@ -764,6 +787,23 @@ h1:focus {
 
 .team-columns .squad-names {
   margin-top: 0.25rem;
+}
+
+/* Le poste sous le nom : deux colonnes tiennent sur un écran de 360 px. */
+.composition li {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+}
+
+.composition__position {
+  color: var(--color-muted);
+  font-size: 0.875rem;
+}
+
+.composition__others {
+  margin: 0.75rem 0 0;
+  font-size: 0.875rem;
 }
 
 /* ---------- Proposition d'équipes ---------- */

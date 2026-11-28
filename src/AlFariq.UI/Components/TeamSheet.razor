@@ -1,0 +1,51 @@
+@using AlFariq.Application
+@inject IStringLocalizer<Strings> L
+
+@* La composition d'une équipe sur la fiche d'un match (US-013) : formation, joueurs et postes. *@
+<div>
+    <h3 class="team-heading team-color--@Team.ColorCode">
+        <span class="team-dot" aria-hidden="true"></span>
+        <span class="team-heading__name" dir="auto">@TeamLabels.Name(L, Team.Side, Team.Name)</span>
+    </h3>
+    <p class="hint">@L["Teams_Count", Team.Players.Count]</p>
+    @if (Team.FilledFormation is { } formation)
+    {
+        @* Traits d'union insécables : « 4-2-3-1 » ne se coupe pas dans une colonne étroite. *@
+        var shape = formation.Code.Replace('-', '\u2011');
+        <p class="hint">
+            @L["Match_Formation", formation.HasGoalkeeper ? shape : L["Pitch_NoKeeper", shape].Value]
+        </p>
+    }
+    <ul class="squad-names composition">
+        @foreach (var player in Team.Starters)
+        {
+            <li @key="player.Id">
+                <span dir="auto">@player.Name</span>
+                @if (Team.Positions.TryGetValue(player.Id, out var position))
+                {
+                    <span class="composition__position">@L[SportLabels.PositionKey(position)]</span>
+                }
+            </li>
+        }
+    </ul>
+    @if (Team.Others.Count > 0)
+    {
+        <h4 class="composition__others">@(Team.IsPitchFull ? L["Share_Substitutes"] : L["Share_OtherPlayers"])</h4>
+        <ul class="squad-names composition">
+            @foreach (var player in Team.Others)
+            {
+                <li @key="player.Id">
+                    <span dir="auto">@player.Name</span>
+                    @if (Team.Positions.TryGetValue(player.Id, out var position))
+                    {
+                        <span class="composition__position">@L[SportLabels.PositionKey(position)]</span>
+                    }
+                </li>
+            }
+        </ul>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public TeamLineup Team { get; set; } = default!;
+}

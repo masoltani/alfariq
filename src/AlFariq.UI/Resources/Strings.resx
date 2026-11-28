@@ -147,6 +147,17 @@
   <data name="Matches_Empty" xml:space="preserve"><value>Aucun match pour l'instant.</value></data>
   <data name="Matches_NoUpcoming" xml:space="preserve"><value>Aucun match à venir.</value></data>
   <data name="Matches_NoPast" xml:space="preserve"><value>Aucun match passé.</value></data>
+  <data name="Matches_SearchPlayer" xml:space="preserve"><value>Nom d'un joueur</value></data>
+  <data name="Matches_SearchDate" xml:space="preserve"><value>Date du match</value></data>
+  <data name="Matches_ClearSearch" xml:space="preserve"><value>Effacer la recherche</value></data>
+  <data name="Matches_Found" xml:space="preserve"><value>Matchs trouvés : {0} à venir, {1} passés.</value></data>
+  <data name="Matches_NoResult" xml:space="preserve"><value>Aucun match ne correspond dans cet onglet.</value></data>
+  <data name="Matches_ShowUpcoming" xml:space="preserve"><value>Voir les résultats à venir ({0})</value></data>
+  <data name="Matches_ShowPast" xml:space="preserve"><value>Voir les résultats passés ({0})</value></data>
+  <data name="Matches_StatusFilter" xml:space="preserve"><value>Filtrer par statut</value></data>
+  <data name="Matches_AllStatuses" xml:space="preserve"><value>Tous</value></data>
+  <data name="Matches_WithPlayers" xml:space="preserve"><value>Avec : {0}</value></data>
+  <data name="Match_Formation" xml:space="preserve"><value>Formation : {0}</value></data>
   <data name="Squad_Title" xml:space="preserve"><value>Joueurs du match</value></data>
   <data name="Squad_Choose" xml:space="preserve"><value>Choisir les joueurs</value></data>
   <data name="Squad_Count" xml:space="preserve"><value>{0} joueurs sur {1} attendus</value></data>

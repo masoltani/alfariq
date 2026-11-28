@@ -107,9 +107,9 @@ public static class LineupCardBuilder
             team.Positions.TryGetValue(player.Id, out var code) ? labels.Position(code) : null);
 
         // Un terrain vide n'apprend rien : sans joueur placé, l'équipe est simplement listée.
-        if (team.Formation is not { } formation || team.OnPitch.Count == 0)
+        if (team.FilledFormation is not { } formation)
         {
-            return new CardTeam(name, team.ColorCode, null, [], team.Players.Select(Listed).ToList(), [], null);
+            return new CardTeam(name, team.ColorCode, null, [], team.Starters.Select(Listed).ToList(), [], null);
         }
 
         var lines = formation.Lines
@@ -119,10 +119,10 @@ public static class LineupCardBuilder
                     team.OnPitch.GetValueOrDefault(slot.Index)?.Name))
                 .ToList())
             .ToList();
-        var placed = team.OnPitch.OrderBy(entry => entry.Key).Select(entry => Listed(entry.Value)).ToList();
-        var others = team.OffPitch.Select(Listed).ToList();
+        var placed = team.Starters.Select(Listed).ToList();
+        var others = team.Others.Select(Listed).ToList();
         var othersTitle = others.Count == 0 ? null
-            : team.OnPitch.Count == formation.Slots.Count ? labels.Substitutes
+            : team.IsPitchFull ? labels.Substitutes
             : labels.OtherPlayers;
 
         return new CardTeam(name, team.ColorCode, formation.Code, lines, placed, others, othersTitle);
